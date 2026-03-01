@@ -1,7 +1,7 @@
 [project]
 name = "model-training"
 version = "0.1.0"
-description = "Trains models for the Infinite Orbits MLOps pipeline."
+description = "YOLO pose-estimation training step for the Infinite Orbits MLOps pipeline."
 authors = [
     { name = "Infinite Orbits", email = "dev@infiniteorbits.io" }
 ]
@@ -15,6 +15,13 @@ python = ">=3.12,<=3.14"
 pydantic = "^2.11.5"
 typer = "^0.16.0"
 pydantic-settings = "^2.10.1"
+ultralytics = ">=8.2"
+mlflow = ">=2.13"
+psutil = ">=5.9"
+pynvml = ">=11.5"
+boto3 = ">=1.34"
+torch = ">=2.3"
+pyyaml = ">=6.0"
 
 [tool.poetry.group.dev.dependencies]
 black = "^25.1.0"
@@ -22,6 +29,8 @@ isort = "^6.0.1"
 mypy = "^1.15.0"
 pytest = "^8.4.1"
 pytest-cov = "^6.2.1"
+types-pyyaml = ">=6.0"
+types-psutil = ">=5.9"
 
 [tool.poetry.scripts]
 model-training = "app.cli:main"
@@ -32,14 +41,14 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.black]
 line-length = 88
-target-version = ['py311']
+target-version = ['py312']
 
 [tool.isort]
 profile = "black"
 line_length = 88
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

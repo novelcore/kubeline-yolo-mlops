@@ -1,18 +1,83 @@
-from pydantic_settings import BaseSettings
-from pydantic import Field, ConfigDict
+"""Application configuration for the model training step.
+
+All values are read from environment variables (or a .env file).
+See env.example for the full list of supported variables.
+"""
+
+from typing import Optional
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Config(BaseSettings):
-    """Application configuration using environment variables."""
+    """Step-level runtime settings loaded from environment variables."""
 
-    model_config = ConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
+    # -------------------------------------------------------------------------
     # Application settings
-    app_name: str = Field(default="io-model-training", description="Application name")
-    log_level: str = Field(default="INFO", description="Logging level")
-    max_retries: int = Field(default=3, description="Maximum number of retries")
-    timeout: int = Field(default=3600, description="Timeout in seconds")
+    # -------------------------------------------------------------------------
+    app_name: str = Field(default="io-model-training", description="Application name.")
+    log_level: str = Field(
+        default="INFO", description="Logging level (DEBUG/INFO/WARNING/ERROR)."
+    )
 
-    # Training settings
-    default_seed: int = Field(default=42, description="Default random seed")
-    device: str = Field(default="cpu", description="Training device (cpu, cuda, mps)")
+    # -------------------------------------------------------------------------
+    # MLflow settings
+    # -------------------------------------------------------------------------
+    mlflow_tracking_uri: str = Field(
+        default="http://localhost:5000",
+        description="MLflow tracking server URI.",
+    )
+
+    # -------------------------------------------------------------------------
+    # AWS / S3 connection settings
+    # -------------------------------------------------------------------------
+    aws_default_region: Optional[str] = Field(
+        default=None,
+        description=(
+            "AWS region (e.g. 'eu-central-1'). "
+            "Omit to use the instance role region."
+        ),
+    )
+    aws_access_key_id: Optional[str] = Field(
+        default=None,
+        description="AWS access key ID. Omit to use IAM role credentials.",
+    )
+    aws_secret_access_key: Optional[str] = Field(
+        default=None,
+        description="AWS secret access key. Omit to use IAM role credentials.",
+    )
+    s3_endpoint_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "Custom S3 endpoint URL (e.g. for MinIO). Leave unset for AWS."
+        ),
+    )
+
+    # -------------------------------------------------------------------------
+    # LakeFS connection settings (S3-compatible API)
+    # -------------------------------------------------------------------------
+    lakefs_endpoint: Optional[str] = Field(
+        default=None,
+        description="LakeFS server base URL (e.g. 'https://lakefs.example.com').",
+    )
+    lakefs_access_key: Optional[str] = Field(
+        default=None,
+        description="LakeFS access key ID.",
+    )
+    lakefs_secret_key: Optional[str] = Field(
+        default=None,
+        description="LakeFS secret access key.",
+    )
+
+    # -------------------------------------------------------------------------
+    # System resource monitoring
+    # -------------------------------------------------------------------------
+    resource_monitor_interval_sec: int = Field(
+        default=30,
+        description=(
+            "Interval in seconds between resource metric samples logged to MLflow."
+        ),
+    )
