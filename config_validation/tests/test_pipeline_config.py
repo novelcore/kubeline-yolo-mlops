@@ -56,11 +56,23 @@ def test_resources_section_is_ignored():
     assert not hasattr(config, "resources")
 
 
-def test_scheduler_sub_object_is_ignored():
+def test_scheduler_sub_object_is_now_rejected():
+    # cos_lr and lrf are now first-class fields in TrainingConfig (extra="forbid").
+    # A legacy training.scheduler sub-object must raise ValidationError instead of
+    # being silently dropped as it was in the previous schema.
     data = dict(VALID_CONFIG)
     data["training"] = {**VALID_CONFIG["training"], "scheduler": {"cos_lr": True, "lrf": 0.01}}
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        PipelineConfig(**data)
+
+
+def test_cos_lr_and_lrf_as_first_class_fields():
+    # cos_lr and lrf must be accepted as direct fields under training.
+    data = dict(VALID_CONFIG)
+    data["training"] = {**VALID_CONFIG["training"], "cos_lr": False, "lrf": 0.05}
     config = PipelineConfig(**data)
-    assert not hasattr(config.training, "scheduler")
+    assert config.training.cos_lr is False
+    assert config.training.lrf == 0.05
 
 
 def test_augmentation_defaults_applied_when_section_omitted():
