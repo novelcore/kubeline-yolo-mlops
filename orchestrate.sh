@@ -236,14 +236,81 @@ docker_run() {
 run_config_validation() {
     log_step "1/4 — Config Validation"
 
+    # Required fields
+    local experiment_name="${CFG_experiment_name:?Missing experiment.name in config}"
+    local dataset_version="${CFG_dataset_version:?Missing dataset.version in config}"
+    local dataset_source="${CFG_dataset_source:?Missing dataset.source in config}"
+    local model_variant="${CFG_model_variant:?Missing model.variant in config}"
+    local training_epochs="${CFG_training_epochs:?Missing training.epochs in config}"
+    local training_batch_size="${CFG_training_batch_size:?Missing training.batch_size in config}"
+    local training_image_size="${CFG_training_image_size:?Missing training.image_size in config}"
+    local training_learning_rate="${CFG_training_learning_rate:?Missing training.learning_rate in config}"
+    local training_optimizer="${CFG_training_optimizer:?Missing training.optimizer in config}"
+    local checkpointing_interval_epochs="${CFG_checkpointing_interval_epochs:?Missing checkpointing.interval_epochs in config}"
+    local checkpointing_storage_path="${CFG_checkpointing_storage_path:?Missing checkpointing.storage_path in config}"
+    local early_stopping_patience="${CFG_early_stopping_patience:?Missing early_stopping.patience in config}"
+
+    # Optional fields
+    local experiment_description="${CFG_experiment_description:-}"
+    local dataset_path_override="${CFG_dataset_path_override:-}"
+    local dataset_sample_size="${CFG_dataset_sample_size:-}"
+    local dataset_seed="${CFG_dataset_seed:-42}"
+    local model_pretrained_weights="${CFG_model_pretrained_weights:-}"
+    local training_warmup_epochs="${CFG_training_warmup_epochs:-3.0}"
+    local training_warmup_momentum="${CFG_training_warmup_momentum:-0.8}"
+    local training_weight_decay="${CFG_training_weight_decay:-0.0005}"
+    local checkpointing_resume_from="${CFG_checkpointing_resume_from:-}"
+
+    # Build optional flags
+    local optional_flags=""
+    [[ -n "$experiment_description" ]]    && optional_flags+=" --experiment-description '${experiment_description}'"
+    [[ -n "$dataset_path_override" ]]     && optional_flags+=" --dataset-path-override '${dataset_path_override}'"
+    [[ -n "$dataset_sample_size" ]]       && optional_flags+=" --dataset-sample-size ${dataset_sample_size}"
+    [[ -n "$model_pretrained_weights" ]]  && optional_flags+=" --model-pretrained-weights '${model_pretrained_weights}'"
+    [[ -n "$checkpointing_resume_from" ]] && optional_flags+=" --checkpointing-resume-from '${checkpointing_resume_from}'"
+
     if [[ "$MODE" == "docker" ]]; then
         [[ "$SKIP_BUILD" == false ]] && docker_build config_validation
         docker_run "${IMAGE_PREFIX}-config-validation" \
-            "--config-path /data/pipeline_config.yaml"
+            "--experiment-name '${experiment_name}'" \
+            "--dataset-version '${dataset_version}'" \
+            "--dataset-source '${dataset_source}'" \
+            "--dataset-seed ${dataset_seed}" \
+            "--model-variant '${model_variant}'" \
+            "--training-epochs ${training_epochs}" \
+            "--training-batch-size ${training_batch_size}" \
+            "--training-image-size ${training_image_size}" \
+            "--training-learning-rate ${training_learning_rate}" \
+            "--training-optimizer '${training_optimizer}'" \
+            "--training-warmup-epochs ${training_warmup_epochs}" \
+            "--training-warmup-momentum ${training_warmup_momentum}" \
+            "--training-weight-decay ${training_weight_decay}" \
+            "--checkpointing-interval-epochs ${checkpointing_interval_epochs}" \
+            "--checkpointing-storage-path '${checkpointing_storage_path}'" \
+            "--early-stopping-patience ${early_stopping_patience}" \
+            "--output-path /artifacts/validated_config.json" \
+            "${optional_flags}"
     else
         run_cmd "cd '${REPO_ROOT}/config_validation' && \
             poetry run config-validation run \
-                --config-path '${CONFIG_PATH}'"
+                --experiment-name '${experiment_name}' \
+                --dataset-version '${dataset_version}' \
+                --dataset-source '${dataset_source}' \
+                --dataset-seed ${dataset_seed} \
+                --model-variant '${model_variant}' \
+                --training-epochs ${training_epochs} \
+                --training-batch-size ${training_batch_size} \
+                --training-image-size ${training_image_size} \
+                --training-learning-rate ${training_learning_rate} \
+                --training-optimizer '${training_optimizer}' \
+                --training-warmup-epochs ${training_warmup_epochs} \
+                --training-warmup-momentum ${training_warmup_momentum} \
+                --training-weight-decay ${training_weight_decay} \
+                --checkpointing-interval-epochs ${checkpointing_interval_epochs} \
+                --checkpointing-storage-path '${checkpointing_storage_path}' \
+                --early-stopping-patience ${early_stopping_patience} \
+                --output-path '${REPO_ROOT}/.tmp/validated_config.json' \
+                ${optional_flags}"
     fi
 
     log_ok "Config validation passed"
@@ -418,7 +485,7 @@ main() {
     # Parse the pipeline YAML into shell variables
     parse_yaml "$CONFIG_PATH"
 
-    log_info "Pipeline:  ${CFG_pipeline_name:-unknown} v${CFG_version:-?}"
+    log_info "Experiment: ${CFG_experiment_name:-unknown}"
 
     # Create shared artifacts directory
     mkdir -p "${REPO_ROOT}/artifacts"

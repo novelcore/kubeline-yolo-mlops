@@ -1,44 +1,75 @@
 import pytest
-import yaml
-from pathlib import Path
 
 from app.manager import Manager
+from app.services.config_validation import ConfigValidationError
 
-
-VALID_CONFIG = {
-    "pipeline_name": "test-pipeline",
-    "version": "1.0.0",
-    "dataset": {
-        "source_path": "/data/train.parquet",
-        "format": "parquet",
-        "train_split": 0.8,
-        "val_split": 0.1,
-        "test_split": 0.1,
-    },
+VALID_CONFIG_DICT: dict = {
+    "experiment": {"name": "spacecraft-pose-v1-yolov8n", "description": "Baseline run"},
+    "dataset": {"version": "v1", "source": "s3", "sample_size": None, "seed": 42},
+    "model": {"variant": "yolov8n-pose.pt", "pretrained_weights": None},
     "training": {
-        "model_name": "bert-base",
-        "epochs": 10,
-        "batch_size": 32,
-        "learning_rate": 1e-4,
-        "optimizer": "adamw",
-        "seed": 42,
-        "output_dir": "/artifacts/checkpoints",
+        "epochs": 100,
+        "batch_size": 16,
+        "image_size": 640,
+        "learning_rate": 0.01,
+        "optimizer": "SGD",
     },
-    "registration": {
-        "registry_url": "https://registry.example.com",
-        "model_name": "bert-base-finetuned",
-        "tags": ["v1"],
-        "promote_to": "staging",
+    "checkpointing": {
+        "interval_epochs": 10,
+        "storage_path": "s3://io-mlops/checkpoints",
+        "resume_from": None,
     },
+    "early_stopping": {"patience": 50},
 }
 
 
-def test_manager_runs_config_validation(tmp_path, capfd):
-    """Test that Manager.run validates a config and prints success."""
-    config_path = tmp_path / "pipeline_config.yaml"
-    config_path.write_text(yaml.dump(VALID_CONFIG))
+def test_manager_run_calls_service_with_correct_args(mocker):
+    """Manager.run forwards config_dict and output_path to the service."""
+    mock_service_cls = mocker.patch("app.manager.ConfigValidationService")
+    mock_service = mock_service_cls.return_value
 
     manager = Manager()
-    manager.run(config_path=str(config_path))
-    out, _ = capfd.readouterr()
-    assert "Config validation passed" in out
+    manager.run(config_dict=VALID_CONFIG_DICT, output_path="/fake/out.json")
+
+    mock_service.run.assert_called_once_with(
+        config_dict=VALID_CONFIG_DICT,
+        output_path="/fake/out.json",
+    )
+
+
+def test_manager_passes_config_fields_to_service_constructor(mocker):
+    """Manager passes the correct Config fields to ConfigValidationService."""
+    mock_service_cls = mocker.patch("app.manager.ConfigValidationService")
+
+    Manager()
+
+    mock_service_cls.assert_called_once_with(
+        skip_liveness_checks=False,
+        max_retries=3,
+        timeout=30,
+        mlflow_tracking_uri=None,
+    )
+
+
+def test_manager_run_raises_on_service_failure(mocker):
+    """Exceptions from the service propagate out of Manager.run."""
+    mock_service_cls = mocker.patch("app.manager.ConfigValidationService")
+    mock_service_cls.return_value.run.side_effect = ConfigValidationError("bad config")
+
+    manager = Manager()
+    with pytest.raises(ConfigValidationError, match="bad config"):
+        manager.run(config_dict=VALID_CONFIG_DICT)
+
+
+def test_manager_output_path_defaults_to_none(mocker):
+    """Calling manager.run without output_path passes None to the service."""
+    mock_service_cls = mocker.patch("app.manager.ConfigValidationService")
+    mock_service = mock_service_cls.return_value
+
+    manager = Manager()
+    manager.run(config_dict=VALID_CONFIG_DICT)
+
+    mock_service.run.assert_called_once_with(
+        config_dict=VALID_CONFIG_DICT,
+        output_path=None,
+    )

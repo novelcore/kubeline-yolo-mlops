@@ -1,26 +1,64 @@
-pipeline_name: infinite-orbits-example
-version: "1.0.0"
-
-dataset:
-  source_path: /data/raw/train.parquet
-  format: parquet
-  train_split: 0.8
-  val_split: 0.1
-  test_split: 0.1
-
-training:
-  model_name: orbits-bert-base
-  epochs: 10
-  batch_size: 32
-  learning_rate: 0.0001
-  optimizer: adamw
-  seed: 42
-  output_dir: /artifacts/checkpoints
-
-registration:
-  registry_url: https://registry.infiniteorbits.io
-  model_name: orbits-bert-base-finetuned
+# --- Experiment Metadata ---
+experiment:
+  name: "spacecraft-pose-v1-yolov8n"
+  description: "Baseline YOLOv8n-pose on SPEED+ synthetic full dataset"
   tags:
-    - v1.0.0
-    - experiment
-  promote_to: staging
+    project: "infinite-orbits"
+    phase: "1"
+
+# --- Dataset Configuration ---
+dataset:
+  version: "v1"
+  source: "s3"                    # "s3" or "lakefs"
+  path_override: null             # Optional: full S3 path override
+  sample_size: null               # null = full dataset; integer = sampled subset
+  seed: 42                        # Seed for reproducible sampling
+
+# --- Model Configuration ---
+model:
+  variant: "yolov8n-pose.pt"      # Valid: yolov{8|9|10|11}{n|s|m|l|x}-pose.pt
+  pretrained_weights: null        # Optional: custom .pt path on S3
+
+# --- Training Hyperparameters ---
+training:
+  epochs: 100
+  batch_size: 16
+  image_size: 640                 # Must be a multiple of 32
+  learning_rate: 0.01
+  optimizer: "SGD"                # SGD | Adam | AdamW
+  scheduler:
+    cos_lr: true                  # Cosine LR schedule (informational; not validated)
+    lrf: 0.01                     # Final LR factor
+  warmup_epochs: 3.0
+  warmup_momentum: 0.8
+  weight_decay: 0.0005
+
+# --- Checkpointing ---
+checkpointing:
+  interval_epochs: 10             # Save checkpoint every N epochs
+  storage_path: "s3://io-mlops/checkpoints"
+  resume_from: null               # null | "auto" | specific S3 path to .pt file
+
+# --- Early Stopping ---
+early_stopping:
+  patience: 50                    # Epochs without improvement before stopping
+
+# --- Augmentation (passed directly to Ultralytics) ---
+augmentation:
+  hsv_h: 0.015
+  hsv_s: 0.7
+  hsv_v: 0.4
+  degrees: 0.0
+  translate: 0.1
+  scale: 0.5
+  flipud: 0.0
+  fliplr: 0.0                     # Disabled for spacecraft (no left-right symmetry)
+  mosaic: 1.0
+  mixup: 0.0
+
+# --- Resource Requests (informational; not validated by pipeline) ---
+resources:
+  gpu_count: 2
+  gpu_type: "A100-40GB"
+  cpu_cores: 32
+  memory_gb: 128
