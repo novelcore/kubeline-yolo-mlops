@@ -1,0 +1,46 @@
+[project]
+name = "model-training"
+version = "0.1.0"
+description = "Trains models for the Infinite Orbits MLOps pipeline."
+authors = [
+    { name = "Infinite Orbits", email = "dev@infiniteorbits.io" }
+]
+readme = "README.md"
+
+[tool.poetry]
+packages = [{include = "app"}]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<=3.14"
+pydantic = "^2.11.5"
+typer = "^0.16.0"
+pydantic-settings = "^2.10.1"
+
+[tool.poetry.group.dev.dependencies]
+black = "^25.1.0"
+isort = "^6.0.1"
+mypy = "^1.15.0"
+pytest = "^8.4.1"
+pytest-cov = "^6.2.1"
+
+[tool.poetry.scripts]
+model-training = "app.cli:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+plugins = ["pydantic.mypy"]
