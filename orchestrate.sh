@@ -137,6 +137,18 @@ parse_yaml() {
     local prefix="CFG"
     local section=""
 
+    # Helper: strip trailing whitespace, then strip surrounding quotes
+    _clean_val() {
+        local v="$1"
+        # Strip trailing whitespace
+        v="${v%"${v##*[! ]}"}"
+        # Strip surrounding double quotes
+        v="${v%\"}" ; v="${v#\"}"
+        # Strip surrounding single quotes
+        v="${v%\'}" ; v="${v#\'}"
+        echo "$v"
+    }
+
     while IFS= read -r line || [[ -n "$line" ]]; do
         # Strip comments and trailing whitespace
         line="${line%%#*}"
@@ -151,9 +163,8 @@ parse_yaml() {
         # Detect top-level key: value
         if [[ "$line" =~ ^([a-zA-Z_][a-zA-Z0-9_]*):[[:space:]]+(.+)$ ]]; then
             local key="${BASH_REMATCH[1]}"
-            local val="${BASH_REMATCH[2]}"
-            val="${val%\"}" ; val="${val#\"}"  # strip quotes
-            val="${val%\'}" ; val="${val#\'}"
+            local val
+            val="$(_clean_val "${BASH_REMATCH[2]}")"
             declare -g "${prefix}_${key}=${val}"
             section=""
             continue
@@ -162,18 +173,16 @@ parse_yaml() {
         # Detect nested key: value (indented under a section)
         if [[ -n "$section" && "$line" =~ ^[[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*):[[:space:]]+(.+)$ ]]; then
             local key="${BASH_REMATCH[1]}"
-            local val="${BASH_REMATCH[2]}"
-            val="${val%\"}" ; val="${val#\"}"
-            val="${val%\'}" ; val="${val#\'}"
+            local val
+            val="$(_clean_val "${BASH_REMATCH[2]}")"
             declare -g "${prefix}_${section}_${key}=${val}"
             continue
         fi
 
         # Detect list items under a section (e.g., "  - v1")
         if [[ -n "$section" && "$line" =~ ^[[:space:]]+-[[:space:]]+(.+)$ ]]; then
-            local val="${BASH_REMATCH[1]}"
-            val="${val%\"}" ; val="${val#\"}"
-            val="${val%\'}" ; val="${val#\'}"
+            local val
+            val="$(_clean_val "${BASH_REMATCH[1]}")"
             local list_var="${prefix}_${section}_tags"
             local existing="${!list_var:-}"
             if [[ -z "$existing" ]]; then
@@ -231,12 +240,23 @@ docker_run() {
 }
 
 # ---------------------------------------------------------------------------
+# Helper: append a flag only if the variable is non-empty and not "null"
+# ---------------------------------------------------------------------------
+append_optional() {
+    local flag="$1"
+    local value="$2"
+    if [[ -n "$value" && "$value" != "null" ]]; then
+        echo " ${flag} '${value}'"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Step runners
 # ---------------------------------------------------------------------------
 run_config_validation() {
     log_step "1/4 — Config Validation"
 
-    # Required fields
+    # ---- Required fields ----
     local experiment_name="${CFG_experiment_name:?Missing experiment.name in config}"
     local dataset_version="${CFG_dataset_version:?Missing dataset.version in config}"
     local dataset_source="${CFG_dataset_source:?Missing dataset.source in config}"
@@ -250,24 +270,72 @@ run_config_validation() {
     local checkpointing_storage_path="${CFG_checkpointing_storage_path:?Missing checkpointing.storage_path in config}"
     local early_stopping_patience="${CFG_early_stopping_patience:?Missing early_stopping.patience in config}"
 
-    # Optional fields
+    # ---- Optional / defaulted fields ----
     local experiment_description="${CFG_experiment_description:-}"
     local dataset_path_override="${CFG_dataset_path_override:-}"
     local dataset_sample_size="${CFG_dataset_sample_size:-}"
     local dataset_seed="${CFG_dataset_seed:-42}"
     local model_pretrained_weights="${CFG_model_pretrained_weights:-}"
-    local training_warmup_epochs="${CFG_training_warmup_epochs:-3.0}"
-    local training_warmup_momentum="${CFG_training_warmup_momentum:-0.8}"
-    local training_weight_decay="${CFG_training_weight_decay:-0.0005}"
     local checkpointing_resume_from="${CFG_checkpointing_resume_from:-}"
 
-    # Build optional flags
+    # Training defaults
+    local training_cos_lr="${CFG_training_cos_lr:-true}"
+    local training_lrf="${CFG_training_lrf:-0.01}"
+    local training_momentum="${CFG_training_momentum:-0.937}"
+    local training_weight_decay="${CFG_training_weight_decay:-0.0005}"
+    local training_warmup_epochs="${CFG_training_warmup_epochs:-3.0}"
+    local training_warmup_momentum="${CFG_training_warmup_momentum:-0.8}"
+    local training_dropout="${CFG_training_dropout:-0.0}"
+    local training_label_smoothing="${CFG_training_label_smoothing:-0.0}"
+    local training_nbs="${CFG_training_nbs:-64}"
+    local training_freeze="${CFG_training_freeze:-}"
+    local training_amp="${CFG_training_amp:-true}"
+    local training_close_mosaic="${CFG_training_close_mosaic:-10}"
+    local training_seed="${CFG_training_seed:-0}"
+    local training_deterministic="${CFG_training_deterministic:-true}"
+
+    # Pose loss gains
+    local training_pose="${CFG_training_pose:-12.0}"
+    local training_kobj="${CFG_training_kobj:-2.0}"
+    local training_box="${CFG_training_box:-7.5}"
+    local training_cls="${CFG_training_cls:-0.5}"
+    local training_dfl="${CFG_training_dfl:-1.5}"
+
+    # Augmentation defaults
+    local aug_hsv_h="${CFG_augmentation_hsv_h:-0.015}"
+    local aug_hsv_s="${CFG_augmentation_hsv_s:-0.7}"
+    local aug_hsv_v="${CFG_augmentation_hsv_v:-0.4}"
+    local aug_degrees="${CFG_augmentation_degrees:-0.0}"
+    local aug_translate="${CFG_augmentation_translate:-0.1}"
+    local aug_scale="${CFG_augmentation_scale:-0.5}"
+    local aug_shear="${CFG_augmentation_shear:-0.0}"
+    local aug_perspective="${CFG_augmentation_perspective:-0.0}"
+    local aug_flipud="${CFG_augmentation_flipud:-0.0}"
+    local aug_fliplr="${CFG_augmentation_fliplr:-0.0}"
+    local aug_mosaic="${CFG_augmentation_mosaic:-1.0}"
+    local aug_mixup="${CFG_augmentation_mixup:-0.0}"
+    local aug_copy_paste="${CFG_augmentation_copy_paste:-0.0}"
+    local aug_erasing="${CFG_augmentation_erasing:-0.4}"
+    local aug_bgr="${CFG_augmentation_bgr:-0.0}"
+
+    # ---- Build optional flags ----
     local optional_flags=""
-    [[ -n "$experiment_description" ]]    && optional_flags+=" --experiment-description '${experiment_description}'"
-    [[ -n "$dataset_path_override" ]]     && optional_flags+=" --dataset-path-override '${dataset_path_override}'"
-    [[ -n "$dataset_sample_size" ]]       && optional_flags+=" --dataset-sample-size ${dataset_sample_size}"
-    [[ -n "$model_pretrained_weights" ]]  && optional_flags+=" --model-pretrained-weights '${model_pretrained_weights}'"
-    [[ -n "$checkpointing_resume_from" ]] && optional_flags+=" --checkpointing-resume-from '${checkpointing_resume_from}'"
+    optional_flags+="$(append_optional --experiment-description "$experiment_description")"
+    optional_flags+="$(append_optional --dataset-path-override "$dataset_path_override")"
+    [[ -n "$dataset_sample_size" && "$dataset_sample_size" != "null" ]] && \
+        optional_flags+=" --dataset-sample-size ${dataset_sample_size}"
+    optional_flags+="$(append_optional --model-pretrained-weights "$model_pretrained_weights")"
+    optional_flags+="$(append_optional --checkpointing-resume-from "$checkpointing_resume_from")"
+    [[ -n "$training_freeze" && "$training_freeze" != "null" ]] && \
+        optional_flags+=" --training-freeze ${training_freeze}"
+
+    # ---- Determine output path ----
+    local output_path
+    if [[ "$MODE" == "docker" ]]; then
+        output_path="/artifacts/validated_config.json"
+    else
+        output_path="${REPO_ROOT}/artifacts/validated_config.json"
+    fi
 
     if [[ "$MODE" == "docker" ]]; then
         [[ "$SKIP_BUILD" == false ]] && docker_build config_validation
@@ -282,13 +350,43 @@ run_config_validation() {
             "--training-image-size ${training_image_size}" \
             "--training-learning-rate ${training_learning_rate}" \
             "--training-optimizer '${training_optimizer}'" \
+            "--training-cos-lr ${training_cos_lr}" \
+            "--training-lrf ${training_lrf}" \
+            "--training-momentum ${training_momentum}" \
             "--training-warmup-epochs ${training_warmup_epochs}" \
             "--training-warmup-momentum ${training_warmup_momentum}" \
             "--training-weight-decay ${training_weight_decay}" \
+            "--training-dropout ${training_dropout}" \
+            "--training-label-smoothing ${training_label_smoothing}" \
+            "--training-nbs ${training_nbs}" \
+            "--training-amp ${training_amp}" \
+            "--training-close-mosaic ${training_close_mosaic}" \
+            "--training-seed ${training_seed}" \
+            "--training-deterministic ${training_deterministic}" \
+            "--training-pose ${training_pose}" \
+            "--training-kobj ${training_kobj}" \
+            "--training-box ${training_box}" \
+            "--training-cls ${training_cls}" \
+            "--training-dfl ${training_dfl}" \
             "--checkpointing-interval-epochs ${checkpointing_interval_epochs}" \
             "--checkpointing-storage-path '${checkpointing_storage_path}'" \
             "--early-stopping-patience ${early_stopping_patience}" \
-            "--output-path /artifacts/validated_config.json" \
+            "--aug-hsv-h ${aug_hsv_h}" \
+            "--aug-hsv-s ${aug_hsv_s}" \
+            "--aug-hsv-v ${aug_hsv_v}" \
+            "--aug-degrees ${aug_degrees}" \
+            "--aug-translate ${aug_translate}" \
+            "--aug-scale ${aug_scale}" \
+            "--aug-shear ${aug_shear}" \
+            "--aug-perspective ${aug_perspective}" \
+            "--aug-flipud ${aug_flipud}" \
+            "--aug-fliplr ${aug_fliplr}" \
+            "--aug-mosaic ${aug_mosaic}" \
+            "--aug-mixup ${aug_mixup}" \
+            "--aug-copy-paste ${aug_copy_paste}" \
+            "--aug-erasing ${aug_erasing}" \
+            "--aug-bgr ${aug_bgr}" \
+            "--output-path ${output_path}" \
             "${optional_flags}"
     else
         run_cmd "cd '${REPO_ROOT}/config_validation' && \
@@ -303,13 +401,43 @@ run_config_validation() {
                 --training-image-size ${training_image_size} \
                 --training-learning-rate ${training_learning_rate} \
                 --training-optimizer '${training_optimizer}' \
+                --training-cos-lr ${training_cos_lr} \
+                --training-lrf ${training_lrf} \
+                --training-momentum ${training_momentum} \
                 --training-warmup-epochs ${training_warmup_epochs} \
                 --training-warmup-momentum ${training_warmup_momentum} \
                 --training-weight-decay ${training_weight_decay} \
+                --training-dropout ${training_dropout} \
+                --training-label-smoothing ${training_label_smoothing} \
+                --training-nbs ${training_nbs} \
+                --training-amp ${training_amp} \
+                --training-close-mosaic ${training_close_mosaic} \
+                --training-seed ${training_seed} \
+                --training-deterministic ${training_deterministic} \
+                --training-pose ${training_pose} \
+                --training-kobj ${training_kobj} \
+                --training-box ${training_box} \
+                --training-cls ${training_cls} \
+                --training-dfl ${training_dfl} \
                 --checkpointing-interval-epochs ${checkpointing_interval_epochs} \
                 --checkpointing-storage-path '${checkpointing_storage_path}' \
                 --early-stopping-patience ${early_stopping_patience} \
-                --output-path '${REPO_ROOT}/.tmp/validated_config.json' \
+                --aug-hsv-h ${aug_hsv_h} \
+                --aug-hsv-s ${aug_hsv_s} \
+                --aug-hsv-v ${aug_hsv_v} \
+                --aug-degrees ${aug_degrees} \
+                --aug-translate ${aug_translate} \
+                --aug-scale ${aug_scale} \
+                --aug-shear ${aug_shear} \
+                --aug-perspective ${aug_perspective} \
+                --aug-flipud ${aug_flipud} \
+                --aug-fliplr ${aug_fliplr} \
+                --aug-mosaic ${aug_mosaic} \
+                --aug-mixup ${aug_mixup} \
+                --aug-copy-paste ${aug_copy_paste} \
+                --aug-erasing ${aug_erasing} \
+                --aug-bgr ${aug_bgr} \
+                --output-path '${output_path}' \
                 ${optional_flags}"
     fi
 
@@ -319,33 +447,38 @@ run_config_validation() {
 run_dataset_loading() {
     log_step "2/4 — Dataset Loading"
 
-    local source_path="${CFG_dataset_source_path:?Missing dataset.source_path in config}"
-    local format="${CFG_dataset_format:?Missing dataset.format in config}"
-    local train_split="${CFG_dataset_train_split:-0.8}"
-    local val_split="${CFG_dataset_val_split:-0.1}"
-    local test_split="${CFG_dataset_test_split:-0.1}"
+    local version="${CFG_dataset_version:?Missing dataset.version in config}"
+    local source="${CFG_dataset_source:?Missing dataset.source in config}"
+    local seed="${CFG_dataset_seed:-42}"
     local output_dir="${REPO_ROOT}/artifacts/dataset"
+
+    # Optional fields
+    local path_override="${CFG_dataset_path_override:-}"
+    local sample_size="${CFG_dataset_sample_size:-}"
+
+    local optional_flags=""
+    optional_flags+="$(append_optional --path-override "$path_override")"
+    [[ -n "$sample_size" && "$sample_size" != "null" ]] && \
+        optional_flags+=" --sample-size ${sample_size}"
 
     mkdir -p "$output_dir"
 
     if [[ "$MODE" == "docker" ]]; then
         [[ "$SKIP_BUILD" == false ]] && docker_build dataset_loading
         docker_run "${IMAGE_PREFIX}-dataset-loading" \
-            "--source-path '${source_path}'" \
+            "--version '${version}'" \
+            "--source '${source}'" \
             "--output-dir /artifacts/dataset" \
-            "--format '${format}'" \
-            "--train-split ${train_split}" \
-            "--val-split ${val_split}" \
-            "--test-split ${test_split}"
+            "--seed ${seed}" \
+            "${optional_flags}"
     else
         run_cmd "cd '${REPO_ROOT}/dataset_loading' && \
             poetry run dataset-loading run \
-                --source-path '${source_path}' \
+                --version '${version}' \
+                --source '${source}' \
                 --output-dir '${output_dir}' \
-                --format '${format}' \
-                --train-split ${train_split} \
-                --val-split ${val_split} \
-                --test-split ${test_split}"
+                --seed ${seed} \
+                ${optional_flags}"
     fi
 
     log_ok "Dataset loading complete -> ${output_dir}"
@@ -354,47 +487,191 @@ run_dataset_loading() {
 run_model_training() {
     log_step "3/4 — Model Training"
 
-    local model_name="${CFG_training_model_name:?Missing training.model_name in config}"
-    local epochs="${CFG_training_epochs:-10}"
-    local batch_size="${CFG_training_batch_size:-32}"
-    local learning_rate="${CFG_training_learning_rate:-0.0001}"
-    local optimizer="${CFG_training_optimizer:-adamw}"
+    # ---- Identity ----
+    local experiment_name="${CFG_experiment_name:?Missing experiment.name in config}"
+    local model_variant="${CFG_model_variant:?Missing model.variant in config}"
     local dataset_dir="${REPO_ROOT}/artifacts/dataset"
-    local cfg_output="${CFG_training_output_dir:-}"
-    local output_dir
+    local output_dir="${REPO_ROOT}/artifacts/training"
 
-    # Resolve output_dir: if the config path starts with /artifacts (Docker convention),
-    # map it under REPO_ROOT for local runs; otherwise use as-is or fall back to default.
-    if [[ "$MODE" == "local" && "$cfg_output" == /artifacts* ]]; then
-        output_dir="${REPO_ROOT}${cfg_output}"
-    elif [[ -n "$cfg_output" ]]; then
-        output_dir="$cfg_output"
-    else
-        output_dir="${REPO_ROOT}/artifacts/checkpoints"
-    fi
+    # ---- Weight init / resume ----
+    local pretrained_weights="${CFG_model_pretrained_weights:-}"
+    local resume_from="${CFG_checkpointing_resume_from:-}"
+
+    # ---- Core schedule ----
+    local epochs="${CFG_training_epochs:-100}"
+    local batch_size="${CFG_training_batch_size:-16}"
+    local image_size="${CFG_training_image_size:-640}"
+
+    # ---- Learning rate ----
+    local learning_rate="${CFG_training_learning_rate:-0.01}"
+    local cos_lr="${CFG_training_cos_lr:-true}"
+    local lrf="${CFG_training_lrf:-0.01}"
+
+    # ---- Optimizer ----
+    local optimizer="${CFG_training_optimizer:-SGD}"
+    local momentum="${CFG_training_momentum:-0.937}"
+    local weight_decay="${CFG_training_weight_decay:-0.0005}"
+
+    # ---- Warmup ----
+    local warmup_epochs="${CFG_training_warmup_epochs:-3.0}"
+    local warmup_momentum="${CFG_training_warmup_momentum:-0.8}"
+
+    # ---- Regularization ----
+    local dropout="${CFG_training_dropout:-0.0}"
+    local label_smoothing="${CFG_training_label_smoothing:-0.0}"
+
+    # ---- Training efficiency ----
+    local nbs="${CFG_training_nbs:-64}"
+    local freeze="${CFG_training_freeze:-}"
+    local amp="${CFG_training_amp:-true}"
+    local close_mosaic="${CFG_training_close_mosaic:-10}"
+    local seed="${CFG_training_seed:-0}"
+    local deterministic="${CFG_training_deterministic:-true}"
+
+    # ---- Pose loss gains ----
+    local pose_gain="${CFG_training_pose:-12.0}"
+    local kobj="${CFG_training_kobj:-2.0}"
+    local box="${CFG_training_box:-7.5}"
+    local cls_gain="${CFG_training_cls:-0.5}"
+    local dfl="${CFG_training_dfl:-1.5}"
+
+    # ---- Early stopping ----
+    local patience="${CFG_early_stopping_patience:-50}"
+
+    # ---- Checkpointing ----
+    # Parse s3://bucket/prefix from checkpointing.storage_path
+    local storage_path="${CFG_checkpointing_storage_path:-s3://io-mlops/checkpoints}"
+    local s3_path="${storage_path#s3://}"
+    local checkpoint_bucket="${s3_path%%/*}"
+    local checkpoint_prefix="${s3_path#*/}"
+    local checkpoint_interval="${CFG_checkpointing_interval_epochs:-10}"
+
+    # ---- Augmentation ----
+    local hsv_h="${CFG_augmentation_hsv_h:-0.015}"
+    local hsv_s="${CFG_augmentation_hsv_s:-0.7}"
+    local hsv_v="${CFG_augmentation_hsv_v:-0.4}"
+    local degrees="${CFG_augmentation_degrees:-0.0}"
+    local translate="${CFG_augmentation_translate:-0.1}"
+    local scale="${CFG_augmentation_scale:-0.5}"
+    local shear="${CFG_augmentation_shear:-0.0}"
+    local perspective="${CFG_augmentation_perspective:-0.0}"
+    local flipud="${CFG_augmentation_flipud:-0.0}"
+    local fliplr="${CFG_augmentation_fliplr:-0.0}"
+    local mosaic="${CFG_augmentation_mosaic:-1.0}"
+    local mixup="${CFG_augmentation_mixup:-0.0}"
+    local copy_paste="${CFG_augmentation_copy_paste:-0.0}"
+    local erasing="${CFG_augmentation_erasing:-0.4}"
+    local bgr="${CFG_augmentation_bgr:-0.0}"
+
+    # ---- Optional flags ----
+    local optional_flags=""
+    optional_flags+="$(append_optional --pretrained-weights "$pretrained_weights")"
+    optional_flags+="$(append_optional --resume-from "$resume_from")"
+    [[ -n "$freeze" && "$freeze" != "null" ]] && \
+        optional_flags+=" --freeze ${freeze}"
 
     mkdir -p "$output_dir"
 
     if [[ "$MODE" == "docker" ]]; then
         [[ "$SKIP_BUILD" == false ]] && docker_build model_training
         docker_run "${IMAGE_PREFIX}-model-training" \
-            "--model-name '${model_name}'" \
+            "--model-variant '${model_variant}'" \
+            "--experiment-name '${experiment_name}'" \
             "--dataset-dir /artifacts/dataset" \
-            "--output-dir /artifacts/checkpoints" \
+            "--output-dir /artifacts/training" \
             "--epochs ${epochs}" \
             "--batch-size ${batch_size}" \
+            "--image-size ${image_size}" \
             "--learning-rate ${learning_rate}" \
-            "--optimizer '${optimizer}'"
+            "--cos-lr ${cos_lr}" \
+            "--lrf ${lrf}" \
+            "--optimizer '${optimizer}'" \
+            "--momentum ${momentum}" \
+            "--weight-decay ${weight_decay}" \
+            "--warmup-epochs ${warmup_epochs}" \
+            "--warmup-momentum ${warmup_momentum}" \
+            "--dropout ${dropout}" \
+            "--label-smoothing ${label_smoothing}" \
+            "--nbs ${nbs}" \
+            "--amp ${amp}" \
+            "--close-mosaic ${close_mosaic}" \
+            "--seed ${seed}" \
+            "--deterministic ${deterministic}" \
+            "--pose ${pose_gain}" \
+            "--kobj ${kobj}" \
+            "--box ${box}" \
+            "--cls ${cls_gain}" \
+            "--dfl ${dfl}" \
+            "--patience ${patience}" \
+            "--checkpoint-interval ${checkpoint_interval}" \
+            "--checkpoint-bucket '${checkpoint_bucket}'" \
+            "--checkpoint-prefix '${checkpoint_prefix}'" \
+            "--hsv-h ${hsv_h}" \
+            "--hsv-s ${hsv_s}" \
+            "--hsv-v ${hsv_v}" \
+            "--degrees ${degrees}" \
+            "--translate ${translate}" \
+            "--scale ${scale}" \
+            "--shear ${shear}" \
+            "--perspective ${perspective}" \
+            "--flipud ${flipud}" \
+            "--fliplr ${fliplr}" \
+            "--mosaic ${mosaic}" \
+            "--mixup ${mixup}" \
+            "--copy-paste ${copy_paste}" \
+            "--erasing ${erasing}" \
+            "--bgr ${bgr}" \
+            "${optional_flags}"
     else
         run_cmd "cd '${REPO_ROOT}/model_training' && \
             poetry run model-training run \
-                --model-name '${model_name}' \
+                --model-variant '${model_variant}' \
+                --experiment-name '${experiment_name}' \
                 --dataset-dir '${dataset_dir}' \
                 --output-dir '${output_dir}' \
                 --epochs ${epochs} \
                 --batch-size ${batch_size} \
+                --image-size ${image_size} \
                 --learning-rate ${learning_rate} \
-                --optimizer '${optimizer}'"
+                --cos-lr ${cos_lr} \
+                --lrf ${lrf} \
+                --optimizer '${optimizer}' \
+                --momentum ${momentum} \
+                --weight-decay ${weight_decay} \
+                --warmup-epochs ${warmup_epochs} \
+                --warmup-momentum ${warmup_momentum} \
+                --dropout ${dropout} \
+                --label-smoothing ${label_smoothing} \
+                --nbs ${nbs} \
+                --amp ${amp} \
+                --close-mosaic ${close_mosaic} \
+                --seed ${seed} \
+                --deterministic ${deterministic} \
+                --pose ${pose_gain} \
+                --kobj ${kobj} \
+                --box ${box} \
+                --cls ${cls_gain} \
+                --dfl ${dfl} \
+                --patience ${patience} \
+                --checkpoint-interval ${checkpoint_interval} \
+                --checkpoint-bucket '${checkpoint_bucket}' \
+                --checkpoint-prefix '${checkpoint_prefix}' \
+                --hsv-h ${hsv_h} \
+                --hsv-s ${hsv_s} \
+                --hsv-v ${hsv_v} \
+                --degrees ${degrees} \
+                --translate ${translate} \
+                --scale ${scale} \
+                --shear ${shear} \
+                --perspective ${perspective} \
+                --flipud ${flipud} \
+                --fliplr ${fliplr} \
+                --mosaic ${mosaic} \
+                --mixup ${mixup} \
+                --copy-paste ${copy_paste} \
+                --erasing ${erasing} \
+                --bgr ${bgr} \
+                ${optional_flags}"
     fi
 
     log_ok "Model training complete -> ${output_dir}"
@@ -408,17 +685,8 @@ run_model_registration() {
     local promote_to="${CFG_registration_promote_to:-}"
     local tags="${CFG_registration_tags:-}"
 
-    # Find the latest checkpoint
-    local cfg_ckpt_dir="${CFG_training_output_dir:-}"
-    local checkpoint_dir
-
-    if [[ "$MODE" == "local" && "$cfg_ckpt_dir" == /artifacts* ]]; then
-        checkpoint_dir="${REPO_ROOT}${cfg_ckpt_dir}"
-    elif [[ -n "$cfg_ckpt_dir" ]]; then
-        checkpoint_dir="$cfg_ckpt_dir"
-    else
-        checkpoint_dir="${REPO_ROOT}/artifacts/checkpoints"
-    fi
+    # Checkpoint directory matches model_training output
+    local checkpoint_dir="${REPO_ROOT}/artifacts/training"
     local checkpoint_path=""
 
     if [[ -d "$checkpoint_dir" ]]; then
@@ -451,7 +719,7 @@ run_model_registration() {
         [[ "$SKIP_BUILD" == false ]] && docker_build model_registration
         docker_run "${IMAGE_PREFIX}-model-registration" \
             "--model-name '${model_name}'" \
-            "--checkpoint-path /artifacts/checkpoints/$(basename "${checkpoint_path}")" \
+            "--checkpoint-path /artifacts/training/$(basename "${checkpoint_path}")" \
             "--registry-url '${registry_url}'" \
             "${extra_flags}"
     else

@@ -12,7 +12,7 @@ dataset:
   source: "s3"                    # "s3" or "lakefs"
   path_override: null             # Optional: full S3 path override
   sample_size: null               # null = full dataset; integer = sampled subset
-  seed: 42                        # Seed for reproducible sampling
+  seed: 42                        # Seed for reproducible dataset sampling
 
 # --- Model Configuration ---
 model:
@@ -21,17 +21,51 @@ model:
 
 # --- Training Hyperparameters ---
 training:
+  # Core schedule
   epochs: 100
   batch_size: 16
   image_size: 640                 # Must be a multiple of 32
-  learning_rate: 0.01
+
+  # Learning rate
+  learning_rate: 0.01             # Initial LR (lr0 in Ultralytics)
+  cos_lr: true                    # Use cosine LR schedule (replaces training.scheduler.cos_lr)
+  lrf: 0.01                       # Final LR = learning_rate * lrf (must be in (0, 1])
+
+  # Optimizer
   optimizer: "SGD"                # SGD | Adam | AdamW
-  scheduler:
-    cos_lr: true                  # Cosine LR schedule (informational; not validated)
-    lrf: 0.01                     # Final LR factor
+  momentum: 0.937                 # SGD momentum / Adam beta1
+  weight_decay: 0.0005
+
+  # Warmup
   warmup_epochs: 3.0
   warmup_momentum: 0.8
-  weight_decay: 0.0005
+
+  # Regularization
+  dropout: 0.0                    # Dropout rate (applied in classifier head)
+  label_smoothing: 0.0            # Label smoothing epsilon [0.0, 1.0)
+
+  # Gradient accumulation scaling
+  nbs: 64                         # Nominal batch size; Ultralytics scales gradients so that
+                                  # effective_lr = lr * (batch_size / nbs)
+
+  # Fine-tuning control
+  freeze: null                    # null = train all layers; integer = freeze first N layers
+                                  # Useful when resuming from strong pretrained_weights
+
+  # Training efficiency
+  amp: true                       # Automatic Mixed Precision (FP16); halves GPU memory use
+  close_mosaic: 10                # Disable mosaic augmentation for last N epochs (0 = never)
+
+  # Reproducibility
+  seed: 0                         # Global training seed (separate from dataset.seed)
+  deterministic: true             # Enable cuDNN deterministic mode (slight speed penalty)
+
+  # Pose-estimation loss gains — primary quality levers for spacecraft keypoints
+  pose: 12.0                      # Keypoint regression loss gain
+  kobj: 2.0                       # Keypoint objectness loss gain
+  box: 7.5                        # Bounding-box regression loss gain
+  cls: 0.5                        # Classification loss gain
+  dfl: 1.5                        # Distribution Focal Loss gain
 
 # --- Checkpointing ---
 checkpointing:
@@ -44,17 +78,36 @@ early_stopping:
   patience: 50                    # Epochs without improvement before stopping
 
 # --- Augmentation (passed directly to Ultralytics) ---
+# Spacecraft imagery notes:
+#   - fliplr disabled: satellites have no left-right symmetry in canonical pose
+#   - flipud disabled: orbital geometry has a defined "up"
+#   - degrees: 0.0 — pose labels are rotation-sensitive; random rotation breaks keypoint geometry
+#   - perspective: use with extreme caution; > 0.001 causes severe keypoint displacement
 augmentation:
+  # Colour-space jitter
   hsv_h: 0.015
   hsv_s: 0.7
   hsv_v: 0.4
+
+  # Geometric
   degrees: 0.0
   translate: 0.1
   scale: 0.5
+  shear: 0.0
+  perspective: 0.0               # Range [0.0, 0.001]; projective warp — keep near 0 for pose
+
+  # Flip
   flipud: 0.0
-  fliplr: 0.0                     # Disabled for spacecraft (no left-right symmetry)
+  fliplr: 0.0                    # Disabled for spacecraft (no left-right symmetry)
+
+  # Composition
   mosaic: 1.0
   mixup: 0.0
+  copy_paste: 0.0                # Segment copy-paste probability
+
+  # Erasing / channel
+  erasing: 0.4                   # Random erasing probability [0.0, 0.9]
+  bgr: 0.0                       # BGR channel flip probability
 
 # --- Resource Requests (informational; not validated by pipeline) ---
 resources:
