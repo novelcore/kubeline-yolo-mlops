@@ -15,6 +15,8 @@ python = ">=3.12,<=3.14"
 pydantic = "^2.11.5"
 typer = "^0.16.0"
 pydantic-settings = "^2.10.1"
+boto3 = "^1.38.0"
+pyyaml = "^6.0"
 
 [tool.poetry.group.dev.dependencies]
 black = "^25.1.0"
@@ -22,6 +24,8 @@ isort = "^6.0.1"
 mypy = "^1.15.0"
 pytest = "^8.4.1"
 pytest-cov = "^6.2.1"
+types-pyyaml = "^6.0"
+boto3-stubs = {version = "^1.38.0", extras = ["s3"]}
 
 [tool.poetry.scripts]
 dataset-loading = "app.cli:main"
@@ -44,3 +48,7 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["boto3", "boto3.*", "botocore", "botocore.*"]
+ignore_missing_imports = true
