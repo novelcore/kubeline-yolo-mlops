@@ -540,7 +540,7 @@ run_model_training() {
 
     # ---- Checkpointing ----
     # Parse s3://bucket/prefix from checkpointing.storage_path
-    local storage_path="${CFG_checkpointing_storage_path:-s3://io-mlops/checkpoints}"
+    local storage_path="${CFG_checkpointing_storage_path:-s3://temp-mlops/checkpoints}"
     local s3_path="${storage_path#s3://}"
     local checkpoint_bucket="${s3_path%%/*}"
     local checkpoint_prefix="${s3_path#*/}"

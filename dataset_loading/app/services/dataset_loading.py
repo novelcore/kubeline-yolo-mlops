@@ -37,7 +37,7 @@ _EXPECTED_TOKENS_PER_LINE = 1 + 4 + 11 * 3  # 38
 _SPOT_CHECK_LINES = 10
 
 # Default S3 bucket and key prefix for the canonical dataset location
-_DEFAULT_BUCKET = "io-mlops"
+_DEFAULT_BUCKET = "temp-mlops"
 _DEFAULT_PREFIX_TEMPLATE = "datasets/speedplus_yolo/{version}/"
 
 # ---------------------------------------------------------------------------

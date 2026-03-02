@@ -122,7 +122,7 @@ class TrainingParams(BaseModel):
 
     # ---- Checkpointing ----
     checkpoint_interval: int = Field(default=10, gt=0)
-    checkpoint_bucket: str = Field(default="io-mlops")
+    checkpoint_bucket: str = Field(default="temp-mlops")
     checkpoint_prefix: str = Field(default="checkpoints")
 
     # ---- Augmentation ----

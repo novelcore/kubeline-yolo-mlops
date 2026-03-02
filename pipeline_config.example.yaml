@@ -70,7 +70,7 @@ training:
 # --- Checkpointing ---
 checkpointing:
   interval_epochs: 10             # Save checkpoint every N epochs
-  storage_path: "s3://io-mlops/checkpoints"
+  storage_path: "s3://temp-mlops/checkpoints"
   resume_from: null               # null | "auto" | specific S3 path to .pt file
 
 # --- Early Stopping ---

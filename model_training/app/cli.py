@@ -140,7 +140,7 @@ def main() -> None:
             help="Upload an intermediate checkpoint to S3 every N epochs.",
         ),
         checkpoint_bucket: str = typer.Option(
-            "io-mlops",
+            "temp-mlops",
             help="S3 bucket for checkpoint storage.",
         ),
         checkpoint_prefix: str = typer.Option(
