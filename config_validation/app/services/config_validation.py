@@ -1,4 +1,4 @@
-import json
+import yaml
 import logging
 import time
 from pathlib import Path
@@ -32,8 +32,8 @@ class ConfigValidationService:
         self._mlflow_tracking_uri = mlflow_tracking_uri
         self._logger = logging.getLogger(__name__)
 
-    def run(self, config_dict: dict, output_path: Optional[str] = None) -> PipelineConfig:
-        """Validate and optionally write the pipeline configuration."""
+    def run(self, config_dict: dict[str, Any], output_path: Optional[str] = None) -> PipelineConfig:
+        """Validate a pipeline configuration dict and optionally write the result."""
         try:
             self._logger.info("Validating pipeline configuration")
 
@@ -47,6 +47,8 @@ class ConfigValidationService:
                 self._check_checkpoint_resume(config)
             else:
                 self._logger.info("Liveness checks skipped (SKIP_LIVENESS_CHECKS=true)")
+
+            self._log_config(config)
 
             if output_path is not None:
                 self._write_output(config, output_path)
@@ -62,6 +64,114 @@ class ConfigValidationService:
         except Exception as e:
             self._logger.error(f"Unexpected error during config validation: {e}")
             raise ConfigValidationError(f"Failed to validate config: {e}") from e
+
+    def _log_config(self, config: PipelineConfig) -> None:
+        """Log all validated configuration parameters in a readable format."""
+        sections = [
+            ("Experiment", {
+                "Name": config.experiment.name,
+                "Description": config.experiment.description or "(none)",
+                "Tags": config.experiment.tags or "(none)",
+            }),
+            ("Dataset", {
+                "Version": config.dataset.version,
+                "Source": config.dataset.source,
+                "Path override": config.dataset.path_override or "(none)",
+                "Sample size": config.dataset.sample_size or "full",
+                "Seed": config.dataset.seed,
+            }),
+            ("Model", {
+                "Variant": config.model.variant,
+                "Pretrained weights": config.model.pretrained_weights or "(default)",
+            }),
+            ("Training", {
+                "Epochs": config.training.epochs,
+                "Batch size": config.training.batch_size,
+                "Image size": config.training.image_size,
+                "Learning rate": config.training.learning_rate,
+                "Cosine LR": config.training.cos_lr,
+                "Final LR ratio (lrf)": config.training.lrf,
+                "Optimizer": config.training.optimizer,
+                "Momentum": config.training.momentum,
+                "Weight decay": config.training.weight_decay,
+                "Warmup epochs": config.training.warmup_epochs,
+                "Warmup momentum": config.training.warmup_momentum,
+                "Dropout": config.training.dropout,
+                "Label smoothing": config.training.label_smoothing,
+                "Nominal batch size (nbs)": config.training.nbs,
+                "Freeze layers": config.training.freeze or "(none)",
+                "AMP": config.training.amp,
+                "Close mosaic": config.training.close_mosaic,
+                "Seed": config.training.seed,
+                "Deterministic": config.training.deterministic,
+            }),
+            ("Pose Loss Gains", {
+                "Pose (keypoint regression)": config.training.pose,
+                "Kobj (keypoint objectness)": config.training.kobj,
+                "Box (bounding-box)": config.training.box,
+                "Cls (classification)": config.training.cls,
+                "Dfl (distribution focal)": config.training.dfl,
+            }),
+            ("Checkpointing", {
+                "Interval (epochs)": config.checkpointing.interval_epochs,
+                "Storage path": config.checkpointing.storage_path,
+                "Resume from": config.checkpointing.resume_from or "(none)",
+            }),
+            ("Early Stopping", {
+                "Patience (epochs)": config.early_stopping.patience,
+            }),
+            ("Augmentation", {
+                "HSV hue": config.augmentation.hsv_h,
+                "HSV saturation": config.augmentation.hsv_s,
+                "HSV value": config.augmentation.hsv_v,
+                "Degrees": config.augmentation.degrees,
+                "Translate": config.augmentation.translate,
+                "Scale": config.augmentation.scale,
+                "Shear": config.augmentation.shear,
+                "Perspective": config.augmentation.perspective,
+                "Flip UD": config.augmentation.flipud,
+                "Flip LR": config.augmentation.fliplr,
+                "Mosaic": config.augmentation.mosaic,
+                "MixUp": config.augmentation.mixup,
+                "Copy-paste": config.augmentation.copy_paste,
+                "Erasing": config.augmentation.erasing,
+                "BGR": config.augmentation.bgr,
+            }),
+        ]
+
+        BOLD = "\033[1m"
+        DIM = "\033[2m"
+        CYAN = "\033[36m"
+        RESET = "\033[0m"
+
+        max_key_len = max(
+            len(key) for _, params in sections for key in params
+        )
+
+        self._logger.info(f"{BOLD}Validated configuration:{RESET}")
+        for section_name, params in sections:
+            self._logger.info(f"  {CYAN}{BOLD}{section_name}{RESET}")
+            for key, value in params.items():
+                self._logger.info(
+                    f"    {DIM}{key:<{max_key_len}}{RESET}  {value}"
+                )
+
+    def _load_yaml(self, config_path: str) -> dict[str, Any]:
+        """Load a YAML file from disk."""
+        path = Path(config_path)
+        if not path.exists():
+            raise ConfigValidationError(f"Config file not found: {config_path}")
+        if path.suffix not in (".yaml", ".yml"):
+            raise ConfigValidationError(
+                f"Config file must be YAML (.yaml or .yml): {config_path}"
+            )
+
+        with open(path) as f:
+            data = yaml.safe_load(f)
+
+        if not isinstance(data, dict):
+            raise ConfigValidationError("Config file must contain a YAML mapping")
+        return data
 
     def _validate_schema(self, raw: dict[str, Any]) -> PipelineConfig:
         """Validate raw dict against the PipelineConfig schema."""

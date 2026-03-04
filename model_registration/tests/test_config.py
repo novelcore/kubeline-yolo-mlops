@@ -67,5 +67,7 @@ def test_config_missing_mlflow_tracking_uri_raises(
 ) -> None:
     monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
 
+    # Pass _env_file=None so pydantic-settings does not fall back to the
+    # local .env file, which would otherwise satisfy the required field.
     with pytest.raises(Exception):
-        Config()
+        Config(_env_file=None)

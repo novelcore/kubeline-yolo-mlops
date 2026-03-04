@@ -236,7 +236,7 @@ docker_run() {
         -v '${CONFIG_PATH}:/data/pipeline_config.yaml:ro' \
         -v '${REPO_ROOT}/artifacts:/artifacts' \
         '${image}:latest' \
-        run ${args[*]}"
+        ${args[*]}"
 }
 
 # ---------------------------------------------------------------------------
@@ -247,6 +247,21 @@ append_optional() {
     local value="$2"
     if [[ -n "$value" && "$value" != "null" ]]; then
         echo " ${flag} '${value}'"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Helper: convert a boolean value to Typer flag style
+# Usage: $(bool_flag --cos-lr "$cos_lr")
+# Outputs "--cos-lr" when true, "--no-cos-lr" when false
+# ---------------------------------------------------------------------------
+bool_flag() {
+    local flag="$1"
+    local value="$2"
+    if [[ "$value" == "true" || "$value" == "True" || "$value" == "1" ]]; then
+        echo "$flag"
+    else
+        echo "--no-${flag#--}"
     fi
 }
 
@@ -270,15 +285,16 @@ run_config_validation() {
     local checkpointing_storage_path="${CFG_checkpointing_storage_path:?Missing checkpointing.storage_path in config}"
     local early_stopping_patience="${CFG_early_stopping_patience:?Missing early_stopping.patience in config}"
 
-    # ---- Optional / defaulted fields ----
+    # ---- Optional ----
     local experiment_description="${CFG_experiment_description:-}"
     local dataset_path_override="${CFG_dataset_path_override:-}"
     local dataset_sample_size="${CFG_dataset_sample_size:-}"
     local dataset_seed="${CFG_dataset_seed:-42}"
     local model_pretrained_weights="${CFG_model_pretrained_weights:-}"
     local checkpointing_resume_from="${CFG_checkpointing_resume_from:-}"
+    local training_freeze="${CFG_training_freeze:-}"
 
-    # Training defaults
+    # ---- Training defaults ----
     local training_cos_lr="${CFG_training_cos_lr:-true}"
     local training_lrf="${CFG_training_lrf:-0.01}"
     local training_momentum="${CFG_training_momentum:-0.937}"
@@ -288,20 +304,19 @@ run_config_validation() {
     local training_dropout="${CFG_training_dropout:-0.0}"
     local training_label_smoothing="${CFG_training_label_smoothing:-0.0}"
     local training_nbs="${CFG_training_nbs:-64}"
-    local training_freeze="${CFG_training_freeze:-}"
     local training_amp="${CFG_training_amp:-true}"
     local training_close_mosaic="${CFG_training_close_mosaic:-10}"
     local training_seed="${CFG_training_seed:-0}"
     local training_deterministic="${CFG_training_deterministic:-true}"
 
-    # Pose loss gains
+    # ---- Pose gains ----
     local training_pose="${CFG_training_pose:-12.0}"
     local training_kobj="${CFG_training_kobj:-2.0}"
     local training_box="${CFG_training_box:-7.5}"
     local training_cls="${CFG_training_cls:-0.5}"
     local training_dfl="${CFG_training_dfl:-1.5}"
 
-    # Augmentation defaults
+    # ---- Augmentation ----
     local aug_hsv_h="${CFG_augmentation_hsv_h:-0.015}"
     local aug_hsv_s="${CFG_augmentation_hsv_s:-0.7}"
     local aug_hsv_v="${CFG_augmentation_hsv_v:-0.4}"
@@ -318,18 +333,7 @@ run_config_validation() {
     local aug_erasing="${CFG_augmentation_erasing:-0.4}"
     local aug_bgr="${CFG_augmentation_bgr:-0.0}"
 
-    # ---- Build optional flags ----
-    local optional_flags=""
-    optional_flags+="$(append_optional --experiment-description "$experiment_description")"
-    optional_flags+="$(append_optional --dataset-path-override "$dataset_path_override")"
-    [[ -n "$dataset_sample_size" && "$dataset_sample_size" != "null" ]] && \
-        optional_flags+=" --dataset-sample-size ${dataset_sample_size}"
-    optional_flags+="$(append_optional --model-pretrained-weights "$model_pretrained_weights")"
-    optional_flags+="$(append_optional --checkpointing-resume-from "$checkpointing_resume_from")"
-    [[ -n "$training_freeze" && "$training_freeze" != "null" ]] && \
-        optional_flags+=" --training-freeze ${training_freeze}"
-
-    # ---- Determine output path ----
+    # ---- Output path ----
     local output_path
     if [[ "$MODE" == "docker" ]]; then
         output_path="/artifacts/validated_config.json"
@@ -337,108 +341,73 @@ run_config_validation() {
         output_path="${REPO_ROOT}/artifacts/validated_config.json"
     fi
 
+    # ---- Build args array (SAFE) ----
+    local args=(
+        --experiment-name "$experiment_name"
+        --dataset-version "$dataset_version"
+        --dataset-source "$dataset_source"
+        --dataset-seed "$dataset_seed"
+        --model-variant "$model_variant"
+        --training-epochs "$training_epochs"
+        --training-batch-size "$training_batch_size"
+        --training-image-size "$training_image_size"
+        --training-learning-rate "$training_learning_rate"
+        --training-optimizer "$training_optimizer"
+        --training-lrf "$training_lrf"
+        --training-momentum "$training_momentum"
+        --training-warmup-epochs "$training_warmup_epochs"
+        --training-warmup-momentum "$training_warmup_momentum"
+        --training-weight-decay "$training_weight_decay"
+        --training-dropout "$training_dropout"
+        --training-label-smoothing "$training_label_smoothing"
+        --training-nbs "$training_nbs"
+        --training-close-mosaic "$training_close_mosaic"
+        --training-seed "$training_seed"
+        --training-pose "$training_pose"
+        --training-kobj "$training_kobj"
+        --training-box "$training_box"
+        --training-cls "$training_cls"
+        --training-dfl "$training_dfl"
+        --checkpointing-interval-epochs "$checkpointing_interval_epochs"
+        --checkpointing-storage-path "$checkpointing_storage_path"
+        --early-stopping-patience "$early_stopping_patience"
+        --aug-hsv-h "$aug_hsv_h"
+        --aug-hsv-s "$aug_hsv_s"
+        --aug-hsv-v "$aug_hsv_v"
+        --aug-degrees "$aug_degrees"
+        --aug-translate "$aug_translate"
+        --aug-scale "$aug_scale"
+        --aug-shear "$aug_shear"
+        --aug-perspective "$aug_perspective"
+        --aug-flipud "$aug_flipud"
+        --aug-fliplr "$aug_fliplr"
+        --aug-mosaic "$aug_mosaic"
+        --aug-mixup "$aug_mixup"
+        --aug-copy-paste "$aug_copy_paste"
+        --aug-erasing "$aug_erasing"
+        --aug-bgr "$aug_bgr"
+        --output-path "$output_path"
+    )
+
+    # ---- Boolean flags (Typer uses --flag / --no-flag, not --flag true) ----
+    [[ "$training_cos_lr" == "true" ]] && args+=(--training-cos-lr) || args+=(--no-training-cos-lr)
+    [[ "$training_amp" == "true" ]] && args+=(--training-amp) || args+=(--no-training-amp)
+    [[ "$training_deterministic" == "true" ]] && args+=(--training-deterministic) || args+=(--no-training-deterministic)
+
+    # ---- Append optional safely ----
+    [[ -n "$experiment_description" && "$experiment_description" != "null" ]] && args+=(--experiment-description "$experiment_description")
+    [[ -n "$dataset_path_override" && "$dataset_path_override" != "null" ]] && args+=(--dataset-path-override "$dataset_path_override")
+    [[ -n "$dataset_sample_size" && "$dataset_sample_size" != "null" ]] && args+=(--dataset-sample-size "$dataset_sample_size")
+    [[ -n "$model_pretrained_weights" && "$model_pretrained_weights" != "null" ]] && args+=(--model-pretrained-weights "$model_pretrained_weights")
+    [[ -n "$checkpointing_resume_from" && "$checkpointing_resume_from" != "null" ]] && args+=(--checkpointing-resume-from "$checkpointing_resume_from")
+    [[ -n "$training_freeze" && "$training_freeze" != "null" ]] && args+=(--training-freeze "$training_freeze")
+
+    # ---- Execute ----
     if [[ "$MODE" == "docker" ]]; then
         [[ "$SKIP_BUILD" == false ]] && docker_build config_validation
-        docker_run "${IMAGE_PREFIX}-config-validation" \
-            "--experiment-name '${experiment_name}'" \
-            "--dataset-version '${dataset_version}'" \
-            "--dataset-source '${dataset_source}'" \
-            "--dataset-seed ${dataset_seed}" \
-            "--model-variant '${model_variant}'" \
-            "--training-epochs ${training_epochs}" \
-            "--training-batch-size ${training_batch_size}" \
-            "--training-image-size ${training_image_size}" \
-            "--training-learning-rate ${training_learning_rate}" \
-            "--training-optimizer '${training_optimizer}'" \
-            "--training-cos-lr ${training_cos_lr}" \
-            "--training-lrf ${training_lrf}" \
-            "--training-momentum ${training_momentum}" \
-            "--training-warmup-epochs ${training_warmup_epochs}" \
-            "--training-warmup-momentum ${training_warmup_momentum}" \
-            "--training-weight-decay ${training_weight_decay}" \
-            "--training-dropout ${training_dropout}" \
-            "--training-label-smoothing ${training_label_smoothing}" \
-            "--training-nbs ${training_nbs}" \
-            "--training-amp ${training_amp}" \
-            "--training-close-mosaic ${training_close_mosaic}" \
-            "--training-seed ${training_seed}" \
-            "--training-deterministic ${training_deterministic}" \
-            "--training-pose ${training_pose}" \
-            "--training-kobj ${training_kobj}" \
-            "--training-box ${training_box}" \
-            "--training-cls ${training_cls}" \
-            "--training-dfl ${training_dfl}" \
-            "--checkpointing-interval-epochs ${checkpointing_interval_epochs}" \
-            "--checkpointing-storage-path '${checkpointing_storage_path}'" \
-            "--early-stopping-patience ${early_stopping_patience}" \
-            "--aug-hsv-h ${aug_hsv_h}" \
-            "--aug-hsv-s ${aug_hsv_s}" \
-            "--aug-hsv-v ${aug_hsv_v}" \
-            "--aug-degrees ${aug_degrees}" \
-            "--aug-translate ${aug_translate}" \
-            "--aug-scale ${aug_scale}" \
-            "--aug-shear ${aug_shear}" \
-            "--aug-perspective ${aug_perspective}" \
-            "--aug-flipud ${aug_flipud}" \
-            "--aug-fliplr ${aug_fliplr}" \
-            "--aug-mosaic ${aug_mosaic}" \
-            "--aug-mixup ${aug_mixup}" \
-            "--aug-copy-paste ${aug_copy_paste}" \
-            "--aug-erasing ${aug_erasing}" \
-            "--aug-bgr ${aug_bgr}" \
-            "--output-path ${output_path}" \
-            "${optional_flags}"
+        docker_run "${IMAGE_PREFIX}-config-validation" "${args[@]}"
     else
-        run_cmd "cd '${REPO_ROOT}/config_validation' && \
-            poetry run config-validation run \
-                --experiment-name '${experiment_name}' \
-                --dataset-version '${dataset_version}' \
-                --dataset-source '${dataset_source}' \
-                --dataset-seed ${dataset_seed} \
-                --model-variant '${model_variant}' \
-                --training-epochs ${training_epochs} \
-                --training-batch-size ${training_batch_size} \
-                --training-image-size ${training_image_size} \
-                --training-learning-rate ${training_learning_rate} \
-                --training-optimizer '${training_optimizer}' \
-                --training-cos-lr ${training_cos_lr} \
-                --training-lrf ${training_lrf} \
-                --training-momentum ${training_momentum} \
-                --training-warmup-epochs ${training_warmup_epochs} \
-                --training-warmup-momentum ${training_warmup_momentum} \
-                --training-weight-decay ${training_weight_decay} \
-                --training-dropout ${training_dropout} \
-                --training-label-smoothing ${training_label_smoothing} \
-                --training-nbs ${training_nbs} \
-                --training-amp ${training_amp} \
-                --training-close-mosaic ${training_close_mosaic} \
-                --training-seed ${training_seed} \
-                --training-deterministic ${training_deterministic} \
-                --training-pose ${training_pose} \
-                --training-kobj ${training_kobj} \
-                --training-box ${training_box} \
-                --training-cls ${training_cls} \
-                --training-dfl ${training_dfl} \
-                --checkpointing-interval-epochs ${checkpointing_interval_epochs} \
-                --checkpointing-storage-path '${checkpointing_storage_path}' \
-                --early-stopping-patience ${early_stopping_patience} \
-                --aug-hsv-h ${aug_hsv_h} \
-                --aug-hsv-s ${aug_hsv_s} \
-                --aug-hsv-v ${aug_hsv_v} \
-                --aug-degrees ${aug_degrees} \
-                --aug-translate ${aug_translate} \
-                --aug-scale ${aug_scale} \
-                --aug-shear ${aug_shear} \
-                --aug-perspective ${aug_perspective} \
-                --aug-flipud ${aug_flipud} \
-                --aug-fliplr ${aug_fliplr} \
-                --aug-mosaic ${aug_mosaic} \
-                --aug-mixup ${aug_mixup} \
-                --aug-copy-paste ${aug_copy_paste} \
-                --aug-erasing ${aug_erasing} \
-                --aug-bgr ${aug_bgr} \
-                --output-path '${output_path}' \
-                ${optional_flags}"
+        (cd "${REPO_ROOT}/config_validation" && poetry run config-validation "${args[@]}")
     fi
 
     log_ok "Config validation passed"
@@ -461,6 +430,9 @@ run_dataset_loading() {
     [[ -n "$sample_size" && "$sample_size" != "null" ]] && \
         optional_flags+=" --sample-size ${sample_size}"
 
+    # S3 streaming: download labels only — images will be streamed during training
+    [[ "$source" == "s3" ]] && optional_flags+=" --labels-only"
+
     mkdir -p "$output_dir"
 
     if [[ "$MODE" == "docker" ]]; then
@@ -473,7 +445,7 @@ run_dataset_loading() {
             "${optional_flags}"
     else
         run_cmd "cd '${REPO_ROOT}/dataset_loading' && \
-            poetry run dataset-loading run \
+            poetry run dataset-loading \
                 --version '${version}' \
                 --source '${source}' \
                 --output-dir '${output_dir}' \
@@ -563,12 +535,33 @@ run_model_training() {
     local erasing="${CFG_augmentation_erasing:-0.4}"
     local bgr="${CFG_augmentation_bgr:-0.0}"
 
+    # ---- Dataset source (s3 streaming) ----
+    local dataset_source="${CFG_dataset_source:-local}"
+
     # ---- Optional flags ----
     local optional_flags=""
     optional_flags+="$(append_optional --pretrained-weights "$pretrained_weights")"
     optional_flags+="$(append_optional --resume-from "$resume_from")"
     [[ -n "$freeze" && "$freeze" != "null" ]] && \
         optional_flags+=" --freeze ${freeze}"
+
+    # S3 streaming: pass bucket/prefix so training streams images directly
+    if [[ "$dataset_source" == "s3" ]]; then
+        local dataset_path_override="${CFG_dataset_path_override:-}"
+        local s3_bucket s3_prefix
+        if [[ -n "$dataset_path_override" && "$dataset_path_override" != "null" ]]; then
+            # Parse s3://bucket/prefix from the override
+            local s3_path="${dataset_path_override#s3://}"
+            s3_bucket="${s3_path%%/*}"
+            s3_prefix="${s3_path#*/}"
+        else
+            s3_bucket="temp-mlops"
+            s3_prefix="datasets/speedplus_yolo/${CFG_dataset_version:-v1}/"
+        fi
+        optional_flags+=" --source s3"
+        optional_flags+=" --s3-bucket '${s3_bucket}'"
+        optional_flags+=" --s3-prefix '${s3_prefix}'"
+    fi
 
     mkdir -p "$output_dir"
 
@@ -583,7 +576,7 @@ run_model_training() {
             "--batch-size ${batch_size}" \
             "--image-size ${image_size}" \
             "--learning-rate ${learning_rate}" \
-            "--cos-lr ${cos_lr}" \
+            "$(bool_flag --cos-lr "$cos_lr")" \
             "--lrf ${lrf}" \
             "--optimizer '${optimizer}'" \
             "--momentum ${momentum}" \
@@ -593,10 +586,10 @@ run_model_training() {
             "--dropout ${dropout}" \
             "--label-smoothing ${label_smoothing}" \
             "--nbs ${nbs}" \
-            "--amp ${amp}" \
+            "$(bool_flag --amp "$amp")" \
             "--close-mosaic ${close_mosaic}" \
             "--seed ${seed}" \
-            "--deterministic ${deterministic}" \
+            "$(bool_flag --deterministic "$deterministic")" \
             "--pose ${pose_gain}" \
             "--kobj ${kobj}" \
             "--box ${box}" \
@@ -624,7 +617,7 @@ run_model_training() {
             "${optional_flags}"
     else
         run_cmd "cd '${REPO_ROOT}/model_training' && \
-            poetry run model-training run \
+            poetry run model-training \
                 --model-variant '${model_variant}' \
                 --experiment-name '${experiment_name}' \
                 --dataset-dir '${dataset_dir}' \
@@ -633,7 +626,7 @@ run_model_training() {
                 --batch-size ${batch_size} \
                 --image-size ${image_size} \
                 --learning-rate ${learning_rate} \
-                --cos-lr ${cos_lr} \
+                $(bool_flag --cos-lr "$cos_lr") \
                 --lrf ${lrf} \
                 --optimizer '${optimizer}' \
                 --momentum ${momentum} \
@@ -643,10 +636,10 @@ run_model_training() {
                 --dropout ${dropout} \
                 --label-smoothing ${label_smoothing} \
                 --nbs ${nbs} \
-                --amp ${amp} \
+                $(bool_flag --amp "$amp") \
                 --close-mosaic ${close_mosaic} \
                 --seed ${seed} \
-                --deterministic ${deterministic} \
+                $(bool_flag --deterministic "$deterministic") \
                 --pose ${pose_gain} \
                 --kobj ${kobj} \
                 --box ${box} \
@@ -680,58 +673,67 @@ run_model_training() {
 run_model_registration() {
     log_step "4/4 — Model Registration"
 
-    local model_name="${CFG_registration_model_name:?Missing registration.model_name in config}"
-    local registry_url="${CFG_registration_registry_url:?Missing registration.registry_url in config}"
+    # ---- Read training result artifact ----
+    local result_json
+    if [[ "$MODE" == "docker" ]]; then
+        result_json="/artifacts/training/training_result.json"
+    else
+        result_json="${REPO_ROOT}/artifacts/training/training_result.json"
+    fi
+
+    local mlflow_run_id best_checkpoint_s3 final_map50 model_variant_result
+
+    if [[ "$DRY_RUN" == true ]] && [[ ! -f "$result_json" ]]; then
+        log_warn "No training_result.json found (dry-run) — using placeholders"
+        mlflow_run_id="dry-run-placeholder"
+        best_checkpoint_s3="s3://temp-mlops/checkpoints/placeholder/best.pt"
+        final_map50="0.0"
+        model_variant_result="${CFG_model_variant:-yolov8n-pose.pt}"
+    else
+        [[ ! -f "$result_json" ]] && log_fatal "No training_result.json at ${result_json}. Did model_training run?"
+        mlflow_run_id="$(python3 -c "import json; d=json.load(open('${result_json}')); print(d['mlflow_run_id'])")"
+        best_checkpoint_s3="$(python3 -c "import json; d=json.load(open('${result_json}')); print(d['best_checkpoint_s3'])")"
+        final_map50="$(python3 -c "import json; d=json.load(open('${result_json}')); print(d['final_map50'])")"
+        model_variant_result="$(python3 -c "import json; d=json.load(open('${result_json}')); print(d['model_variant'])")"
+    fi
+
+    log_info "MLflow run ID:   ${mlflow_run_id}"
+    log_info "Best checkpoint: ${best_checkpoint_s3}"
+
+    # ---- Optional fields ----
+    local registered_model_name="${CFG_registration_registered_model_name:-}"
     local promote_to="${CFG_registration_promote_to:-}"
-    local tags="${CFG_registration_tags:-}"
+    local dataset_version="${CFG_dataset_version:-}"
+    local dataset_sample_size="${CFG_dataset_sample_size:-}"
+    local git_commit
+    git_commit="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || true)"
 
-    # Checkpoint directory matches model_training output
-    local checkpoint_dir="${REPO_ROOT}/artifacts/training"
-    local checkpoint_path=""
-
-    if [[ -d "$checkpoint_dir" ]]; then
-        checkpoint_path="$(find "${checkpoint_dir}" -maxdepth 1 -name '*.pt' -type f 2>/dev/null | sort | tail -1)"
-    fi
-
-    if [[ -z "$checkpoint_path" ]]; then
-        if [[ "$DRY_RUN" == true ]]; then
-            checkpoint_path="${checkpoint_dir}/model_latest.pt"
-            log_warn "No checkpoint found (dry-run) — using placeholder: ${checkpoint_path}"
-        else
-            log_fatal "No checkpoint found in ${checkpoint_dir}. Did model_training run?"
-        fi
-    fi
-
-    log_info "Using checkpoint: ${checkpoint_path}"
-
-    # Build optional flags
     local extra_flags=""
-    [[ -n "$promote_to" ]] && extra_flags+=" --promote-to '${promote_to}'"
-
-    if [[ -n "$tags" ]]; then
-        IFS=',' read -ra tag_arr <<< "$tags"
-        for t in "${tag_arr[@]}"; do
-            extra_flags+=" --tags '${t}'"
-        done
-    fi
+    extra_flags+="$(append_optional --registered-model-name "$registered_model_name")"
+    extra_flags+="$(append_optional --promote-to "$promote_to")"
+    extra_flags+="$(append_optional --dataset-version "$dataset_version")"
+    [[ -n "$dataset_sample_size" && "$dataset_sample_size" != "null" ]] && \
+        extra_flags+=" --dataset-sample-size ${dataset_sample_size}"
+    extra_flags+="$(append_optional --git-commit "$git_commit")"
+    extra_flags+="$(append_optional --model-variant "$model_variant_result")"
+    [[ -n "$final_map50" && "$final_map50" != "0.0" ]] && \
+        extra_flags+=" --best-map50 ${final_map50}"
 
     if [[ "$MODE" == "docker" ]]; then
         [[ "$SKIP_BUILD" == false ]] && docker_build model_registration
         docker_run "${IMAGE_PREFIX}-model-registration" \
-            "--model-name '${model_name}'" \
-            "--checkpoint-path /artifacts/training/$(basename "${checkpoint_path}")" \
-            "--registry-url '${registry_url}'" \
+            "--mlflow-run-id '${mlflow_run_id}'" \
+            "--best-checkpoint-path '${best_checkpoint_s3}'" \
             "${extra_flags}"
     else
         run_cmd "cd '${REPO_ROOT}/model_registration' && \
-            poetry run model-registration run \
-                --model-name '${model_name}' \
-                --checkpoint-path '${checkpoint_path}' \
-                --registry-url '${registry_url}' \
+            poetry run model-registration \
+                --mlflow-run-id '${mlflow_run_id}' \
+                --best-checkpoint-path '${best_checkpoint_s3}' \
                 ${extra_flags}"
     fi
 
-    log_ok "Model registered: ${model_name} -> ${registry_url}"
+    log_ok "Model registration complete"
 }
 
 # ---------------------------------------------------------------------------

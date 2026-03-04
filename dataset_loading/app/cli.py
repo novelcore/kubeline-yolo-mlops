@@ -39,6 +39,13 @@ def main() -> None:
                 "Pass an empty string or omit to use the default location."
             ),
         ),
+        labels_only: bool = typer.Option(
+            False,
+            help=(
+                "Download only label files and data.yaml (no images). "
+                "Used when images will be streamed from S3 during training."
+            ),
+        ),
         sample_size: Optional[int] = typer.Option(
             None,
             help=(
@@ -58,6 +65,7 @@ def main() -> None:
                 source=source,
                 output_dir=output_dir,
                 path_override=path_override if path_override else None,
+                labels_only=labels_only,
                 sample_size=sample_size,
                 seed=seed,
             )

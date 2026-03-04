@@ -120,6 +120,13 @@ class TrainingParams(BaseModel):
     # ---- Early stopping ----
     patience: int = Field(default=50, gt=0)
 
+    # ---- S3 streaming cache ----
+    disk_cache_bytes: int = Field(
+        default=2 * 1024**3,
+        gt=0,
+        description="Maximum disk budget (bytes) for the S3 image streaming cache.",
+    )
+
     # ---- Checkpointing ----
     checkpoint_interval: int = Field(default=10, gt=0)
     checkpoint_bucket: str = Field(default="temp-mlops")

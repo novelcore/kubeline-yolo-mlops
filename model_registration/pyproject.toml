@@ -48,5 +48,5 @@ disallow_untyped_defs = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["boto3", "boto3.*", "botocore", "botocore.*", "mlflow", "mlflow.*"]
+module = ["boto3", "boto3.*", "botocore", "botocore.*", "mlflow", "mlflow.*", "torch", "torch.*"]
 ignore_missing_imports = true

@@ -10,7 +10,7 @@ experiment:
 dataset:
   version: "v1"
   source: "s3"                    # "s3" or "lakefs"
-  path_override: null             # Optional: full S3 path override
+  path_override: "s3://temp-mlops/speedplus_yolo/"
   sample_size: null               # null = full dataset; integer = sampled subset
   seed: 42                        # Seed for reproducible dataset sampling
 
@@ -108,6 +108,11 @@ augmentation:
   # Erasing / channel
   erasing: 0.4                   # Random erasing probability [0.0, 0.9]
   bgr: 0.0                       # BGR channel flip probability
+
+# --- Model Registration ---
+registration:
+  registered_model_name: null  # null = use REGISTERED_MODEL_NAME env var (default: spacecraft-pose-yolo)
+  promote_to: null             # null | "Staging" | "Production"
 
 # --- Resource Requests (informational; not validated by pipeline) ---
 resources:

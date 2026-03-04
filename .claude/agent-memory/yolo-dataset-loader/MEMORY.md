@@ -18,9 +18,19 @@
 - Service file: `dataset_loading/app/services/dataset_loading.py`
 - `DatasetLoadingService(s3_client, max_retries)` — dependency-injected boto3 client.
 - `run(YoloDatasetParams) -> YoloDatasetStats`
-- Pipeline: `_resolve_source` → `_download` → `_write_data_yaml` → `_validate` → `_sample` (optional) → `_write_stats`
+- Full-download pipeline: `_resolve_source` → `_download` → `_write_data_yaml` → `_validate` → `_sample` (optional) → `_count_splits` + `_count_label_splits` → `_write_stats` → `_log_dataset_stats` → `_log_directory_integrity_report`
+- Labels-only pipeline same but uses `_list_s3_keys` → `_download_selective` → `_validate_labels_only` → `_build_manifest` + `_write_manifest` → `_sample_labels_only` (optional) → `_count_label_splits` → `_write_stats` → `_log_dataset_stats` → `_log_directory_integrity_report`
 - Output artifact: `{output_dir}/dataset_stats.json`.
 - SPLITS constant exported for use in tests: `("train", "val", "test")`.
+
+## YoloDatasetStats fields (dataset_stats.json)
+- `train_images`, `val_images`, `test_images` — image counts per split (label counts in labels-only mode).
+- `train_labels`, `val_labels`, `test_labels` — label file counts per split (same as *_images in labels-only mode).
+- `sampled`, `sample_size`, `seed`, `version`, `source`.
+
+## Logging methods
+- `_log_dataset_stats(stats)` — emits an aligned table of images and labels per split plus total at INFO.
+- `_log_directory_integrity_report(output_path, mode)` — walks the tree and logs [OK]/[SKIP]/[FAIL] per item, then a PASS/FAIL verdict. Never raises. mode="full" treats missing images/ as FAIL; mode="labels-only" treats them as SKIP.
 
 ## Type Stubs Required
 - Dev deps must include `types-pyyaml` and `boto3-stubs[s3]`.
@@ -50,6 +60,17 @@ dataset-loading run \
   --sample-size <N or omit> \
   --seed 42
 ```
+
+## Logging Pattern (Steps 1 and 2)
+- Shared `ColorFormatter` + `setup_logging()` pattern used across all steps.
+- Each step has its own `app/logger.py` (copied verbatim from `config_validation/app/logger.py`).
+- `Manager.__init__` calls `setup_logging(level=self._config.log_level)` before `logging.getLogger(__name__)`.
+- Service `__init__` uses `logging.getLogger(__name__)` (no setup_logging call in service).
+- Per-file downloads logged at DEBUG (`"Downloaded: {key}"`); ~5% progress at INFO; summary at INFO with file count, MB, and elapsed seconds.
+- Manager.run() wraps service.run() in try/except and logs errors at ERROR before re-raising.
+
+## Known Pre-existing Test Failure
+- `tests/test_config.py::test_config_default_values` fails when `AWS_DEFAULT_REGION` is set in the host shell (it reads the real env var instead of the `None` default). Not a regression — unrelated to logging changes.
 
 ## Links
 - Detailed patterns: `patterns.md`

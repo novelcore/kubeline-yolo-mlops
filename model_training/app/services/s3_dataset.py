@@ -14,15 +14,21 @@ substitute the file paths with synthetic "s3://" URIs and override ``load_image`
 to retrieve the bytes from S3 and decode them with OpenCV in-memory. Labels are
 resolved from the synthetic path by replacing the S3 URI with the local label
 path following the same stem-matching convention.
+
+An optional ``LruDiskCache`` bounds the local disk footprint so that frequently
+accessed images (e.g. mosaic partners) are served from disk rather than
+re-downloaded every time.
 """
 
-import io
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
+
+from app.services.lru_disk_cache import LruDiskCache
 
 _logger = logging.getLogger(__name__)
 
@@ -30,7 +36,14 @@ _logger = logging.getLogger(__name__)
 # environments where ultralytics may be mocked.
 try:
     from ultralytics.data import YOLODataset as _UltralyticsYOLODataset
-    from ultralytics.utils import TQDM
+    from ultralytics.data.dataset import (
+        DATASET_CACHE_VERSION,
+        get_hash,
+        load_dataset_cache_file,
+        save_dataset_cache_file,
+    )
+    from ultralytics.data.utils import HELP_URL
+    from ultralytics.utils import LOGGER, TQDM
 
     _ULTRALYTICS_AVAILABLE = True
 except ImportError:
@@ -56,6 +69,10 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
         as ``<local_labels_root>/<split>/<stem>.txt``.
     split:
         Dataset split name: ``"train"``, ``"val"``, or ``"test"``.
+    cache_dir:
+        Local directory for the LRU disk cache.  ``None`` disables caching.
+    cache_max_bytes:
+        Maximum disk budget for cached images (default 2 GiB).
     *args / **kwargs:
         Forwarded to the Ultralytics ``YOLODataset`` constructor.
     """
@@ -68,6 +85,8 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
         s3_prefix: str,
         local_labels_root: str,
         split: str,
+        cache_dir: str | None = None,
+        cache_max_bytes: int = 2 * 1024**3,
         **kwargs: Any,
     ) -> None:
         if not _ULTRALYTICS_AVAILABLE:
@@ -82,6 +101,14 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
         self._s3_prefix = s3_prefix.rstrip("/") + "/"
         self._local_labels_root = Path(local_labels_root)
         self._split = split
+
+        # Disk cache (None = disabled)
+        self._disk_cache: LruDiskCache | None = None
+        if cache_dir is not None:
+            self._disk_cache = LruDiskCache(
+                cache_dir=cache_dir,
+                max_bytes=cache_max_bytes,
+            )
 
         # Ultralytics needs a path argument pointing to the image directory.
         # We pass a synthetic sentinel; get_image_and_label is overridden below.
@@ -144,40 +171,244 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
         return label_paths
 
     # ------------------------------------------------------------------
-    # Load image bytes from S3
+    # Label loading — override to use local label paths, not S3-derived
     # ------------------------------------------------------------------
 
-    def load_image(self, i: int) -> tuple[np.ndarray, tuple[int, int], tuple[int, int]]:
+    def get_labels(self) -> list[dict]:
+        """Return label dicts using local label files instead of S3-derived paths.
+
+        The parent ``YOLODataset.get_labels()`` calls the standalone
+        ``img2label_paths()`` function which replaces ``/images/`` with
+        ``/labels/`` in S3 URIs — producing nonsensical paths.  We override
+        to use ``self.img2label_paths()`` which maps to local label files.
+        """
+        self.label_files = self.img2label_paths(self.im_files)
+
+        # Build a local cache path from the label directory
+        cache_path = Path(self.label_files[0]).parent.with_suffix(".cache")
+
+        try:
+            cache, exists = load_dataset_cache_file(cache_path), True
+            assert cache["version"] == DATASET_CACHE_VERSION
+            assert cache["hash"] == get_hash(self.label_files + self.im_files)
+        except (FileNotFoundError, AssertionError, AttributeError, ModuleNotFoundError):
+            cache, exists = self.cache_labels(cache_path), False
+
+        nf, nm, ne, nc, n = cache.pop("results")
+        if exists:
+            d = f"Scanning {cache_path}... {nf} images, {nm + ne} backgrounds, {nc} corrupt"
+            TQDM(None, desc=self.prefix + d, total=n, initial=n)
+            if cache["msgs"]:
+                LOGGER.info("\n".join(cache["msgs"]))
+
+        [cache.pop(k) for k in ("hash", "version", "msgs")]
+        labels = cache["labels"]
+        if not labels:
+            raise RuntimeError(
+                f"No valid labels found in {cache_path}. {HELP_URL}"
+            )
+        self.im_files = [lb["im_file"] for lb in labels]
+        return labels
+
+    def cache_labels(self, path: Path = Path("./labels.cache")) -> dict:
+        """Build label cache from local label files without opening S3 images.
+
+        The parent implementation calls ``verify_image_label()`` which tries to
+        ``Image.open()`` every image — impossible for S3 URIs.  We read the
+        local label ``.txt`` files directly and skip image verification.
+        Image shapes are set to a placeholder; Ultralytics replaces them with
+        the actual shape from ``load_image()`` at training time.
+        """
+        x: dict[str, Any] = {"labels": []}
+        nm, nf, ne, nc, msgs = 0, 0, 0, 0, []
+        desc = f"{self.prefix}Scanning {path.parent / path.stem}..."
+        total = len(self.im_files)
+
+        nkpt, ndim = self.data.get("kpt_shape", (0, 0))
+        num_cls = len(self.data["names"])
+
+        pbar = TQDM(
+            zip(self.im_files, self.label_files),
+            desc=desc,
+            total=total,
+        )
+        for im_file, lb_file in pbar:
+            try:
+                if not os.path.isfile(lb_file):
+                    nm += 1
+                    continue
+
+                with open(lb_file, encoding="utf-8") as f:
+                    lb = [
+                        line.split()
+                        for line in f.read().strip().splitlines()
+                        if len(line)
+                    ]
+
+                if not lb:
+                    ne += 1
+                    x["labels"].append(
+                        {
+                            "im_file": im_file,
+                            "shape": (self.imgsz, self.imgsz),
+                            "cls": np.zeros((0, 1), dtype=np.float32),
+                            "bboxes": np.zeros((0, 4), dtype=np.float32),
+                            "segments": [],
+                            "keypoints": None,
+                            "normalized": True,
+                            "bbox_format": "xywh",
+                        }
+                    )
+                    continue
+
+                lb = np.array(lb, dtype=np.float32)
+                nl = len(lb)
+
+                if self.use_keypoints and nl:
+                    keypoints = lb[:, 5:].reshape(nl, nkpt, ndim)
+                else:
+                    keypoints = None
+
+                nf += 1
+                x["labels"].append(
+                    {
+                        "im_file": im_file,
+                        "shape": (self.imgsz, self.imgsz),
+                        "cls": lb[:, 0:1],
+                        "bboxes": lb[:, 1:5],
+                        "segments": [],
+                        "keypoints": keypoints,
+                        "normalized": True,
+                        "bbox_format": "xywh",
+                    }
+                )
+
+            except Exception as exc:
+                nc += 1
+                msgs.append(f"{self.prefix}{lb_file}: {exc}")
+
+            pbar.desc = (
+                f"{desc} {nf} images, {nm + ne} backgrounds, {nc} corrupt"
+            )
+        pbar.close()
+
+        if msgs:
+            LOGGER.info("\n".join(msgs))
+        if nf == 0:
+            LOGGER.warning(
+                f"{self.prefix}No labels found in {path}. {HELP_URL}"
+            )
+
+        x["hash"] = get_hash(self.label_files + self.im_files)
+        x["results"] = nf, nm, ne, nc, len(self.im_files)
+        x["msgs"] = msgs
+        x["version"] = DATASET_CACHE_VERSION
+        save_dataset_cache_file(self.prefix, path, x, DATASET_CACHE_VERSION)
+        return x
+
+    # ------------------------------------------------------------------
+    # Load image bytes from S3 (with optional disk cache)
+    # ------------------------------------------------------------------
+
+    def load_image(self, i: int, rect_mode: bool = True) -> tuple[np.ndarray, tuple[int, int], tuple[int, int]]:
         """Fetch image *i* from S3 and decode it as an OpenCV BGR array.
 
-        Returns the same (image, original_hw, resized_hw) tuple as the
+        When a disk cache is configured the flow is:
+        1. Check cache — on hit, read bytes from the local file.
+        2. On miss: ``s3_client.get_object()``, then ``cache.put(key, bytes)``.
+        3. ``cv2.imdecode()`` + resize.
+
+        Maintains ``self.buffer`` so that Mosaic augmentation can pick random
+        partner images (the parent ``load_image`` populates this buffer; without
+        it ``Mosaic.get_indexes()`` fails on the empty list).
+
+        Returns the same ``(image, original_hw, resized_hw)`` tuple as the
         standard Ultralytics ``load_image`` implementation.
         """
+        # Return RAM-cached image if available
+        im = self.ims[i]
+        if im is not None:
+            return im, self.im_hw0[i], self.im_hw[i]
+
         uri: str = self.im_files[i]
         # Parse the key from the synthetic URI
         # uri format: "s3://<bucket>/<key>"
         key = uri[len(f"s3://{self._s3_bucket}/"):]
 
-        try:
-            response = self._s3_client.get_object(Bucket=self._s3_bucket, Key=key)
-            raw_bytes = response["Body"].read()
-        except Exception as exc:
-            raise OSError(
-                f"Failed to download image from s3://{self._s3_bucket}/{key}: {exc}"
-            ) from exc
+        raw_bytes: bytes | None = None
+
+        # -- Disk cache lookup --
+        if self._disk_cache is not None:
+            cached_path = self._disk_cache.get(key)
+            if cached_path is not None:
+                raw_bytes = cached_path.read_bytes()
+
+        # -- S3 fetch on miss --
+        if raw_bytes is None:
+            try:
+                response = self._s3_client.get_object(Bucket=self._s3_bucket, Key=key)
+                raw_bytes = response["Body"].read()
+            except Exception as exc:
+                raise OSError(
+                    f"Failed to download image from s3://{self._s3_bucket}/{key}: {exc}"
+                ) from exc
+
+            # Store in cache
+            if self._disk_cache is not None:
+                self._disk_cache.put(key, raw_bytes)
 
         img_array = np.frombuffer(raw_bytes, dtype=np.uint8)
-        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        if img is None:
+        im = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if im is None:
             raise OSError(
                 f"cv2.imdecode returned None for s3://{self._s3_bucket}/{key}"
             )
 
-        original_hw = (img.shape[0], img.shape[1])
+        h0, w0 = im.shape[:2]
 
-        # Resize to the target image size (self.imgsz is set by Ultralytics)
-        target = self.imgsz
-        img = cv2.resize(img, (target, target))
-        resized_hw = (img.shape[0], img.shape[1])
+        # Resize — match parent behaviour (aspect-preserving or stretch)
+        if rect_mode:
+            r = self.imgsz / max(h0, w0)
+            if r != 1:
+                w = min(int(round(w0 * r)), self.imgsz)
+                h = min(int(round(h0 * r)), self.imgsz)
+                im = cv2.resize(im, (w, h), interpolation=cv2.INTER_LINEAR)
+        elif not (h0 == w0 == self.imgsz):
+            im = cv2.resize(im, (self.imgsz, self.imgsz), interpolation=cv2.INTER_LINEAR)
 
-        return img, original_hw, resized_hw
+        # Populate buffer for Mosaic augmentation (mirrors parent logic)
+        if self.augment:
+            self.ims[i], self.im_hw0[i], self.im_hw[i] = im, (h0, w0), im.shape[:2]
+            self.buffer.append(i)
+            if 1 < len(self.buffer) >= self.max_buffer_length:
+                j = self.buffer.pop(0)
+                if self.cache != "ram":
+                    self.ims[j], self.im_hw0[j], self.im_hw[j] = None, None, None
+
+        return im, (h0, w0), im.shape[:2]
+
+    # ------------------------------------------------------------------
+    # Override cache_images — we handle caching ourselves
+    # ------------------------------------------------------------------
+
+    def cache_images(self, cache: str = "ram") -> None:
+        """No-op: S3YoloDataset manages its own disk cache."""
+        pass
+
+    # ------------------------------------------------------------------
+    # Cache metrics for MLflow logging
+    # ------------------------------------------------------------------
+
+    @property
+    def cache_metrics(self) -> tuple[int, int, int]:
+        """Return ``(hits, misses, evictions)`` and reset counters."""
+        if self._disk_cache is not None:
+            return self._disk_cache.reset_metrics()
+        return (0, 0, 0)
+
+    @property
+    def cache_size_bytes(self) -> int:
+        """Current disk cache size in bytes."""
+        if self._disk_cache is not None:
+            return self._disk_cache.current_bytes
+        return 0

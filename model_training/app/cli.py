@@ -6,6 +6,7 @@ Secrets (S3 credentials, MLflow URI) are read from environment variables
 via Config / .env.
 """
 
+import os
 from typing import Optional
 
 import typer
@@ -55,6 +56,10 @@ def main() -> None:
         s3_prefix: Optional[str] = typer.Option(
             None,
             help="S3 key prefix for images (required when --source=s3).",
+        ),
+        disk_cache_gb: float = typer.Option(
+            2.0,
+            help="Maximum disk cache size in GB for S3 image streaming (default 2.0).",
         ),
         # ---- Weight init / resume ----
         pretrained_weights: Optional[str] = typer.Option(
@@ -170,7 +175,7 @@ def main() -> None:
     ) -> None:
         try:
             manager = Manager()
-            manager.run(
+            result = manager.run(
                 model_variant=model_variant,
                 experiment_name=experiment_name,
                 dataset_dir=dataset_dir,
@@ -178,6 +183,7 @@ def main() -> None:
                 source=source,
                 s3_bucket=s3_bucket,
                 s3_prefix=s3_prefix,
+                disk_cache_bytes=int(disk_cache_gb * 1024**3),
                 pretrained_weights=pretrained_weights,
                 resume_from=resume_from,
                 epochs=epochs,
@@ -224,6 +230,11 @@ def main() -> None:
                 erasing=erasing,
                 bgr=bgr,
             )
+            result_path = os.path.join(output_dir, "training_result.json")
+            with open(result_path, "w") as f:
+                f.write(result.model_dump_json(indent=2))
+            typer.echo(result.model_dump_json(indent=2))
+            typer.echo(f"Training result written to: {result_path}")
         except Exception as e:
             typer.echo(f"Error: {e}", err=True)
             raise typer.Exit(code=1)

@@ -1,29 +1,33 @@
-"""YOLO model training service with MLflow experiment tracking.
+"""YOLO model training service with Ultralytics built-in MLflow integration.
 
 Responsibilities
 ----------------
-1. Validate that --pretrained-weights and --resume-from are not both set.
-2. Download weights / resume checkpoint from S3 to a temp dir when needed.
-3. Write data.yaml to a temp dir (always deleted in a finally block).
-4. Start the background resource monitor.
-5. Register Ultralytics callbacks for per-epoch MLflow metric logging and
-   periodic S3 checkpoint uploads.
-6. Call model.train() with the full hyperparameter set.
-7. Stop the resource monitor.
-8. Log artifacts (best.pt, last.pt, plots, results.csv) to MLflow.
-9. Upload best.pt and last.pt to the S3 checkpoint path.
-10. Clean up temp dirs.
+1. Auto-detect dataset source mode from dataset_manifest.json when present.
+2. Validate that --pretrained-weights and --resume-from are not both set.
+3. In local mode, validate that data.yaml and image directories exist.
+4. Download weights / resume checkpoint from S3 to a temp dir when needed.
+5. Write data.yaml to a temp dir (always deleted in a finally block).
+6. Set MLFLOW_TRACKING_URI and MLFLOW_EXPERIMENT_NAME env vars so that
+   the Ultralytics built-in MLflow callback handles all logging.
+7. Start the background resource monitor.
+8. Register Ultralytics callbacks for console output and periodic S3
+   checkpoint uploads.
+9. Call model.train() with the full hyperparameter set.
+10. Stop the resource monitor.
+11. Upload best.pt and last.pt to the S3 checkpoint path.
+12. Clean up temp dirs.
 """
 
+import json
 import logging
+import os
 import re
 import tempfile
+import time
 import warnings
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import mlflow
 import yaml
 
 from app.models.training import TrainingParams, TrainingResult
@@ -43,6 +47,9 @@ _METRIC_RECALL = "metrics/recall(B)"
 _METRIC_MAP50 = "metrics/mAP50(B)"
 _METRIC_MAP50_95 = "metrics/mAP50-95(B)"
 
+# File names written by dataset_loading
+_MANIFEST_FILENAME = "dataset_manifest.json"
+
 
 # ---------------------------------------------------------------------------
 # Custom exception
@@ -54,12 +61,129 @@ class TrainingError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# Pretty epoch logging (Ultralytics-style tabular output with colors)
+# ---------------------------------------------------------------------------
+
+_BOLD = "\033[1m"
+_DIM = "\033[2m"
+_CYAN = "\033[36m"
+_GREEN = "\033[32m"
+_YELLOW = "\033[33m"
+_BLUE = "\033[34m"
+_MAGENTA = "\033[35m"
+_WHITE = "\033[37m"
+_RESET = "\033[0m"
+
+_W = 11  # column width (matches Ultralytics' %11s)
+
+_LOSS_NAMES = ("box", "pose", "kobj", "cls", "dfl")
+_VAL_NAMES = ("P", "R", "mAP50", "mAP50-95")
+
+
+def _epoch_header() -> str:
+    """Return the colored column header line."""
+    hdr = (
+        f"{_BOLD}{_WHITE}{'Epoch':>{_W}}{'Step':>{_W}}{'ETA':>{_W}}{'GPU_mem':>{_W}}{'GPU%':>{_W}}{_RESET}"
+        f"{_BOLD}{_YELLOW}"
+        + "".join(f"{n:>{_W}}" for n in _LOSS_NAMES)
+        + f"{_RESET}"
+        f"  {_DIM}│{_RESET}  "
+        f"{_BOLD}{_CYAN}"
+        + "".join(f"{n:>{_W}}" for n in _VAL_NAMES)
+        + f"{_RESET}"
+    )
+    return hdr
+
+
+def _get_gpu_info() -> tuple[str, str]:
+    """Return (vram_string, util_string) for the primary CUDA device.
+
+    Tries pynvml first for accurate utilisation; falls back to
+    torch.cuda.memory_reserved() for VRAM only when pynvml is absent.
+    Returns ('N/A', 'N/A') when no GPU is detected.
+    """
+    vram = "N/A"
+    util = "N/A"
+    try:
+        import pynvml as _pynvml  # noqa: PLC0415
+
+        handle = _pynvml.nvmlDeviceGetHandleByIndex(0)
+        mem = _pynvml.nvmlDeviceGetMemoryInfo(handle)
+        utilization = _pynvml.nvmlDeviceGetUtilizationRates(handle)
+        vram = f"{mem.used / (1 << 30):.3g}G"
+        util = f"{utilization.gpu}%"
+        return vram, util
+    except Exception:  # noqa: BLE001
+        pass
+    # pynvml unavailable — fall back to torch
+    try:
+        import torch  # noqa: PLC0415
+
+        if torch.cuda.is_available():
+            vram = f"{torch.cuda.memory_reserved() / (1 << 30):.3g}G"
+    except Exception:  # noqa: BLE001
+        pass
+    return vram, util
+
+
+def _format_eta(seconds: float) -> str:
+    """Format seconds into a human-readable ETA string."""
+    if seconds < 0:
+        return "N/A"
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    if h > 0:
+        return f"{h}h{m:02d}m"
+    if m > 0:
+        return f"{m}m{s:02d}s"
+    return f"{s}s"
+
+
+def _epoch_row(
+    epoch: int,
+    total_epochs: int,
+    step: int,
+    total_steps: int,
+    eta: str,
+    gpu_mem: str,
+    gpu_util: str,
+    metrics: dict[str, float],
+) -> str:
+    """Return a colored data row for one batch/epoch."""
+    epoch_str = f"{epoch + 1}/{total_epochs}"
+    step_str = f"{step}/{total_steps}" if total_steps > 0 else str(step)
+
+    losses = "".join(
+        f"{metrics.get(f'train/{n}_loss', 0.0):>{_W}.4g}" for n in _LOSS_NAMES
+    )
+    vals = "".join(
+        f"{metrics.get(k, 0.0):>{_W}.3g}"
+        for k in ("val/precision", "val/recall", "val/mAP50", "val/mAP50_95")
+    )
+
+    return (
+        f"{_BOLD}{epoch_str:>{_W}}{_RESET}"
+        f"{_DIM}{step_str:>{_W}}{_RESET}"
+        f"{_BLUE}{eta:>{_W}}{_RESET}"
+        f"{_GREEN}{gpu_mem:>{_W}}{_RESET}"
+        f"{_MAGENTA}{gpu_util:>{_W}}{_RESET}"
+        f"{_YELLOW}{losses}{_RESET}"
+        f"  {_DIM}│{_RESET}  "
+        f"{_CYAN}{vals}{_RESET}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
 
 
 class TrainingService:
-    """Orchestrates a YOLO training run with MLflow tracking and S3 I/O.
+    """Orchestrates a YOLO training run with Ultralytics built-in MLflow tracking.
+
+    MLflow logging (params, metrics, artifacts) is handled entirely by the
+    Ultralytics MLflow callback.  This service sets the required environment
+    variables and focuses on S3 I/O and console output.
 
     Parameters
     ----------
@@ -105,6 +229,9 @@ class TrainingService:
         TrainingError
             On any unrecoverable failure.
         """
+        # Auto-detect S3 streaming mode from manifest before validation
+        params = self._apply_manifest_if_present(params)
+
         self._validate_params(params)
 
         # Defer heavy imports so that unit tests can mock them easily
@@ -112,39 +239,94 @@ class TrainingService:
 
         Path(params.output_dir).mkdir(parents=True, exist_ok=True)
 
-        mlflow.set_tracking_uri(self._mlflow_tracking_uri)
-        mlflow.set_experiment(params.experiment_name)
+        # Configure Ultralytics' built-in MLflow callback via env vars
+        os.environ["MLFLOW_TRACKING_URI"] = self._mlflow_tracking_uri
+        os.environ["MLFLOW_EXPERIMENT_NAME"] = params.experiment_name
 
-        timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S")
-        run_name = f"{params.model_variant.removesuffix('.pt')}-{timestamp}"
-
-        with mlflow.start_run(run_name=run_name) as active_run:
-            try:
-                result = self._run_with_mlflow(params, active_run, YOLO)
-            except Exception as exc:
-                # Tag the failed run so it is easy to filter in the UI
-                try:
-                    mlflow.set_tag("training.status", "FAILED")
-                    mlflow.set_tag("training.error", str(exc)[:500])
-                except Exception:  # noqa: BLE001
-                    pass
-                raise TrainingError(f"Training failed: {exc}") from exc
+        try:
+            result = self._run_training(params, YOLO)
+        except Exception as exc:
+            raise TrainingError(f"Training failed: {exc}") from exc
 
         return result
 
     # ------------------------------------------------------------------
-    # Core pipeline (executed inside an active MLflow run)
+    # Manifest auto-detection
     # ------------------------------------------------------------------
 
-    def _run_with_mlflow(
+    def _apply_manifest_if_present(self, params: TrainingParams) -> TrainingParams:
+        """Read dataset_manifest.json from dataset_dir if it exists.
+
+        When present the manifest overrides the source, s3_bucket, and
+        s3_prefix fields on the params object so that the caller-supplied
+        --source / --s3-bucket / --s3-prefix flags are not required.
+
+        Returns a new (or the same) TrainingParams instance.
+        """
+        manifest_path = Path(params.dataset_dir) / _MANIFEST_FILENAME
+        if not manifest_path.exists():
+            self._logger.info(
+                "No %s found in dataset_dir=%s — using source=%s (local mode)",
+                _MANIFEST_FILENAME,
+                params.dataset_dir,
+                params.source,
+            )
+            return params
+
+        try:
+            with manifest_path.open() as fh:
+                raw = json.load(fh)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning(
+                "Failed to parse %s: %s — falling back to source=%s",
+                manifest_path,
+                exc,
+                params.source,
+            )
+            return params
+
+        bucket = raw.get("bucket")
+        prefix = raw.get("prefix")
+
+        if not bucket or not prefix:
+            self._logger.warning(
+                "%s is missing 'bucket' or 'prefix' fields — ignoring manifest",
+                manifest_path,
+            )
+            return params
+
+        total = raw.get("total_images", "?")
+        self._logger.info(
+            "Detected %s (bucket=%s prefix=%s total_images=%s) — "
+            "switching to S3 streaming mode",
+            _MANIFEST_FILENAME,
+            bucket,
+            prefix,
+            total,
+        )
+
+        # Build a new params instance with overridden S3 fields
+        updated = params.model_copy(
+            update={"source": "s3", "s3_bucket": bucket, "s3_prefix": prefix}
+        )
+        return updated
+
+    # ------------------------------------------------------------------
+    # Core training pipeline
+    # ------------------------------------------------------------------
+
+    def _run_training(
         self,
         params: TrainingParams,
-        active_run: Any,
         yolo_cls: Any,
     ) -> TrainingResult:
-        """Inner pipeline: weights, data.yaml, callbacks, train(), artifacts."""
+        """Inner pipeline: weights, data.yaml, callbacks, train(), S3 upload."""
 
         monitor = ResourceMonitor(interval_sec=self._monitor_interval)
+
+        # Validate local dataset structure before starting the run
+        if params.source == "local":
+            self._validate_local_dataset(params)
 
         with tempfile.TemporaryDirectory(prefix="io-model-training-") as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -155,62 +337,91 @@ class TrainingService:
             # 2. Write data.yaml into the temp dir
             data_yaml_path = self._write_data_yaml(params, tmp_path)
 
-            # 3. Log hyperparameters and tags to MLflow
-            self._log_params_and_tags(params)
-
-            # 4. Build the Ultralytics YOLO model object
+            # 3. Build the Ultralytics YOLO model object
             model = yolo_cls(str(model_path))
 
-            # 5. Register per-epoch MLflow callback
+            # 4. Register callbacks for console output and S3 checkpoints
             epoch_metrics: dict[str, float] = {}
+            global_step = [0]  # mutable counter shared across callbacks
+            train_start_time = [0.0]  # set in on_train_start
 
-            def on_fit_epoch_end(trainer: Any) -> None:
-                """Log per-epoch train + val metrics to MLflow."""
+            def on_train_batch_end(trainer: Any) -> None:
+                """Log per-batch training losses to console."""
                 try:
-                    epoch: int = trainer.epoch
-                    loss_items = getattr(trainer, "loss_items", None)
+                    tloss = getattr(trainer, "tloss", None)
+                    if tloss is None:
+                        return
 
                     metrics_to_log: dict[str, float] = {}
-
-                    # Loss items order for YOLOv8-pose:
-                    # 0=box, 1=pose, 2=kobj, 3=cls, 4=dfl
-                    if loss_items is not None and hasattr(loss_items, "__len__"):
-                        loss_names = ["box_loss", "pose_loss", "kobj_loss", "cls_loss", "dfl_loss"]
-                        for idx, loss_name in enumerate(loss_names):
-                            if idx < len(loss_items):
-                                val = loss_items[idx]
-                                metrics_to_log[f"train/{loss_name}"] = float(val)
-
-                    val_metrics = getattr(trainer, "metrics", {}) or {}
-                    metrics_to_log["val/precision"] = float(
-                        val_metrics.get(_METRIC_PRECISION, 0.0)
-                    )
-                    metrics_to_log["val/recall"] = float(
-                        val_metrics.get(_METRIC_RECALL, 0.0)
-                    )
-                    metrics_to_log["val/mAP50"] = float(
-                        val_metrics.get(_METRIC_MAP50, 0.0)
-                    )
-                    metrics_to_log["val/mAP50_95"] = float(
-                        val_metrics.get(_METRIC_MAP50_95, 0.0)
-                    )
-
+                    loss_names = ["box_loss", "pose_loss", "kobj_loss", "cls_loss", "dfl_loss"]
                     try:
-                        mlflow.log_metrics(metrics_to_log, step=epoch)
-                    except Exception as mlflow_exc:  # noqa: BLE001
-                        _logger.warning(
-                            "MLflow metric logging failed at epoch %d: %s",
-                            epoch,
-                            mlflow_exc,
-                        )
+                        for idx, loss_name in enumerate(loss_names):
+                            if idx < len(tloss):
+                                metrics_to_log[f"train/{loss_name}"] = float(
+                                    tloss[idx].item()
+                                    if hasattr(tloss[idx], "item")
+                                    else tloss[idx]
+                                )
+                    except (TypeError, IndexError):
+                        return
 
-                    # Keep the last epoch metrics for the TrainingResult
+                    if not metrics_to_log:
+                        return
+
+                    step = global_step[0]
+                    global_step[0] += 1
+
+                    # Keep latest losses for the TrainingResult / epoch summary
                     epoch_metrics.update(metrics_to_log)
+
+                    # Pretty per-batch log line
+                    gpu_mem, gpu_util = _get_gpu_info()
+                    epoch_idx = getattr(trainer, "epoch", 0)
+
+                    # Total steps = batches_per_epoch * total_epochs
+                    batches_per_epoch = getattr(trainer, "batches", 0)
+                    total_steps = batches_per_epoch * params.epochs
+
+                    # ETA based on elapsed time and progress
+                    elapsed = time.monotonic() - train_start_time[0]
+                    if step > 0 and total_steps > 0:
+                        remaining = elapsed * (total_steps - step) / step
+                        eta = _format_eta(remaining)
+                    else:
+                        eta = "N/A"
+
+                    _logger.info(
+                        _epoch_row(
+                            epoch_idx,
+                            params.epochs,
+                            step,
+                            total_steps,
+                            eta,
+                            gpu_mem,
+                            gpu_util,
+                            metrics_to_log,
+                        )
+                    )
+
+                except Exception as cb_exc:  # noqa: BLE001
+                    _logger.warning("on_train_batch_end callback error: %s", cb_exc)
+
+            def on_fit_epoch_end(trainer: Any) -> None:
+                """Capture per-epoch validation metrics for TrainingResult."""
+                try:
+                    val_metrics_raw = getattr(trainer, "metrics", {}) or {}
+                    val_metrics: dict[str, float] = {
+                        "val/precision": float(val_metrics_raw.get(_METRIC_PRECISION, 0.0)),
+                        "val/recall": float(val_metrics_raw.get(_METRIC_RECALL, 0.0)),
+                        "val/mAP50": float(val_metrics_raw.get(_METRIC_MAP50, 0.0)),
+                        "val/mAP50_95": float(val_metrics_raw.get(_METRIC_MAP50_95, 0.0)),
+                    }
+                    epoch_metrics.update(val_metrics)
 
                 except Exception as cb_exc:  # noqa: BLE001
                     _logger.warning("on_fit_epoch_end callback error: %s", cb_exc)
 
-            # 6. Register periodic S3 checkpoint upload callback
+            # Periodic S3 checkpoint upload callback
             def on_train_epoch_end(trainer: Any) -> None:
                 """Upload checkpoint to S3 every checkpoint_interval epochs."""
                 try:
@@ -237,36 +448,97 @@ class TrainingService:
                 except Exception as cb_exc:  # noqa: BLE001
                     _logger.warning("S3 checkpoint upload failed: %s", cb_exc)
 
+            def on_train_start(trainer: Any) -> None:
+                """Log a colored training banner and column header."""
+                train_start_time[0] = time.monotonic()
+                device = getattr(trainer, "device", "?")
+                batches_per_epoch = getattr(trainer, "batches", "?")
+                _logger.info(
+                    "%s%s Training started %s  "
+                    "model=%s  epochs=%d  batch=%d  imgsz=%d  device=%s  "
+                    "steps/epoch=%s  total_steps=%s",
+                    _BOLD, _CYAN, _RESET,
+                    params.model_variant,
+                    params.epochs,
+                    params.batch_size,
+                    params.image_size,
+                    device,
+                    batches_per_epoch,
+                    batches_per_epoch * params.epochs if isinstance(batches_per_epoch, int) else "?",
+                )
+                _logger.info(_epoch_header())
+
+            def on_train_end(trainer: Any) -> None:
+                """Log a clean training completion line."""
+                _logger.info(
+                    "%s%s Training complete %s  "
+                    "best mAP50-95=%.4f  saved to %s",
+                    _BOLD, _GREEN, _RESET,
+                    float(epoch_metrics.get("val/mAP50_95", 0.0)),
+                    getattr(trainer, "best", "?"),
+                )
+
+            model.add_callback("on_train_start", on_train_start)
+            model.add_callback("on_train_batch_end", on_train_batch_end)
             model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
             model.add_callback("on_train_epoch_end", on_train_epoch_end)
+            model.add_callback("on_train_end", on_train_end)
 
-            # 7. Start resource monitor
+            # 5. Start resource monitor
             monitor.start()
 
-            # 8. Build train() kwargs — resume mode sets resume=True
+            # 6. Build train() kwargs — resume mode sets resume=True
             train_kwargs = self._build_train_kwargs(
                 params=params,
                 data_yaml_path=str(data_yaml_path),
             )
+
+            # 6b. S3 streaming mode — inject S3PoseTrainer
+            if params.source == "s3":
+                from app.services.s3_pose_trainer import make_s3_pose_trainer
+
+                cache_dir = str(tmp_path / "s3_cache")
+                labels_root = str(Path(params.dataset_dir).resolve() / "labels")
+
+                s3_trainer_cls = make_s3_pose_trainer(
+                    s3_client=self._s3,
+                    s3_bucket=params.s3_bucket,  # type: ignore[arg-type]
+                    s3_prefix=params.s3_prefix,  # type: ignore[arg-type]
+                    local_labels_root=labels_root,
+                    cache_dir=cache_dir,
+                    cache_max_bytes=params.disk_cache_bytes,
+                )
+                train_kwargs["trainer"] = s3_trainer_cls
+                self._logger.info(
+                    "S3 streaming enabled | bucket=%s prefix=%s cache=%s (%d MB)",
+                    params.s3_bucket,
+                    params.s3_prefix,
+                    cache_dir,
+                    params.disk_cache_bytes // (1024 * 1024),
+                )
 
             try:
                 trainer = model.train(**train_kwargs)
             finally:
                 monitor.stop()
 
-            # 9. Determine save directory
+            # 7. Determine save directory
             save_dir = Path(model.trainer.save_dir)  # type: ignore[union-attr]
 
-            # 10. Log artifacts to MLflow
-            self._log_artifacts(save_dir)
-
-            # 11. Upload final weights to S3
+            # 8. Upload final weights to S3
             best_s3_uri = self._upload_final_weights(params, save_dir)
 
-            # 12. Mark run as successful
-            mlflow.set_tag("training.status", "SUCCEEDED")
+        # Build result — get MLflow run_id from Ultralytics' run
+        mlflow_run_id = ""
+        try:
+            import mlflow  # noqa: PLC0415
 
-        # Build result
+            last_run = mlflow.last_active_run()
+            if last_run:
+                mlflow_run_id = last_run.info.run_id
+        except Exception:  # noqa: BLE001
+            pass
+
         final_map50 = float(epoch_metrics.get("val/mAP50", 0.0))
         final_map50_95 = float(epoch_metrics.get("val/mAP50_95", 0.0))
 
@@ -275,7 +547,7 @@ class TrainingService:
         return TrainingResult(
             experiment_name=params.experiment_name,
             model_variant=params.model_variant,
-            mlflow_run_id=active_run.info.run_id,
+            mlflow_run_id=mlflow_run_id,
             best_checkpoint_local=str(save_dir / "weights" / "best.pt"),
             best_checkpoint_s3=best_s3_uri,
             epochs_completed=epochs_completed,
@@ -314,6 +586,60 @@ class TrainingService:
         if not dataset_path.is_dir():
             raise TrainingError(
                 f"--dataset-dir is not a directory: {params.dataset_dir}"
+            )
+
+    # ------------------------------------------------------------------
+    # Local dataset validation
+    # ------------------------------------------------------------------
+
+    def _validate_local_dataset(self, params: TrainingParams) -> None:
+        """Pre-training sanity check for local mode datasets.
+
+        Verifies that data.yaml, images/train/, and images/val/ all exist
+        and contain at least one file each. Logs the structure for
+        observability. Raises TrainingError on hard failures.
+        """
+        dataset_path = Path(params.dataset_dir).resolve()
+
+        # data.yaml must exist
+        data_yaml = dataset_path / "data.yaml"
+        if not data_yaml.exists():
+            raise TrainingError(
+                f"data.yaml not found in dataset_dir: {dataset_path}. "
+                "Run the dataset_loading step first."
+            )
+        self._logger.info("Local dataset validation | data.yaml found at %s", data_yaml)
+
+        # Check required splits
+        for split in ("train", "val"):
+            images_dir = dataset_path / "images" / split
+            if not images_dir.exists():
+                raise TrainingError(
+                    f"images/{split}/ directory not found in dataset_dir: {dataset_path}"
+                )
+            image_files = [
+                p for p in images_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+            ]
+            if not image_files:
+                raise TrainingError(
+                    f"images/{split}/ directory is empty (no image files): {images_dir}"
+                )
+            self._logger.info(
+                "Local dataset validation | images/%s: %d files found",
+                split,
+                len(image_files),
+            )
+
+        # Log optional test split presence without raising
+        test_dir = dataset_path / "images" / "test"
+        if test_dir.exists():
+            test_count = sum(
+                1 for p in test_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+            )
+            self._logger.info(
+                "Local dataset validation | images/test: %d files found", test_count
             )
 
     # ------------------------------------------------------------------
@@ -415,102 +741,20 @@ class TrainingService:
         # Always set path to the resolved absolute dataset directory
         content["path"] = str(dataset_path)
 
+        # In S3 streaming mode the dataset_loading step only downloads labels.
+        # Ultralytics validates that image directories exist at init time
+        # (before S3PoseTrainer takes over), so we create empty stubs.
+        if params.source == "s3":
+            for split_key in ("train", "val", "test"):
+                rel = content.get(split_key)
+                if rel:
+                    (dataset_path / rel).mkdir(parents=True, exist_ok=True)
+
         with dest_yaml.open("w") as fh:
             yaml.dump(content, fh, default_flow_style=False, sort_keys=False)
 
         self._logger.debug("Wrote data.yaml to %s", dest_yaml)
         return dest_yaml
-
-    # ------------------------------------------------------------------
-    # MLflow params and tags
-    # ------------------------------------------------------------------
-
-    def _log_params_and_tags(self, params: TrainingParams) -> None:
-        """Log all hyperparameters as MLflow params and set run tags."""
-        aug = params.augmentation
-
-        all_params: dict[str, Any] = {
-            # Identity
-            "model.variant": params.model_variant,
-            "experiment.name": params.experiment_name,
-            "dataset.dir": params.dataset_dir,
-            "dataset.source": params.source,
-            # Schedule
-            "training.epochs": params.epochs,
-            "training.batch_size": params.batch_size,
-            "training.image_size": params.image_size,
-            # LR
-            "training.learning_rate": params.learning_rate,
-            "training.cos_lr": params.cos_lr,
-            "training.lrf": params.lrf,
-            # Optimizer
-            "training.optimizer": params.optimizer,
-            "training.momentum": params.momentum,
-            "training.weight_decay": params.weight_decay,
-            # Warmup
-            "training.warmup_epochs": params.warmup_epochs,
-            "training.warmup_momentum": params.warmup_momentum,
-            # Regularization
-            "training.dropout": params.dropout,
-            "training.label_smoothing": params.label_smoothing,
-            # Efficiency
-            "training.nbs": params.nbs,
-            "training.freeze": str(params.freeze),
-            "training.amp": params.amp,
-            "training.close_mosaic": params.close_mosaic,
-            "training.seed": params.seed,
-            "training.deterministic": params.deterministic,
-            # Loss gains
-            "training.pose": params.pose,
-            "training.kobj": params.kobj,
-            "training.box": params.box,
-            "training.cls": params.cls,
-            "training.dfl": params.dfl,
-            # Early stopping
-            "training.patience": params.patience,
-            # Augmentation
-            "augmentation.hsv_h": aug.hsv_h,
-            "augmentation.hsv_s": aug.hsv_s,
-            "augmentation.hsv_v": aug.hsv_v,
-            "augmentation.degrees": aug.degrees,
-            "augmentation.translate": aug.translate,
-            "augmentation.scale": aug.scale,
-            "augmentation.shear": aug.shear,
-            "augmentation.perspective": aug.perspective,
-            "augmentation.flipud": aug.flipud,
-            "augmentation.fliplr": aug.fliplr,
-            "augmentation.mosaic": aug.mosaic,
-            "augmentation.mixup": aug.mixup,
-            "augmentation.copy_paste": aug.copy_paste,
-            "augmentation.erasing": aug.erasing,
-            "augmentation.bgr": aug.bgr,
-        }
-
-        # MLflow enforces a max of 100 params per call
-        items = list(all_params.items())
-        batch_size = 100
-        for i in range(0, len(items), batch_size):
-            batch = dict(items[i : i + batch_size])
-            # Convert all values to str/int/float (mlflow requirement)
-            safe_batch = {k: str(v) if not isinstance(v, (int, float)) else v for k, v in batch.items()}
-            try:
-                mlflow.log_params(safe_batch)
-            except Exception as exc:  # noqa: BLE001
-                _logger.warning("MLflow log_params failed: %s", exc)
-
-        try:
-            mlflow.set_tags(
-                {
-                    "model.variant": params.model_variant,
-                    "dataset.source": params.source,
-                    "pipeline.step": "model_training",
-                    "project": "infinite-orbits",
-                    "experiment.name": params.experiment_name,
-                    "training.status": "RUNNING",
-                }
-            )
-        except Exception as exc:  # noqa: BLE001
-            _logger.warning("MLflow set_tags failed: %s", exc)
 
     # ------------------------------------------------------------------
     # train() kwargs
@@ -559,7 +803,6 @@ class TrainingService:
             # Output location
             "project": params.output_dir,
             "name": params.experiment_name,
-            # Disable Ultralytics' own MLflow integration to avoid double-logging
             "plots": True,
             "save": True,
             "save_period": params.checkpoint_interval,
@@ -589,39 +832,6 @@ class TrainingService:
             kwargs["resume"] = True
 
         return kwargs
-
-    # ------------------------------------------------------------------
-    # Artifact logging
-    # ------------------------------------------------------------------
-
-    def _log_artifacts(self, save_dir: Path) -> None:
-        """Log weights, plots, and results.csv to the active MLflow run."""
-        # Weights
-        for weight_name in ("best.pt", "last.pt"):
-            weight_path = save_dir / "weights" / weight_name
-            if weight_path.exists():
-                try:
-                    mlflow.log_artifact(str(weight_path), artifact_path="weights")
-                    _logger.debug("Logged artifact: %s", weight_path)
-                except Exception as exc:  # noqa: BLE001
-                    _logger.warning("Failed to log artifact %s: %s", weight_path, exc)
-            else:
-                _logger.warning("Weight file not found, skipping: %s", weight_path)
-
-        # Plots (confusion matrix, PR curve, results plots, etc.)
-        for plot_path in save_dir.glob("*.png"):
-            try:
-                mlflow.log_artifact(str(plot_path), artifact_path="plots")
-            except Exception as exc:  # noqa: BLE001
-                _logger.warning("Failed to log plot %s: %s", plot_path, exc)
-
-        # Per-epoch CSV
-        results_csv = save_dir / "results.csv"
-        if results_csv.exists():
-            try:
-                mlflow.log_artifact(str(results_csv), artifact_path="metrics")
-            except Exception as exc:  # noqa: BLE001
-                _logger.warning("Failed to log results.csv: %s", exc)
 
     # ------------------------------------------------------------------
     # S3 checkpoint upload

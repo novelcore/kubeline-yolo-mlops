@@ -11,6 +11,7 @@ from typing import Optional
 import boto3
 from botocore.config import Config as BotoConfig
 
+from app.logger import setup_logging
 from app.models.config import Config
 from app.models.dataset import YoloDatasetParams
 from app.services.dataset_loading import DatasetLoadingService
@@ -28,11 +29,7 @@ class Manager:
 
     def __init__(self, config: Optional[Config] = None) -> None:
         self._config = config or Config()
-
-        logging.basicConfig(
-            level=getattr(logging, self._config.log_level.upper()),
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        )
+        setup_logging(level=self._config.log_level)
         self._logger = logging.getLogger(__name__)
 
         self._s3_client = self._build_s3_client()
@@ -95,6 +92,7 @@ class Manager:
         source: str,
         output_dir: str,
         path_override: Optional[str] = None,
+        labels_only: bool = False,
         sample_size: Optional[int] = None,
         seed: int = 42,
     ) -> None:
@@ -124,11 +122,16 @@ class Manager:
             source=source,
             output_dir=output_dir,
             path_override=path_override or None,
+            labels_only=labels_only,
             sample_size=sample_size,
             seed=seed,
         )
 
-        stats = self._service.run(params=params)
+        try:
+            stats = self._service.run(params=params)
+        except Exception as e:
+            self._logger.error("Dataset loading failed: %s", e)
+            raise
 
         self._logger.info(
             "Dataset loading finished | train=%d val=%d test=%d",

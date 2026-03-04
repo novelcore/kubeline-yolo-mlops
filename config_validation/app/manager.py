@@ -3,6 +3,7 @@
 import logging
 from typing import Optional
 
+from app.logger import setup_logging
 from app.models.config import Config
 from app.services.config_validation import ConfigValidationService
 
@@ -10,16 +11,13 @@ from app.services.config_validation import ConfigValidationService
 class Manager:
     def __init__(self, config: Config = None) -> None:
         self._config = config or Config()
+        setup_logging(level=self._config.log_level)
+
         self._service = ConfigValidationService(
             skip_liveness_checks=self._config.skip_liveness_checks,
             max_retries=self._config.max_retries,
             timeout=self._config.timeout,
             mlflow_tracking_uri=self._config.mlflow_tracking_uri,
-        )
-
-        logging.basicConfig(
-            level=getattr(logging, self._config.log_level.upper()),
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         )
         self._logger = logging.getLogger(__name__)
 

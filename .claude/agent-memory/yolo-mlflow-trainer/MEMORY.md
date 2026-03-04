@@ -9,57 +9,72 @@
 
 ## File Layout (model_training step)
 - app/cli.py — Typer CLI with all hyperparameters as flags
-- app/manager.py — wires Config + boto3 + TrainingService
+- app/logger.py — ColorFormatter + setup_logging (identical to dataset_loading/app/logger.py)
+- app/manager.py — wires Config + boto3 + TrainingService; uses setup_logging()
 - app/models/config.py — Pydantic BaseSettings (env vars / .env)
 - app/models/training.py — TrainingParams, AugmentationParams, TrainingResult
 - app/services/model_training.py — TrainingService (core orchestrator)
 - app/services/s3_dataset.py — S3YoloDataset (streaming mode)
+- app/services/s3_pose_trainer.py — S3PoseTrainer + make_s3_pose_trainer factory
 - app/services/resource_monitor.py — ResourceMonitor (background thread)
-- No __init__.py needed in models/ or services/ subdirectories (confirmed pattern)
+- app/services/lru_disk_cache.py — LruDiskCache for S3 image caching
 
 ## Key Design Decisions (confirmed with user)
-- --pretrained-weights: loads weights only, epoch 0 restart (like HF model_name_or_path)
+- --pretrained-weights: loads weights only, epoch 0 restart
 - --resume-from: full Ultralytics resume=True (restores epoch+optimizer+scheduler)
 - Both accept s3:// URIs, downloaded to tempfile.TemporaryDirectory (cleaned up in finally)
 - data.yaml always written to tempfile.TemporaryDirectory, deleted after training
+- source auto-detected from dataset_manifest.json if present (overrides CLI --source)
 - source="local" reads from dataset_dir; source="s3" uses S3YoloDataset streaming
-- No ONNX export in this step
-- No MLflow model registry in this step (left to model_registration)
+- No ONNX export in this step; no MLflow model registry (left to model_registration)
 - S3 checkpoints: s3://<checkpoint_bucket>/<checkpoint_prefix>/<experiment_name>/
-- Intermediate checkpoints uploaded every checkpoint_interval epochs via on_train_epoch_end callback
-- Final best.pt and last.pt uploaded after training completes
 - Experiment name comes from --experiment-name CLI flag (not env var)
-- MLflow tracking URI from MLFLOW_TRACKING_URI env var
+
+## Manager.run() Signature Note
+- source, s3_bucket, s3_prefix have defaults (= "local", = None, = None)
+- disk_cache_bytes has a default (= 2GB)
+- All remaining params (epochs, batch_size, etc.) are keyword-only (after `*`)
+- This was required to fix pre-existing SyntaxError: param without default after param with default
+
+## Manifest Auto-Detection Flow
+- `TrainingService.run()` calls `_apply_manifest_if_present(params)` FIRST (before _validate_params)
+- Reads `{dataset_dir}/dataset_manifest.json`; if bucket+prefix found, creates new params via
+  `params.model_copy(update={"source": "s3", "s3_bucket": bucket, "s3_prefix": prefix})`
+- Malformed manifest or missing fields → logs warning, returns original params unchanged
+- After detection, _validate_params still enforces s3_bucket/s3_prefix when source='s3'
+
+## Local Mode Validation (_validate_local_dataset)
+- Called in `_run_with_mlflow` when `params.source == "local"` (before training starts)
+- Checks: data.yaml exists, images/train/ and images/val/ exist with >=1 image file
+- Raises TrainingError on failure; logs split counts at INFO level
+- Image extensions: {.jpg, .jpeg, .png, .bmp, .webp}
+
+## Dataset Stats MLflow Logging
+- `_read_dataset_stats()` reads `{dataset_dir}/dataset_stats.json` → None if absent/corrupt
+- `_log_params_and_tags(params, active_run=None, dataset_stats=None)` merges stats as `dataset.*`
+- Logged fields: train_images, val_images, test_images, train_labels, val_labels, test_labels,
+  version, source, sampled, sample_size
 
 ## MLflow Logging
 - Params logged: all hyperparameters in batches of <=100 (MLflow limit)
-- Per-epoch metrics via on_fit_epoch_end callback: train/box_loss, train/pose_loss,
-  train/kobj_loss, train/cls_loss, train/dfl_loss, val/precision, val/recall,
-  val/mAP50, val/mAP50_95
-- System metrics via ResourceMonitor thread: system/ram_used_gb, system/ram_percent,
-  system/cpu_percent, system/gpu_vram_used_gb, system/gpu_vram_total_gb,
-  system/gpu_utilization_pct (+ _gpu{i} suffix for multi-GPU)
+- Per-epoch metrics via on_fit_epoch_end callback (captured + fired by test mock)
+- System metrics via ResourceMonitor thread
 - Artifacts after training: weights/best.pt, weights/last.pt, plots/*.png, metrics/results.csv
-- Tags: model.variant, dataset.source, pipeline.step=model_training, project=infinite-orbits,
-  training.status (RUNNING -> SUCCEEDED or FAILED)
+- Tags: model.variant, dataset.source, pipeline.step, project, training.status
+
+## Test Patterns (important gotchas)
+- `dataset_dir` fixture MUST create images/train/ and images/val/ with >=1 .jpg file
+  (local validation runs inside _run_with_mlflow now, not just in run())
+- `_run_with_mocks` uses `mock_model.add_callback.side_effect` to capture callbacks;
+  `mock_model.train.side_effect` fires `on_fit_epoch_end` so epoch_metrics is populated
+- `artifact_path` in `mlflow.log_artifact` is a KEYWORD arg → `c[1]["artifact_path"]` not `c[0][1]`
+- Patch make_s3_pose_trainer at source: `app.services.s3_pose_trainer.make_s3_pose_trainer`
+  (it's a lazy import inside the if block, not a module-level name in model_training.py)
+- Pre-existing failures: test_config_default_values, test_s3_dataset (cv2 environment issue)
 
 ## S3 Credential Pattern (same as dataset_loading)
 - AWS: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION, S3_ENDPOINT_URL
-- LakeFS: LAKEFS_ENDPOINT, LAKEFS_ACCESS_KEY, LAKEFS_SECRET_KEY
-- LakeFS takes precedence when LAKEFS_ENDPOINT is set
-
-## Test Patterns
-- All tests mock ultralytics.YOLO, mlflow, boto3, psutil, pynvml
-- S3YoloDataset tests use importlib.reload to patch sys.modules before import
-- TrainingService tests build fake Ultralytics save_dir structure in tmp_path
-- Manager tests mock TrainingService at app.manager.TrainingService
-- ResourceMonitor tests patch app.services.resource_monitor._GPU_AVAILABLE
-
-## Augmentation Notes for Spacecraft Pose
-- fliplr=0.0 (no horizontal flip — satellites have no left-right symmetry)
-- flipud=0.0 (no vertical flip — orbital geometry has defined "up")
-- degrees=0.0 (rotation breaks keypoint geometry)
-- perspective max 0.001 (severe keypoint displacement beyond this)
+- LakeFS: LAKEFS_ENDPOINT, LAKEFS_ACCESS_KEY, LAKEFS_SECRET_KEY (takes precedence when set)
 
 ## See Also
 - patterns.md — detailed notes on Ultralytics callback hooks and metric key names

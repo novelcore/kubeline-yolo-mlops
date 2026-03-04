@@ -30,7 +30,11 @@ def _build_minimal_yolo_tree(root: Path, n: int = 2) -> None:
         for i in range(1, n + 1):
             stem = f"img{i:06d}"
             (root / "images" / split / f"{stem}.jpg").write_bytes(b"\xff\xd8\xff")
-            line = " ".join(["0"] + ["0.5"] * 37) + "\n"
+            # class=0 + 4 bbox + 11 keypoints × (x, y, vis=2)
+            parts = ["0"] + ["0.5"] * 4
+            for _ in range(11):
+                parts.extend(["0.5", "0.5", "2"])
+            line = " ".join(parts) + "\n"
             (root / "labels" / split / f"{stem}.txt").write_text(line)
 
     data = {

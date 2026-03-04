@@ -20,6 +20,13 @@ class YoloDatasetParams(BaseModel):
             "When set, the conventional bucket/prefix is ignored."
         ),
     )
+    labels_only: bool = Field(
+        default=False,
+        description=(
+            "When True, download only label files and data.yaml (no images). "
+            "Used with S3 streaming mode where images are fetched on-demand."
+        ),
+    )
     sample_size: Optional[int] = Field(
         default=None,
         ge=1,
@@ -32,6 +39,24 @@ class YoloDatasetParams(BaseModel):
     output_dir: str = Field(description="Local directory where the dataset is written.")
 
 
+class DatasetManifest(BaseModel):
+    """Manifest describing the S3 dataset layout for downstream S3 streaming.
+
+    Written to ``{output_dir}/dataset_manifest.json`` in labels-only mode so
+    that the training step knows which bucket/prefix to stream from and how
+    many images to expect per split.
+    """
+
+    bucket: str = Field(description="S3 bucket name.")
+    prefix: str = Field(description="S3 key prefix (with trailing slash).")
+    splits: dict[str, list[str]] = Field(
+        description="Mapping of split name to list of S3 image keys."
+    )
+    total_images: int = Field(
+        ge=0, description="Total number of images across all splits."
+    )
+
+
 class YoloDatasetStats(BaseModel):
     """Statistics artifact written to {output_dir}/dataset_stats.json after a run."""
 
@@ -40,6 +65,13 @@ class YoloDatasetStats(BaseModel):
     train_images: int = Field(ge=0, description="Number of images in the train split.")
     val_images: int = Field(ge=0, description="Number of images in the val split.")
     test_images: int = Field(ge=0, description="Number of images in the test split.")
+    train_labels: int = Field(
+        ge=0, description="Number of label files in the train split."
+    )
+    val_labels: int = Field(ge=0, description="Number of label files in the val split.")
+    test_labels: int = Field(
+        ge=0, description="Number of label files in the test split."
+    )
     sampled: bool = Field(description="True when the dataset was sub-sampled.")
     sample_size: Optional[int] = Field(
         default=None,

@@ -5,6 +5,7 @@
 
 ## Step 4 implementation status
 Fully implemented (2026-03-02). All stubs replaced with real MLflow calls.
+Colored logger, cleanup, and GPU cache-clear added (2026-03-02).
 
 ## Key architectural decisions
 
@@ -25,6 +26,37 @@ If `--last-checkpoint-path` is not provided, the service derives it by replacing
 ### Model stage
 Default `promote_to=None` — no automatic promotion. Stage transitions only when `--promote-to` is explicitly passed. Valid values: `Staging`, `Production`, `Archived`.
 
+## Logger wiring (all steps)
+- `app/logger.py` is identical across all four pipeline steps.
+- In `Manager.__init__`: `setup_logging(level=self._config.log_level)` then `logging.getLogger(__name__)`.
+- Never use `logging.basicConfig()` in the Manager.
+
+## Config: extra="ignore" is required
+The `.env` file contains `AWS_*` keys not declared on `Config`. Without `extra="ignore"` in `SettingsConfigDict`, pydantic raises `ValidationError: Extra inputs are not permitted` at startup.
+
+Tests that verify a missing required field raises must use `Config(_env_file=None)` so the `.env` file does not satisfy the field.
+
+## Cleanup pattern (try/finally in Manager.run)
+```python
+try:
+    result = self._service.run(params=params)
+finally:
+    self._cleanup(best_checkpoint_path=..., last_checkpoint_path=...)
+```
+`_cleanup()` skips S3 URIs (`s3://...`), deletes local files/dirs, logs `OSError` at ERROR but never re-raises. Always calls `_free_gpu_memory()` at the end.
+
+## GPU cache clearing
+```python
+def _free_gpu_memory(self) -> None:
+    try:
+        import torch  # type: ignore[import-untyped,import-not-found]
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        ...
+```
+Both error codes are required in the inline comment when torch is not installed in the venv — the `pyproject.toml` override alone is insufficient when an inline `# type: ignore` is also present on that line. Also add `"torch", "torch.*"` to `[[tool.mypy.overrides]]` in `pyproject.toml`.
+
 ## Config env vars (required)
 - `MLFLOW_TRACKING_URI` — required, no default
 - `MLFLOW_EXPERIMENT_NAME` — default `"infinite-orbits"`
@@ -41,7 +73,7 @@ Lambdas with default arguments (e.g. `lambda k=key, v=value: ...`) inside loops 
 
 ## Test structure
 - `tests/test_config.py` — 7 tests, env var reading via `monkeypatch.setenv`
-- `tests/test_manager.py` — 6 tests in `TestManagerRun`, all mock `ModelRegistrationService`
+- `tests/test_manager.py` — 18 tests in `TestManagerRun`, `TestManagerLogger`, `TestManagerCleanup`, `TestManagerFreeGpuMemory` — all mock `ModelRegistrationService`
 - `tests/test_model_registration_service.py` — 14 tests in 4 classes, all mock `mlflow` and `MlflowClient`
 - Patch targets: `app.services.model_registration.mlflow`, `app.services.model_registration.MlflowClient`, `app.services.model_registration.time.sleep`
 

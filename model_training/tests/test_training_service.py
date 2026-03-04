@@ -4,6 +4,7 @@ All external dependencies (ultralytics YOLO, mlflow, boto3, pynvml) are
 mocked so that no real training, S3 calls, or GPU initialisation occur.
 """
 
+import json
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -99,13 +100,18 @@ def _fake_trainer_save_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 def dataset_dir(tmp_path: Path) -> str:
-    """A minimal local YOLO dataset directory with data.yaml."""
+    """A minimal local YOLO dataset directory with data.yaml and image files."""
     d = tmp_path / "dataset"
     d.mkdir()
     (d / "data.yaml").write_text(
         "path: /tmp/dataset\ntrain: images/train\nval: images/val\n"
         "test: images/test\nkpt_shape: [11, 3]\nnames: {0: spacecraft}\n"
     )
+    # Create image directories with at least one file so local validation passes
+    for split in ("train", "val"):
+        img_dir = d / "images" / split
+        img_dir.mkdir(parents=True)
+        (img_dir / "img_001.jpg").write_bytes(b"fake-image")
     return str(d)
 
 
@@ -175,6 +181,217 @@ class TestValidation:
         )
         with pytest.raises(TrainingError, match="does not exist"):
             service._validate_params(params)
+
+
+# ---------------------------------------------------------------------------
+# Local dataset validation tests
+# ---------------------------------------------------------------------------
+
+
+class TestLocalDatasetValidation:
+    def test_passes_with_valid_structure(self, dataset_dir: str, output_dir: str) -> None:
+        """_validate_local_dataset does not raise for a valid dataset directory."""
+        service = _make_service()
+        params = _make_params(dataset_dir=dataset_dir, output_dir=output_dir)
+        # Should not raise
+        service._validate_local_dataset(params)
+
+    def test_raises_when_data_yaml_missing(self, tmp_path: Path, output_dir: str) -> None:
+        """Missing data.yaml raises TrainingError in local mode."""
+        d = tmp_path / "no_yaml"
+        d.mkdir()
+        # Create image dirs but no data.yaml
+        for split in ("train", "val"):
+            img_dir = d / "images" / split
+            img_dir.mkdir(parents=True)
+            (img_dir / "img.jpg").write_bytes(b"x")
+
+        service = _make_service()
+        params = _make_params(dataset_dir=str(d), output_dir=output_dir)
+        with pytest.raises(TrainingError, match="data.yaml not found"):
+            service._validate_local_dataset(params)
+
+    def test_raises_when_train_images_dir_missing(
+        self, tmp_path: Path, output_dir: str
+    ) -> None:
+        """Missing images/train/ raises TrainingError."""
+        d = tmp_path / "no_train"
+        d.mkdir()
+        (d / "data.yaml").write_text("path: /tmp\ntrain: images/train\n")
+        # Only create val, not train
+        val_dir = d / "images" / "val"
+        val_dir.mkdir(parents=True)
+        (val_dir / "img.jpg").write_bytes(b"x")
+
+        service = _make_service()
+        params = _make_params(dataset_dir=str(d), output_dir=output_dir)
+        with pytest.raises(TrainingError, match="images/train"):
+            service._validate_local_dataset(params)
+
+    def test_raises_when_train_images_dir_empty(
+        self, tmp_path: Path, output_dir: str
+    ) -> None:
+        """Empty images/train/ (no image files) raises TrainingError."""
+        d = tmp_path / "empty_train"
+        d.mkdir()
+        (d / "data.yaml").write_text("path: /tmp\ntrain: images/train\n")
+        (d / "images" / "train").mkdir(parents=True)  # exists but empty
+        val_dir = d / "images" / "val"
+        val_dir.mkdir(parents=True)
+        (val_dir / "img.jpg").write_bytes(b"x")
+
+        service = _make_service()
+        params = _make_params(dataset_dir=str(d), output_dir=output_dir)
+        with pytest.raises(TrainingError, match="empty"):
+            service._validate_local_dataset(params)
+
+    def test_non_image_files_not_counted(self, tmp_path: Path, output_dir: str) -> None:
+        """Only files with recognised image extensions count."""
+        d = tmp_path / "non_img"
+        d.mkdir()
+        (d / "data.yaml").write_text("path: /tmp\ntrain: images/train\n")
+        train_dir = d / "images" / "train"
+        train_dir.mkdir(parents=True)
+        # .txt file should not count
+        (train_dir / "label.txt").write_text("0 0.5 0.5 0.1 0.1")
+        val_dir = d / "images" / "val"
+        val_dir.mkdir(parents=True)
+        (val_dir / "img.jpg").write_bytes(b"x")
+
+        service = _make_service()
+        params = _make_params(dataset_dir=str(d), output_dir=output_dir)
+        with pytest.raises(TrainingError, match="empty"):
+            service._validate_local_dataset(params)
+
+
+# ---------------------------------------------------------------------------
+# Manifest auto-detection tests
+# ---------------------------------------------------------------------------
+
+
+class TestManifestAutoDetection:
+    def _write_manifest(self, directory: Path, bucket: str, prefix: str) -> None:
+        manifest = {
+            "bucket": bucket,
+            "prefix": prefix,
+            "splits": {
+                "train": ["images/train/img1.jpg"],
+                "val": ["images/val/img1.jpg"],
+                "test": [],
+            },
+            "total_images": 2,
+        }
+        (directory / "dataset_manifest.json").write_text(json.dumps(manifest))
+
+    def test_manifest_present_switches_to_s3_mode(
+        self, tmp_path: Path, output_dir: str
+    ) -> None:
+        """When dataset_manifest.json exists, source is overridden to 's3'."""
+        d = tmp_path / "manifest_dataset"
+        d.mkdir()
+        (d / "data.yaml").write_text("path: /tmp\ntrain: images/train\n")
+        self._write_manifest(d, bucket="my-bucket", prefix="datasets/v1/")
+
+        service = _make_service()
+        params = _make_params(
+            dataset_dir=str(d),
+            output_dir=output_dir,
+            source="local",  # initially local
+            s3_bucket=None,
+            s3_prefix=None,
+        )
+        updated = service._apply_manifest_if_present(params)
+
+        assert updated.source == "s3"
+        assert updated.s3_bucket == "my-bucket"
+        assert updated.s3_prefix == "datasets/v1/"
+
+    def test_manifest_absent_leaves_params_unchanged(
+        self, dataset_dir: str, output_dir: str
+    ) -> None:
+        """Without dataset_manifest.json, params are returned unchanged."""
+        service = _make_service()
+        params = _make_params(dataset_dir=dataset_dir, output_dir=output_dir, source="local")
+        updated = service._apply_manifest_if_present(params)
+
+        assert updated.source == "local"
+        assert updated.s3_bucket is None
+        assert updated.s3_prefix is None
+
+    def test_manifest_overrides_explicit_s3_flags(
+        self, tmp_path: Path, output_dir: str
+    ) -> None:
+        """Manifest takes precedence even when explicit s3_bucket/prefix are passed."""
+        d = tmp_path / "override_dataset"
+        d.mkdir()
+        (d / "data.yaml").write_text("path: /tmp\ntrain: images/train\n")
+        self._write_manifest(d, bucket="manifest-bucket", prefix="manifest/prefix/")
+
+        service = _make_service()
+        params = _make_params(
+            dataset_dir=str(d),
+            output_dir=output_dir,
+            source="s3",
+            s3_bucket="old-bucket",
+            s3_prefix="old/prefix/",
+        )
+        updated = service._apply_manifest_if_present(params)
+
+        assert updated.s3_bucket == "manifest-bucket"
+        assert updated.s3_prefix == "manifest/prefix/"
+
+    def test_malformed_manifest_falls_back_gracefully(
+        self, tmp_path: Path, output_dir: str
+    ) -> None:
+        """Invalid JSON in manifest logs a warning and leaves params unchanged."""
+        d = tmp_path / "bad_manifest"
+        d.mkdir()
+        (d / "data.yaml").write_text("path: /tmp\ntrain: images/train\n")
+        (d / "dataset_manifest.json").write_text("{ not valid json }")
+
+        service = _make_service()
+        params = _make_params(dataset_dir=str(d), output_dir=output_dir, source="local")
+        updated = service._apply_manifest_if_present(params)
+
+        assert updated.source == "local"
+
+    def test_manifest_missing_bucket_field_falls_back(
+        self, tmp_path: Path, output_dir: str
+    ) -> None:
+        """Manifest without 'bucket' field is ignored."""
+        d = tmp_path / "no_bucket"
+        d.mkdir()
+        (d / "data.yaml").write_text("path: /tmp\ntrain: images/train\n")
+        (d / "dataset_manifest.json").write_text(
+            json.dumps({"prefix": "some/prefix/", "splits": {}, "total_images": 0})
+        )
+
+        service = _make_service()
+        params = _make_params(dataset_dir=str(d), output_dir=output_dir)
+        updated = service._apply_manifest_if_present(params)
+
+        assert updated.source == "local"
+
+    def test_s3_validation_passes_when_manifest_supplies_credentials(
+        self, tmp_path: Path, output_dir: str
+    ) -> None:
+        """After manifest auto-detection, s3 validation should not raise."""
+        d = tmp_path / "manifest_s3"
+        d.mkdir()
+        (d / "data.yaml").write_text("path: /tmp\ntrain: images/train\n")
+        self._write_manifest(d, bucket="my-bucket", prefix="datasets/v1/")
+
+        service = _make_service()
+        params = _make_params(
+            dataset_dir=str(d),
+            output_dir=output_dir,
+            source="local",
+            s3_bucket=None,
+            s3_prefix=None,
+        )
+        updated = service._apply_manifest_if_present(params)
+        # Validate should now pass since s3_bucket and s3_prefix are populated
+        service._validate_params(updated)  # should not raise
 
 
 # ---------------------------------------------------------------------------
@@ -263,43 +480,6 @@ class TestMaybeDownloadPt:
 
 
 # ---------------------------------------------------------------------------
-# Artifact logging
-# ---------------------------------------------------------------------------
-
-
-class TestLogArtifacts:
-    def test_logs_expected_artifacts(self, tmp_path: Path) -> None:
-        """best.pt, last.pt, .png plots, and results.csv are all logged."""
-        save_dir = _fake_trainer_save_dir(tmp_path)
-        service = _make_service()
-
-        with patch("app.services.model_training.mlflow") as mock_mlflow:
-            service._log_artifacts(save_dir)
-
-        logged_calls = mock_mlflow.log_artifact.call_args_list
-        logged_paths = [str(c[0][0]) for c in logged_calls]
-        artifact_paths = [c[0][1] for c in logged_calls]
-
-        assert any("best.pt" in p for p in logged_paths)
-        assert any("last.pt" in p for p in logged_paths)
-        assert any("results.csv" in p for p in logged_paths)
-        assert any("confusion_matrix.png" in p for p in logged_paths)
-        assert "weights" in artifact_paths
-        assert "metrics" in artifact_paths
-        assert "plots" in artifact_paths
-
-    def test_missing_weight_file_does_not_raise(self, tmp_path: Path) -> None:
-        """If best.pt or last.pt is absent, a warning is logged, not an exception."""
-        save_dir = tmp_path / "empty_run"
-        (save_dir / "weights").mkdir(parents=True)
-
-        service = _make_service()
-        with patch("app.services.model_training.mlflow"):
-            # Should not raise even with no artifact files
-            service._log_artifacts(save_dir)
-
-
-# ---------------------------------------------------------------------------
 # Full run — end-to-end with all heavy deps mocked
 # ---------------------------------------------------------------------------
 
@@ -313,7 +493,12 @@ class TestTrainingServiceRun:
         save_dir: Path,
         **param_overrides: Any,
     ) -> Any:
-        """Execute service.run() with ultralytics, mlflow, and S3 fully mocked."""
+        """Execute service._run_training() with all heavy deps mocked.
+
+        The mock YOLO model captures registered callbacks via add_callback and
+        fires them synchronously when train() is called so that per-epoch
+        metrics (epoch_metrics dict) are populated and result fields are correct.
+        """
         mock_s3 = MagicMock()
         service = _make_service(s3_client=mock_s3)
 
@@ -334,35 +519,40 @@ class TestTrainingServiceRun:
         mock_trainer.loss_items = [0.05, 0.03, 0.02, 0.01, 0.04]
         mock_trainer.last = str(save_dir / "weights" / "last.pt")
 
+        # Capture registered callbacks so we can fire them from within train()
+        registered_callbacks: dict[str, Any] = {}
+
+        def _capture_callback(event: str, fn: Any) -> None:
+            registered_callbacks[event] = fn
+
+        def _fake_train(**kwargs: Any) -> Any:
+            # Fire on_fit_epoch_end so epoch_metrics gets populated
+            cb = registered_callbacks.get("on_fit_epoch_end")
+            if cb is not None:
+                cb(mock_trainer)
+            return mock_trainer
+
         mock_model = MagicMock()
-        mock_model.train.return_value = mock_trainer
+        mock_model.add_callback.side_effect = _capture_callback
+        mock_model.train.side_effect = _fake_train
         mock_model.trainer = mock_trainer
 
         mock_yolo_cls = MagicMock(return_value=mock_model)
 
-        mock_run = MagicMock()
-        mock_run.info.run_id = "test-run-id-123"
-
         with (
-            patch("app.services.model_training.mlflow") as mock_mlflow,
             patch("app.services.resource_monitor.mlflow"),
             patch("app.services.resource_monitor.psutil") as mock_psutil,
             patch("app.services.resource_monitor._GPU_AVAILABLE", False),
         ):
-            mock_mlflow.start_run.return_value.__enter__ = MagicMock(
-                return_value=mock_run
-            )
-            mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
-
             vm = MagicMock()
             vm.used = 1e9
             vm.percent = 10.0
             mock_psutil.virtual_memory.return_value = vm
             mock_psutil.cpu_percent.return_value = 5.0
 
-            result = service._run_with_mlflow(params, mock_run, mock_yolo_cls)
+            result = service._run_training(params, mock_yolo_cls)
 
-        return result, mock_model, mock_mlflow, mock_s3
+        return result, mock_model, mock_s3
 
     def test_successful_run_returns_training_result(
         self, dataset_dir: str, output_dir: str, tmp_path: Path
@@ -371,12 +561,11 @@ class TestTrainingServiceRun:
         from app.models.training import TrainingResult
 
         save_dir = _fake_trainer_save_dir(tmp_path)
-        result, _, _, _ = self._run_with_mocks(
+        result, _, _ = self._run_with_mocks(
             dataset_dir, output_dir, tmp_path, save_dir
         )
 
         assert isinstance(result, TrainingResult)
-        assert result.mlflow_run_id == "test-run-id-123"
         assert result.experiment_name == "test-exp"
         assert result.model_variant == "yolov8n-pose.pt"
         assert result.final_map50 == 0.75
@@ -387,7 +576,7 @@ class TestTrainingServiceRun:
     ) -> None:
         """model.train() receives the expected keyword arguments."""
         save_dir = _fake_trainer_save_dir(tmp_path)
-        result, mock_model, _, _ = self._run_with_mocks(
+        result, mock_model, _ = self._run_with_mocks(
             dataset_dir, output_dir, tmp_path, save_dir
         )
 
@@ -404,7 +593,7 @@ class TestTrainingServiceRun:
     ) -> None:
         """best.pt is uploaded to S3 after training completes."""
         save_dir = _fake_trainer_save_dir(tmp_path)
-        _, _, _, mock_s3 = self._run_with_mocks(
+        _, _, mock_s3 = self._run_with_mocks(
             dataset_dir, output_dir, tmp_path, save_dir
         )
 
@@ -416,7 +605,7 @@ class TestTrainingServiceRun:
     ) -> None:
         """When resume_from='auto', model.train() is called with resume=True."""
         save_dir = _fake_trainer_save_dir(tmp_path)
-        _, mock_model, _, _ = self._run_with_mocks(
+        _, mock_model, _ = self._run_with_mocks(
             dataset_dir,
             output_dir,
             tmp_path,
@@ -440,19 +629,11 @@ class TestTrainingServiceRun:
         mock_model.trainer = MagicMock()
         mock_yolo_cls = MagicMock(return_value=mock_model)
 
-        mock_run = MagicMock()
-        mock_run.info.run_id = "fail-run"
-
         with (
-            patch("app.services.model_training.mlflow") as mock_mlflow,
             patch("app.services.resource_monitor.mlflow"),
             patch("app.services.resource_monitor.psutil") as mock_psutil,
             patch("app.services.resource_monitor._GPU_AVAILABLE", False),
         ):
-            mock_mlflow.start_run.return_value.__enter__ = MagicMock(
-                return_value=mock_run
-            )
-            mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
             vm = MagicMock()
             vm.used = 1e9
             vm.percent = 10.0
@@ -462,47 +643,140 @@ class TestTrainingServiceRun:
             with pytest.raises(TrainingError, match="Training failed"):
                 service.run(params)
 
+    def test_local_mode_validation_called_in_run(
+        self, dataset_dir: str, output_dir: str, tmp_path: Path
+    ) -> None:
+        """_validate_local_dataset is called when source='local' via _run_training."""
+        save_dir = _fake_trainer_save_dir(tmp_path)
+        service = _make_service()
+        params = _make_params(
+            dataset_dir=dataset_dir, output_dir=output_dir, source="local"
+        )
+
+        with patch.object(service, "_validate_local_dataset") as mock_validate:
+            mock_trainer = MagicMock()
+            mock_trainer.save_dir = str(save_dir)
+            mock_trainer.epoch = 1
+            mock_trainer.metrics = {}
+            mock_trainer.loss_items = []
+            mock_trainer.last = str(save_dir / "weights" / "last.pt")
+            mock_model = MagicMock()
+            mock_model.train.return_value = mock_trainer
+            mock_model.trainer = mock_trainer
+            mock_yolo_cls = MagicMock(return_value=mock_model)
+
+            with (
+                patch("app.services.resource_monitor.mlflow"),
+                patch("app.services.resource_monitor.psutil") as mock_psutil,
+                patch("app.services.resource_monitor._GPU_AVAILABLE", False),
+            ):
+                vm = MagicMock()
+                vm.used = 1e9
+                vm.percent = 10.0
+                mock_psutil.virtual_memory.return_value = vm
+                mock_psutil.cpu_percent.return_value = 5.0
+
+                service._run_training(params, mock_yolo_cls)
+
+        mock_validate.assert_called_once_with(params)
+
+    def test_local_validation_skipped_in_s3_mode(
+        self, tmp_path: Path, output_dir: str
+    ) -> None:
+        """_validate_local_dataset is NOT called when source='s3'."""
+        d = tmp_path / "s3_dataset"
+        d.mkdir()
+        (d / "data.yaml").write_text("path: /tmp\ntrain: images/train\n")
+        save_dir = _fake_trainer_save_dir(tmp_path)
+
+        service = _make_service()
+        params = _make_params(
+            dataset_dir=str(d),
+            output_dir=output_dir,
+            source="s3",
+            s3_bucket="my-bucket",
+            s3_prefix="datasets/v1/",
+        )
+
+        with patch.object(service, "_validate_local_dataset") as mock_validate:
+            mock_trainer = MagicMock()
+            mock_trainer.save_dir = str(save_dir)
+            mock_trainer.epoch = 1
+            mock_trainer.metrics = {}
+            mock_trainer.loss_items = []
+            mock_trainer.last = str(save_dir / "weights" / "last.pt")
+            mock_model = MagicMock()
+            mock_model.train.return_value = mock_trainer
+            mock_model.trainer = mock_trainer
+            mock_yolo_cls = MagicMock(return_value=mock_model)
+
+            with (
+                patch("app.services.resource_monitor.mlflow"),
+                patch("app.services.resource_monitor.psutil") as mock_psutil,
+                patch("app.services.resource_monitor._GPU_AVAILABLE", False),
+                patch("app.services.s3_pose_trainer.make_s3_pose_trainer"),
+            ):
+                vm = MagicMock()
+                vm.used = 1e9
+                vm.percent = 10.0
+                mock_psutil.virtual_memory.return_value = vm
+                mock_psutil.cpu_percent.return_value = 5.0
+
+                service._run_training(params, mock_yolo_cls)
+
+        mock_validate.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
-# MLflow param logging
+# train() kwargs
 # ---------------------------------------------------------------------------
 
 
-class TestLogParamsAndTags:
-    def test_all_sections_logged(
+class TestBuildTrainKwargs:
+    def test_contains_core_training_params(
         self, dataset_dir: str, output_dir: str
     ) -> None:
-        """log_params is called with params from all config sections."""
+        """Essential training params are forwarded to model.train()."""
         service = _make_service()
         params = _make_params(dataset_dir=dataset_dir, output_dir=output_dir)
+        kwargs = service._build_train_kwargs(params, "/tmp/data.yaml")
 
-        mock_run = MagicMock()
-        mock_run.info.run_id = "x"
+        assert kwargs["data"] == "/tmp/data.yaml"
+        assert kwargs["epochs"] == 2
+        assert kwargs["batch"] == 2
+        assert kwargs["lr0"] == 0.01
+        assert kwargs["optimizer"] == "SGD"
 
-        with patch("app.services.model_training.mlflow") as mock_mlflow:
-            service._log_params_and_tags(params, mock_run)
+    def test_resume_flag_set_when_resume_from(
+        self, dataset_dir: str, output_dir: str
+    ) -> None:
+        """resume=True is in kwargs when resume_from is set."""
+        service = _make_service()
+        params = _make_params(
+            dataset_dir=dataset_dir, output_dir=output_dir, resume_from="auto"
+        )
+        kwargs = service._build_train_kwargs(params, "/tmp/data.yaml")
 
-        # Collect all param keys logged across all log_params calls
-        all_keys: set[str] = set()
-        for c in mock_mlflow.log_params.call_args_list:
-            all_keys.update(c[0][0].keys())
+        assert kwargs["resume"] is True
 
-        assert "model.variant" in all_keys
-        assert "training.epochs" in all_keys
-        assert "training.optimizer" in all_keys
-        assert "augmentation.hsv_h" in all_keys
-        assert "training.pose" in all_keys
-
-    def test_tags_set(self, dataset_dir: str, output_dir: str) -> None:
-        """set_tags is called with the expected pipeline metadata."""
+    def test_no_resume_flag_without_resume_from(
+        self, dataset_dir: str, output_dir: str
+    ) -> None:
+        """resume is absent from kwargs when resume_from is not set."""
         service = _make_service()
         params = _make_params(dataset_dir=dataset_dir, output_dir=output_dir)
+        kwargs = service._build_train_kwargs(params, "/tmp/data.yaml")
 
-        mock_run = MagicMock()
-        with patch("app.services.model_training.mlflow") as mock_mlflow:
-            service._log_params_and_tags(params, mock_run)
+        assert "resume" not in kwargs
 
-        tags = mock_mlflow.set_tags.call_args[0][0]
-        assert tags["pipeline.step"] == "model_training"
-        assert tags["project"] == "infinite-orbits"
-        assert tags["training.status"] == "RUNNING"
+    def test_augmentation_params_forwarded(
+        self, dataset_dir: str, output_dir: str
+    ) -> None:
+        """Augmentation params are included in train kwargs."""
+        service = _make_service()
+        params = _make_params(dataset_dir=dataset_dir, output_dir=output_dir)
+        kwargs = service._build_train_kwargs(params, "/tmp/data.yaml")
+
+        assert "hsv_h" in kwargs
+        assert "mosaic" in kwargs
+        assert "fliplr" in kwargs

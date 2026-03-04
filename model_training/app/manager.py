@@ -10,6 +10,7 @@ from typing import Optional
 import boto3
 from botocore.config import Config as BotoConfig
 
+from app.logger import setup_logging
 from app.models.config import Config
 from app.models.training import AugmentationParams, TrainingParams, TrainingResult
 from app.services.model_training import TrainingService
@@ -28,10 +29,7 @@ class Manager:
     def __init__(self, config: Optional[Config] = None) -> None:
         self._config = config or Config()
 
-        logging.basicConfig(
-            level=getattr(logging, self._config.log_level.upper()),
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        )
+        setup_logging(level=self._config.log_level)
         self._logger = logging.getLogger(__name__)
 
         self._s3_client = self._build_s3_client()
@@ -88,13 +86,15 @@ class Manager:
         dataset_dir: str,
         output_dir: str,
         # Dataset source
-        source: str,
-        s3_bucket: Optional[str],
-        s3_prefix: Optional[str],
+        source: str = "local",
+        s3_bucket: Optional[str] = None,
+        s3_prefix: Optional[str] = None,
+        disk_cache_bytes: int = 2 * 1024**3,
         # Weight init / resume
-        pretrained_weights: Optional[str],
-        resume_from: Optional[str],
-        # Core schedule
+        pretrained_weights: Optional[str] = None,
+        resume_from: Optional[str] = None,
+        # Core schedule (keyword-only from here; all callers use explicit kwargs)
+        *,
         epochs: int,
         batch_size: int,
         image_size: int,
@@ -169,6 +169,7 @@ class Manager:
             source=source,
             s3_bucket=s3_bucket,
             s3_prefix=s3_prefix,
+            disk_cache_bytes=disk_cache_bytes,
             pretrained_weights=pretrained_weights,
             resume_from=resume_from,
             epochs=epochs,
