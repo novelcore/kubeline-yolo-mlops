@@ -27,6 +27,13 @@ class YoloDatasetParams(BaseModel):
             "Used with S3 streaming mode where images are fetched on-demand."
         ),
     )
+    manifest_only: bool = Field(
+        default=False,
+        description=(
+            "When True, download only data.yaml and list S3 keys (no images, no labels). "
+            "Both images and labels are streamed from S3 during training."
+        ),
+    )
     sample_size: Optional[int] = Field(
         default=None,
         ge=1,
@@ -51,6 +58,14 @@ class DatasetManifest(BaseModel):
     prefix: str = Field(description="S3 key prefix (with trailing slash).")
     splits: dict[str, list[str]] = Field(
         description="Mapping of split name to list of S3 image keys."
+    )
+    label_keys: Optional[dict[str, list[str]]] = Field(
+        default=None,
+        description=(
+            "Mapping of split name to list of S3 label keys. "
+            "Present only in manifest-only mode; signals that labels "
+            "should be streamed from S3 during training."
+        ),
     )
     total_images: int = Field(
         ge=0, description="Total number of images across all splits."

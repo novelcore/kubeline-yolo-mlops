@@ -93,6 +93,7 @@ class Manager:
         output_dir: str,
         path_override: Optional[str] = None,
         labels_only: bool = False,
+        manifest_only: bool = False,
         sample_size: Optional[int] = None,
         seed: int = 42,
     ) -> None:
@@ -123,6 +124,7 @@ class Manager:
             output_dir=output_dir,
             path_override=path_override or None,
             labels_only=labels_only,
+            manifest_only=manifest_only,
             sample_size=sample_size,
             seed=seed,
         )

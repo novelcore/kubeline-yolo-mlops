@@ -18,13 +18,13 @@ model:
   pretrained_weights: null
 
 training:
-  epochs: 5
+  epochs: 3
   batch_size: 16
   image_size: 640
   learning_rate: 0.01
   cos_lr: true
   lrf: 0.01
-  optimizer: "SGD"
+  optimizer: "AdamW"
   momentum: 0.937
   weight_decay: 0.0005
   warmup_epochs: 1.0

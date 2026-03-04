@@ -58,6 +58,14 @@ class TrainingParams(BaseModel):
         default=None,
         description="S3 key prefix for images (required when source='s3').",
     )
+    s3_stream_labels: bool = Field(
+        default=False,
+        description=(
+            "When True, labels are streamed from S3 during training instead "
+            "of read from local disk. Set automatically when the dataset "
+            "manifest contains label_keys (manifest-only mode)."
+        ),
+    )
 
     # ---- Weight initialisation / resume ----
     pretrained_weights: Optional[str] = Field(

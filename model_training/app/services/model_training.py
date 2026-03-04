@@ -23,7 +23,6 @@ import logging
 import os
 import re
 import tempfile
-import time
 import warnings
 from pathlib import Path
 from typing import Any
@@ -60,117 +59,6 @@ class TrainingError(Exception):
     """Raised when a training run fails unrecoverably."""
 
 
-# ---------------------------------------------------------------------------
-# Pretty epoch logging (Ultralytics-style tabular output with colors)
-# ---------------------------------------------------------------------------
-
-_BOLD = "\033[1m"
-_DIM = "\033[2m"
-_CYAN = "\033[36m"
-_GREEN = "\033[32m"
-_YELLOW = "\033[33m"
-_BLUE = "\033[34m"
-_MAGENTA = "\033[35m"
-_WHITE = "\033[37m"
-_RESET = "\033[0m"
-
-_W = 11  # column width (matches Ultralytics' %11s)
-
-_LOSS_NAMES = ("box", "pose", "kobj", "cls", "dfl")
-_VAL_NAMES = ("P", "R", "mAP50", "mAP50-95")
-
-
-def _epoch_header() -> str:
-    """Return the colored column header line."""
-    hdr = (
-        f"{_BOLD}{_WHITE}{'Epoch':>{_W}}{'Step':>{_W}}{'ETA':>{_W}}{'GPU_mem':>{_W}}{'GPU%':>{_W}}{_RESET}"
-        f"{_BOLD}{_YELLOW}"
-        + "".join(f"{n:>{_W}}" for n in _LOSS_NAMES)
-        + f"{_RESET}"
-        f"  {_DIM}│{_RESET}  "
-        f"{_BOLD}{_CYAN}"
-        + "".join(f"{n:>{_W}}" for n in _VAL_NAMES)
-        + f"{_RESET}"
-    )
-    return hdr
-
-
-def _get_gpu_info() -> tuple[str, str]:
-    """Return (vram_string, util_string) for the primary CUDA device.
-
-    Tries pynvml first for accurate utilisation; falls back to
-    torch.cuda.memory_reserved() for VRAM only when pynvml is absent.
-    Returns ('N/A', 'N/A') when no GPU is detected.
-    """
-    vram = "N/A"
-    util = "N/A"
-    try:
-        import pynvml as _pynvml  # noqa: PLC0415
-
-        handle = _pynvml.nvmlDeviceGetHandleByIndex(0)
-        mem = _pynvml.nvmlDeviceGetMemoryInfo(handle)
-        utilization = _pynvml.nvmlDeviceGetUtilizationRates(handle)
-        vram = f"{mem.used / (1 << 30):.3g}G"
-        util = f"{utilization.gpu}%"
-        return vram, util
-    except Exception:  # noqa: BLE001
-        pass
-    # pynvml unavailable — fall back to torch
-    try:
-        import torch  # noqa: PLC0415
-
-        if torch.cuda.is_available():
-            vram = f"{torch.cuda.memory_reserved() / (1 << 30):.3g}G"
-    except Exception:  # noqa: BLE001
-        pass
-    return vram, util
-
-
-def _format_eta(seconds: float) -> str:
-    """Format seconds into a human-readable ETA string."""
-    if seconds < 0:
-        return "N/A"
-    m, s = divmod(int(seconds), 60)
-    h, m = divmod(m, 60)
-    if h > 0:
-        return f"{h}h{m:02d}m"
-    if m > 0:
-        return f"{m}m{s:02d}s"
-    return f"{s}s"
-
-
-def _epoch_row(
-    epoch: int,
-    total_epochs: int,
-    step: int,
-    total_steps: int,
-    eta: str,
-    gpu_mem: str,
-    gpu_util: str,
-    metrics: dict[str, float],
-) -> str:
-    """Return a colored data row for one batch/epoch."""
-    epoch_str = f"{epoch + 1}/{total_epochs}"
-    step_str = f"{step}/{total_steps}" if total_steps > 0 else str(step)
-
-    losses = "".join(
-        f"{metrics.get(f'train/{n}_loss', 0.0):>{_W}.4g}" for n in _LOSS_NAMES
-    )
-    vals = "".join(
-        f"{metrics.get(k, 0.0):>{_W}.3g}"
-        for k in ("val/precision", "val/recall", "val/mAP50", "val/mAP50_95")
-    )
-
-    return (
-        f"{_BOLD}{epoch_str:>{_W}}{_RESET}"
-        f"{_DIM}{step_str:>{_W}}{_RESET}"
-        f"{_BLUE}{eta:>{_W}}{_RESET}"
-        f"{_GREEN}{gpu_mem:>{_W}}{_RESET}"
-        f"{_MAGENTA}{gpu_util:>{_W}}{_RESET}"
-        f"{_YELLOW}{losses}{_RESET}"
-        f"  {_DIM}│{_RESET}  "
-        f"{_CYAN}{vals}{_RESET}"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -296,19 +184,29 @@ class TrainingService:
             return params
 
         total = raw.get("total_images", "?")
+        label_keys = raw.get("label_keys")
+
+        mode_label = "manifest-only" if label_keys else "labels-only"
         self._logger.info(
-            "Detected %s (bucket=%s prefix=%s total_images=%s) — "
+            "Detected %s (bucket=%s prefix=%s total_images=%s mode=%s) — "
             "switching to S3 streaming mode",
             _MANIFEST_FILENAME,
             bucket,
             prefix,
             total,
+            mode_label,
         )
 
         # Build a new params instance with overridden S3 fields
-        updated = params.model_copy(
-            update={"source": "s3", "s3_bucket": bucket, "s3_prefix": prefix}
-        )
+        update: dict[str, Any] = {
+            "source": "s3",
+            "s3_bucket": bucket,
+            "s3_prefix": prefix,
+        }
+        # Signal manifest-only mode: labels must also be streamed from S3
+        if label_keys:
+            update["s3_stream_labels"] = True
+        updated = params.model_copy(update=update)
         return updated
 
     # ------------------------------------------------------------------
@@ -342,66 +240,25 @@ class TrainingService:
 
             # 4. Register callbacks for console output and S3 checkpoints
             epoch_metrics: dict[str, float] = {}
-            global_step = [0]  # mutable counter shared across callbacks
-            train_start_time = [0.0]  # set in on_train_start
 
             def on_train_batch_end(trainer: Any) -> None:
-                """Log per-batch training losses to console."""
+                """Capture per-batch training losses for TrainingResult."""
                 try:
                     tloss = getattr(trainer, "tloss", None)
                     if tloss is None:
                         return
 
-                    metrics_to_log: dict[str, float] = {}
                     loss_names = ["box_loss", "pose_loss", "kobj_loss", "cls_loss", "dfl_loss"]
                     try:
                         for idx, loss_name in enumerate(loss_names):
                             if idx < len(tloss):
-                                metrics_to_log[f"train/{loss_name}"] = float(
+                                epoch_metrics[f"train/{loss_name}"] = float(
                                     tloss[idx].item()
                                     if hasattr(tloss[idx], "item")
                                     else tloss[idx]
                                 )
                     except (TypeError, IndexError):
                         return
-
-                    if not metrics_to_log:
-                        return
-
-                    step = global_step[0]
-                    global_step[0] += 1
-
-                    # Keep latest losses for the TrainingResult / epoch summary
-                    epoch_metrics.update(metrics_to_log)
-
-                    # Pretty per-batch log line
-                    gpu_mem, gpu_util = _get_gpu_info()
-                    epoch_idx = getattr(trainer, "epoch", 0)
-
-                    # Total steps = batches_per_epoch * total_epochs
-                    batches_per_epoch = getattr(trainer, "batches", 0)
-                    total_steps = batches_per_epoch * params.epochs
-
-                    # ETA based on elapsed time and progress
-                    elapsed = time.monotonic() - train_start_time[0]
-                    if step > 0 and total_steps > 0:
-                        remaining = elapsed * (total_steps - step) / step
-                        eta = _format_eta(remaining)
-                    else:
-                        eta = "N/A"
-
-                    _logger.info(
-                        _epoch_row(
-                            epoch_idx,
-                            params.epochs,
-                            step,
-                            total_steps,
-                            eta,
-                            gpu_mem,
-                            gpu_util,
-                            metrics_to_log,
-                        )
-                    )
 
                 except Exception as cb_exc:  # noqa: BLE001
                     _logger.warning("on_train_batch_end callback error: %s", cb_exc)
@@ -448,37 +305,14 @@ class TrainingService:
                 except Exception as cb_exc:  # noqa: BLE001
                     _logger.warning("S3 checkpoint upload failed: %s", cb_exc)
 
-            def on_train_start(trainer: Any) -> None:
-                """Log a colored training banner and column header."""
-                train_start_time[0] = time.monotonic()
-                device = getattr(trainer, "device", "?")
-                batches_per_epoch = getattr(trainer, "batches", "?")
-                _logger.info(
-                    "%s%s Training started %s  "
-                    "model=%s  epochs=%d  batch=%d  imgsz=%d  device=%s  "
-                    "steps/epoch=%s  total_steps=%s",
-                    _BOLD, _CYAN, _RESET,
-                    params.model_variant,
-                    params.epochs,
-                    params.batch_size,
-                    params.image_size,
-                    device,
-                    batches_per_epoch,
-                    batches_per_epoch * params.epochs if isinstance(batches_per_epoch, int) else "?",
-                )
-                _logger.info(_epoch_header())
-
             def on_train_end(trainer: Any) -> None:
-                """Log a clean training completion line."""
+                """Log training completion summary."""
                 _logger.info(
-                    "%s%s Training complete %s  "
-                    "best mAP50-95=%.4f  saved to %s",
-                    _BOLD, _GREEN, _RESET,
+                    "Training complete  best mAP50-95=%.4f  saved to %s",
                     float(epoch_metrics.get("val/mAP50_95", 0.0)),
                     getattr(trainer, "best", "?"),
                 )
 
-            model.add_callback("on_train_start", on_train_start)
             model.add_callback("on_train_batch_end", on_train_batch_end)
             model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
             model.add_callback("on_train_epoch_end", on_train_epoch_end)
@@ -500,11 +334,20 @@ class TrainingService:
                 cache_dir = str(tmp_path / "s3_cache")
                 labels_root = str(Path(params.dataset_dir).resolve() / "labels")
 
+                # In manifest-only mode, labels are also streamed from S3
+                s3_labels_prefix: str | None = None
+                if params.s3_stream_labels:
+                    s3_labels_prefix = params.s3_prefix  # type: ignore[assignment]
+                    self._logger.info(
+                        "Manifest-only mode: labels will be streamed from S3"
+                    )
+
                 s3_trainer_cls = make_s3_pose_trainer(
                     s3_client=self._s3,
                     s3_bucket=params.s3_bucket,  # type: ignore[arg-type]
                     s3_prefix=params.s3_prefix,  # type: ignore[arg-type]
                     local_labels_root=labels_root,
+                    s3_labels_prefix=s3_labels_prefix,
                     cache_dir=cache_dir,
                     cache_max_bytes=params.disk_cache_bytes,
                 )

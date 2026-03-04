@@ -149,6 +149,8 @@ class DatasetLoadingService:
 
         bucket, prefix = self._resolve_source(params)
 
+        if params.manifest_only:
+            return self._run_manifest_only(params, bucket, prefix, output_path)
         if params.labels_only:
             return self._run_labels_only(params, bucket, prefix, output_path)
         return self._run_full_download(params, bucket, prefix, output_path)
@@ -337,6 +339,107 @@ class DatasetLoadingService:
         self._write_stats(output_path, stats)
         self._log_dataset_stats(stats)
         self._log_directory_integrity_report(output_path, mode="labels-only")
+
+        return stats
+
+    # ------------------------------------------------------------------
+    # Manifest-only mode (no images, no labels downloaded)
+    # ------------------------------------------------------------------
+
+    def _run_manifest_only(
+        self,
+        params: YoloDatasetParams,
+        bucket: str,
+        prefix: str,
+        output_path: Path,
+    ) -> YoloDatasetStats:
+        """List S3 keys and download only data.yaml; write a manifest with label_keys.
+
+        Neither images nor labels are downloaded — both are streamed from S3
+        during training. The manifest includes ``label_keys`` so the training
+        step knows where to fetch labels from.
+        """
+        self._logger.info(
+            "Starting manifest-only listing | bucket=%s prefix=%s -> %s",
+            bucket,
+            prefix,
+            output_path,
+        )
+
+        # 1. Pre-download S3 structure check (lists keys, validates layout)
+        listing = self._check_s3_structure(bucket, prefix)
+
+        # 2. Download only data.yaml (needed for kpt_shape, names, split paths)
+        if listing.data_yaml_key is None:
+            raise DatasetLoadingError(
+                f"data.yaml not found on S3 at s3://{bucket}/{prefix}"
+            )
+        self._download_single_key(bucket, listing.data_yaml_key, prefix, output_path)
+
+        # 3. Write / update the path field in data.yaml
+        self._write_data_yaml(output_path, params.output_dir)
+
+        # 4. Optionally sample S3 keys
+        sampled = False
+        image_keys = listing.image_keys
+        label_keys = listing.label_keys
+        if params.sample_size is not None:
+            image_keys, label_keys = self._sample_keys_by_split(
+                image_keys, label_keys, params.sample_size, params.seed
+            )
+            sampled = True
+
+        # 5. Build manifest with both image splits and label_keys
+        splits: dict[str, list[str]] = {}
+        for key in image_keys:
+            parts = Path(key).parts
+            try:
+                images_idx = parts.index("images")
+                split = parts[images_idx + 1]
+            except (ValueError, IndexError):
+                split = "unknown"
+            splits.setdefault(split, []).append(key)
+
+        label_splits: dict[str, list[str]] = {}
+        for key in label_keys:
+            parts = Path(key).parts
+            try:
+                labels_idx = parts.index("labels")
+                split = parts[labels_idx + 1]
+            except (ValueError, IndexError):
+                split = "unknown"
+            label_splits.setdefault(split, []).append(key)
+
+        manifest = DatasetManifest(
+            bucket=bucket,
+            prefix=prefix,
+            splits=splits,
+            label_keys=label_splits,
+            total_images=len(image_keys),
+        )
+        self._write_manifest(output_path, manifest)
+
+        # 6. Count images per split from S3 keys (nothing on disk)
+        split_counts = {s: len(splits.get(s, [])) for s in SPLITS}
+        label_counts = {s: len(label_splits.get(s, [])) for s in SPLITS}
+
+        stats = YoloDatasetStats(
+            version=params.version,
+            source=params.source,
+            train_images=split_counts["train"],
+            val_images=split_counts["val"],
+            test_images=split_counts["test"],
+            train_labels=label_counts["train"],
+            val_labels=label_counts["val"],
+            test_labels=label_counts["test"],
+            sampled=sampled,
+            sample_size=params.sample_size,
+            seed=params.seed,
+        )
+
+        self._write_stats(output_path, stats)
+        self._log_dataset_stats(stats)
+        self._log_directory_integrity_report(output_path, mode="manifest-only")
 
         return stats
 

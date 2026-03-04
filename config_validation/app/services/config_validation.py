@@ -1,7 +1,9 @@
-import yaml
 import logging
+import shutil
 import time
 from pathlib import Path
+
+import yaml
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -35,6 +37,9 @@ class ConfigValidationService:
     def run(self, config_dict: dict[str, Any], output_path: Optional[str] = None) -> PipelineConfig:
         """Validate a pipeline configuration dict and optionally write the result."""
         try:
+            if output_path is not None:
+                self._clean_artifacts_dir(Path(output_path).parent)
+
             self._logger.info("Validating pipeline configuration")
 
             config = self._validate_schema(config_dict)
@@ -356,6 +361,16 @@ class ConfigValidationService:
                 raise ConfigValidationError(
                     f"Unexpected error checking checkpoint {resume_from}: {e}"
                 ) from e
+
+    def _clean_artifacts_dir(self, artifacts_dir: Path) -> None:
+        """Remove all contents of the artifacts directory to start fresh."""
+        if artifacts_dir.exists():
+            self._logger.info(f"Cleaning artifacts directory: {artifacts_dir}")
+            for child in artifacts_dir.iterdir():
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
 
     def _write_output(self, config: PipelineConfig, output_path: str) -> None:
         """Write the validated config as a JSON artifact."""

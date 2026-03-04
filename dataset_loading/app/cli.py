@@ -46,6 +46,13 @@ def main() -> None:
                 "Used when images will be streamed from S3 during training."
             ),
         ),
+        manifest_only: bool = typer.Option(
+            False,
+            help=(
+                "Download only data.yaml and list S3 keys (no images, no labels). "
+                "Both images and labels are streamed from S3 during training."
+            ),
+        ),
         sample_size: Optional[int] = typer.Option(
             None,
             help=(
@@ -66,6 +73,7 @@ def main() -> None:
                 output_dir=output_dir,
                 path_override=path_override if path_override else None,
                 labels_only=labels_only,
+                manifest_only=manifest_only,
                 sample_size=sample_size,
                 seed=seed,
             )

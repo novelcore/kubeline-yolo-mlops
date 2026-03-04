@@ -219,6 +219,15 @@ resolve_steps() {
 # ---------------------------------------------------------------------------
 # Docker helpers
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Poetry install helper (local mode)
+# ---------------------------------------------------------------------------
+poetry_install() {
+    local step_dir="$1"
+    log_info "Installing dependencies for ${step_dir##*/}"
+    run_cmd "(cd '${step_dir}' && poetry install --no-interaction --quiet)"
+}
+
 docker_build() {
     local step="$1"
     local image="${IMAGE_PREFIX}-${step//_/-}"
@@ -407,6 +416,7 @@ run_config_validation() {
         [[ "$SKIP_BUILD" == false ]] && docker_build config_validation
         docker_run "${IMAGE_PREFIX}-config-validation" "${args[@]}"
     else
+        poetry_install "${REPO_ROOT}/config_validation"
         (cd "${REPO_ROOT}/config_validation" && poetry run config-validation "${args[@]}")
     fi
 
@@ -430,8 +440,16 @@ run_dataset_loading() {
     [[ -n "$sample_size" && "$sample_size" != "null" ]] && \
         optional_flags+=" --sample-size ${sample_size}"
 
-    # S3 streaming: download labels only — images will be streamed during training
-    [[ "$source" == "s3" ]] && optional_flags+=" --labels-only"
+    # S3 streaming mode selection:
+    #   "manifest_only" — only data.yaml + S3 key listing (labels streamed too)
+    #   "labels_only"   — download labels + data.yaml (images streamed)
+    #   default for s3  — labels_only (backward compatible)
+    local streaming_mode="${CFG_dataset_streaming_mode:-}"
+    if [[ "$streaming_mode" == "manifest_only" ]]; then
+        optional_flags+=" --manifest-only"
+    elif [[ "$streaming_mode" == "labels_only" ]] || [[ "$source" == "s3" && -z "$streaming_mode" ]]; then
+        optional_flags+=" --labels-only"
+    fi
 
     mkdir -p "$output_dir"
 
@@ -444,6 +462,7 @@ run_dataset_loading() {
             "--seed ${seed}" \
             "${optional_flags}"
     else
+        poetry_install "${REPO_ROOT}/dataset_loading"
         run_cmd "cd '${REPO_ROOT}/dataset_loading' && \
             poetry run dataset-loading \
                 --version '${version}' \
@@ -616,6 +635,7 @@ run_model_training() {
             "--bgr ${bgr}" \
             "${optional_flags}"
     else
+        poetry_install "${REPO_ROOT}/model_training"
         run_cmd "cd '${REPO_ROOT}/model_training' && \
             poetry run model-training \
                 --model-variant '${model_variant}' \
@@ -726,6 +746,7 @@ run_model_registration() {
             "--best-checkpoint-path '${best_checkpoint_s3}'" \
             "${extra_flags}"
     else
+        poetry_install "${REPO_ROOT}/model_registration"
         run_cmd "cd '${REPO_ROOT}/model_registration' && \
             poetry run model-registration \
                 --mlflow-run-id '${mlflow_run_id}' \

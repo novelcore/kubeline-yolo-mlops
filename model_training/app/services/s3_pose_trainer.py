@@ -39,6 +39,7 @@ class S3PoseTrainer(_PoseTrainer):  # type: ignore[misc]
     _s3_bucket: str = ""
     _s3_prefix: str = ""
     _local_labels_root: str = ""
+    _s3_labels_prefix: str | None = None
     _cache_dir: str | None = None
     _cache_max_bytes: int = 2 * 1024**3
 
@@ -88,6 +89,11 @@ class S3PoseTrainer(_PoseTrainer):  # type: ignore[misc]
             s3_prefix=split_prefix,
             local_labels_root=self._local_labels_root,
             split=split,
+            s3_labels_prefix=(
+                f"{base_prefix}/labels/{split}/"
+                if self._s3_labels_prefix
+                else None
+            ),
             cache_dir=self._cache_dir,
             cache_max_bytes=self._cache_max_bytes,
         )
@@ -107,6 +113,7 @@ def make_s3_pose_trainer(
     s3_bucket: str,
     s3_prefix: str,
     local_labels_root: str,
+    s3_labels_prefix: str | None = None,
     cache_dir: str | None = None,
     cache_max_bytes: int = 2 * 1024**3,
 ) -> type:
@@ -126,6 +133,7 @@ def make_s3_pose_trainer(
         _s3_bucket = s3_bucket
         _s3_prefix = s3_prefix
         _local_labels_root = local_labels_root
+        _s3_labels_prefix = s3_labels_prefix
         _cache_dir = cache_dir
         _cache_max_bytes = cache_max_bytes
 

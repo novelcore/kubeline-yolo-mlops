@@ -85,6 +85,7 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
         s3_prefix: str,
         local_labels_root: str,
         split: str,
+        s3_labels_prefix: str | None = None,
         cache_dir: str | None = None,
         cache_max_bytes: int = 2 * 1024**3,
         **kwargs: Any,
@@ -101,6 +102,10 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
         self._s3_prefix = s3_prefix.rstrip("/") + "/"
         self._local_labels_root = Path(local_labels_root)
         self._split = split
+        # When set, labels are fetched from S3 instead of local disk
+        self._s3_labels_prefix: str | None = (
+            s3_labels_prefix.rstrip("/") + "/" if s3_labels_prefix else None
+        )
 
         # Disk cache (None = disabled)
         self._disk_cache: LruDiskCache | None = None
@@ -157,10 +162,15 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
     # ------------------------------------------------------------------
 
     def img2label_paths(self, img_paths: list[str]) -> list[str]:
-        """Map synthetic s3:// image URIs to local label file paths.
+        """Map synthetic s3:// image URIs to label paths.
 
-        Returns the path ``<local_labels_root>/<split>/<stem>.txt`` for each
-        image URI, which is where ``dataset_loading`` placed the label files.
+        When ``s3_labels_prefix`` is set (manifest-only mode), returns
+        synthetic local paths used as cache keys — the actual label data
+        is fetched from S3 in ``cache_labels()``.
+
+        Otherwise returns the path ``<local_labels_root>/<split>/<stem>.txt``
+        for each image URI, which is where ``dataset_loading`` placed the
+        label files.
         """
         label_paths: list[str] = []
         for uri in img_paths:
@@ -211,11 +221,15 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
         return labels
 
     def cache_labels(self, path: Path = Path("./labels.cache")) -> dict:
-        """Build label cache from local label files without opening S3 images.
+        """Build label cache from label files without opening S3 images.
 
-        The parent implementation calls ``verify_image_label()`` which tries to
-        ``Image.open()`` every image — impossible for S3 URIs.  We read the
-        local label ``.txt`` files directly and skip image verification.
+        When ``_s3_labels_prefix`` is set (manifest-only mode), labels are
+        fetched from S3 via ``get_object`` and parsed in-memory — no local
+        label files required.
+
+        Otherwise, the parent implementation's ``verify_image_label()`` is
+        skipped and local label ``.txt`` files are read directly.
+
         Image shapes are set to a placeholder; Ultralytics replaces them with
         the actual shape from ``load_image()`` at training time.
         """
@@ -234,18 +248,19 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
         )
         for im_file, lb_file in pbar:
             try:
-                if not os.path.isfile(lb_file):
+                lb_text = self._read_label(lb_file)
+
+                if lb_text is None:
                     nm += 1
                     continue
 
-                with open(lb_file, encoding="utf-8") as f:
-                    lb = [
-                        line.split()
-                        for line in f.read().strip().splitlines()
-                        if len(line)
-                    ]
+                lb_lines = [
+                    line.split()
+                    for line in lb_text.strip().splitlines()
+                    if len(line)
+                ]
 
-                if not lb:
+                if not lb_lines:
                     ne += 1
                     x["labels"].append(
                         {
@@ -261,7 +276,7 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
                     )
                     continue
 
-                lb = np.array(lb, dtype=np.float32)
+                lb = np.array(lb_lines, dtype=np.float32)
                 nl = len(lb)
 
                 if self.use_keypoints and nl:
@@ -305,6 +320,45 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
         x["version"] = DATASET_CACHE_VERSION
         save_dataset_cache_file(self.prefix, path, x, DATASET_CACHE_VERSION)
         return x
+
+    # ------------------------------------------------------------------
+    # Label reading — local or S3
+    # ------------------------------------------------------------------
+
+    def _read_label(self, lb_file: str) -> str | None:
+        """Read label text from local file or S3.
+
+        In S3-label mode (``_s3_labels_prefix`` is set), the corresponding
+        S3 key is derived from the label file stem and fetched via
+        ``get_object``. No files are written to disk.
+
+        Returns the label file content as a string, or ``None`` if not found.
+        """
+        if self._s3_labels_prefix is not None:
+            stem = Path(lb_file).stem
+            s3_key = f"{self._s3_labels_prefix}{stem}.txt"
+            try:
+                response = self._s3_client.get_object(
+                    Bucket=self._s3_bucket, Key=s3_key
+                )
+                return response["Body"].read().decode("utf-8")
+            except self._s3_client.exceptions.NoSuchKey:
+                return None
+            except Exception as exc:
+                _logger.warning(
+                    "Failed to fetch label from s3://%s/%s: %s",
+                    self._s3_bucket,
+                    s3_key,
+                    exc,
+                )
+                return None
+
+        # Local file mode
+        if not os.path.isfile(lb_file):
+            return None
+
+        with open(lb_file, encoding="utf-8") as f:
+            return f.read()
 
     # ------------------------------------------------------------------
     # Load image bytes from S3 (with optional disk cache)
