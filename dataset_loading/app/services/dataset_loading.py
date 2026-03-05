@@ -53,8 +53,8 @@ _PROGRESS_LOG_INTERVAL = 500
 _VALID_VISIBILITY = {0, 1, 2}
 
 # Default S3 bucket and key prefix for the canonical dataset location
-_DEFAULT_BUCKET = "temp-mlops"
-_DEFAULT_PREFIX_TEMPLATE = "datasets/speedplus_yolo/{version}/"
+_DEFAULT_BUCKET = "io-audio-text-data"
+_DEFAULT_PREFIX_TEMPLATE = "upload-initial/dataset/{version}/"
 
 # ---------------------------------------------------------------------------
 # Exceptions

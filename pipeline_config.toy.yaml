@@ -8,8 +8,8 @@ experiment:
 
 dataset:
   version: "v1"
-  source: "s3"
-  path_override: "s3://temp-mlops/speedplus_yolo/"
+  source: "lakefs"
+  path_override: "s3://io-audio-text-data/upload-initial/dataset/"
   sample_size: 1000
   seed: 42
 
@@ -45,7 +45,7 @@ training:
 
 checkpointing:
   interval_epochs: 2
-  storage_path: "s3://temp-mlops/checkpoints"
+  storage_path: "s3://io-audio-text-data/upload-initial/checkpoints"
   resume_from: null
 
 early_stopping:

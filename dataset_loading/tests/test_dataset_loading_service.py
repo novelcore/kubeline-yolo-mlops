@@ -128,7 +128,7 @@ def _make_mock_s3(dataset_root: Path) -> MagicMock:
             relative = path.relative_to(dataset_root)
             all_keys.append(str(relative))
 
-    prefix = "datasets/speedplus_yolo/v1/"
+    prefix = "upload-initial/dataset/v1/"
 
     def list_objects_v2_paginator() -> MagicMock:
         paginator = MagicMock()
@@ -730,7 +730,7 @@ def _make_mock_s3_with_listing(dataset_root: Path) -> MagicMock:
     """
     mock_s3 = MagicMock()
 
-    prefix = "datasets/speedplus_yolo/v1/"
+    prefix = "upload-initial/dataset/v1/"
     all_keys: list[str] = []
     for path in sorted(dataset_root.rglob("*")):
         if path.is_file():
@@ -1040,7 +1040,7 @@ class TestPreDownloadS3Check:
 
         # Should not raise
         listing = service._check_s3_structure(
-            "temp-mlops", "datasets/speedplus_yolo/v1/"
+            "io-audio-text-data", "upload-initial/dataset/v1/"
         )
         assert len(listing.image_keys) == 7  # 3+2+2
         assert len(listing.label_keys) == 7
@@ -1153,7 +1153,7 @@ class TestPreDownloadS3Check:
 
         # Should not raise — test is optional
         listing = service._check_s3_structure(
-            "temp-mlops", "datasets/speedplus_yolo/v1/"
+            "io-audio-text-data", "upload-initial/dataset/v1/"
         )
         assert listing.data_yaml_key is not None
         assert len(listing.image_keys) == 5  # 3+2+0
@@ -1227,7 +1227,7 @@ class TestInlineLabelValidation:
         mock_s3 = MagicMock()
         downloaded: list[str] = []
 
-        prefix = "datasets/speedplus_yolo/v1/"
+        prefix = "upload-initial/dataset/v1/"
         all_keys: list[str] = []
         for path in sorted(dataset_root.rglob("*")):
             if path.is_file():

@@ -9,8 +9,8 @@ experiment:
 # --- Dataset Configuration ---
 dataset:
   version: "v1"
-  source: "s3"                    # "s3" or "lakefs"
-  path_override: "s3://temp-mlops/speedplus_yolo/"
+  source: "lakefs"                 # "s3" or "lakefs"
+  path_override: "s3://io-audio-text-data/upload-initial/dataset/"
   sample_size: null               # null = full dataset; integer = sampled subset
   seed: 42                        # Seed for reproducible dataset sampling
 
@@ -70,7 +70,7 @@ training:
 # --- Checkpointing ---
 checkpointing:
   interval_epochs: 10             # Save checkpoint every N epochs
-  storage_path: "s3://temp-mlops/checkpoints"
+  storage_path: "s3://io-audio-text-data/upload-initial/checkpoints"
   resume_from: null               # null | "auto" | specific S3 path to .pt file
 
 # --- Early Stopping ---

@@ -574,8 +574,8 @@ run_model_training() {
             s3_bucket="${s3_path%%/*}"
             s3_prefix="${s3_path#*/}"
         else
-            s3_bucket="temp-mlops"
-            s3_prefix="datasets/speedplus_yolo/${CFG_dataset_version:-v1}/"
+            s3_bucket="io-audio-text-data"
+            s3_prefix="upload-initial/dataset/${CFG_dataset_version:-v1}/"
         fi
         optional_flags+=" --source s3"
         optional_flags+=" --s3-bucket '${s3_bucket}'"

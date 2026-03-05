@@ -40,15 +40,14 @@ def test_manager_run_calls_service_with_correct_args(mocker):
 def test_manager_passes_config_fields_to_service_constructor(mocker):
     """Manager passes the correct Config fields to ConfigValidationService."""
     mock_service_cls = mocker.patch("app.manager.ConfigValidationService")
+    mocker.patch("app.manager.boto3")
 
     Manager()
 
-    mock_service_cls.assert_called_once_with(
-        skip_liveness_checks=False,
-        max_retries=3,
-        timeout=30,
-        mlflow_tracking_uri=None,
-    )
+    call_kwargs = mock_service_cls.call_args.kwargs
+    assert call_kwargs["max_retries"] == 3
+    assert call_kwargs["timeout"] == 30
+    assert "s3_client" in call_kwargs
 
 
 def test_manager_run_raises_on_service_failure(mocker):

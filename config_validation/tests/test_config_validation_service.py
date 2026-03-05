@@ -42,22 +42,29 @@ VALID_CONFIG: dict = {
 
 
 @pytest.fixture
-def service_no_liveness() -> ConfigValidationService:
+def mock_s3():
+    return MagicMock()
+
+
+@pytest.fixture
+def service_no_liveness(mock_s3) -> ConfigValidationService:
     return ConfigValidationService(
         skip_liveness_checks=True,
         max_retries=3,
         timeout=10,
         mlflow_tracking_uri=None,
+        s3_client=mock_s3,
     )
 
 
 @pytest.fixture
-def service_with_liveness() -> ConfigValidationService:
+def service_with_liveness(mock_s3) -> ConfigValidationService:
     return ConfigValidationService(
         skip_liveness_checks=False,
         max_retries=1,
         timeout=5,
         mlflow_tracking_uri="http://mlflow.test",
+        s3_client=mock_s3,
     )
 
 
@@ -107,42 +114,35 @@ def test_no_output_file_when_output_path_is_none(service_no_liveness, tmp_path):
 # Liveness check tests
 # ---------------------------------------------------------------------------
 
-def test_liveness_checks_not_called_when_skipped(service_no_liveness, mocker):
-    mock_boto3 = mocker.patch("app.services.config_validation.boto3.client")
+def test_liveness_checks_not_called_when_skipped(service_no_liveness, mock_s3):
     service_no_liveness.run(VALID_CONFIG)
-    mock_boto3.assert_not_called()
+    mock_s3.list_objects_v2.assert_not_called()
 
 
-def test_dataset_path_check_calls_list_objects(service_with_liveness, mocker):
-    mock_s3 = MagicMock()
+def test_dataset_path_check_calls_list_objects(service_with_liveness, mock_s3, mocker):
     mock_s3.list_objects_v2.return_value = {"KeyCount": 1}
     mock_s3.head_object.return_value = {}
-    mocker.patch("app.services.config_validation.boto3.client", return_value=mock_s3)
     mocker.patch("app.services.config_validation.httpx.get").return_value = MagicMock(is_success=True)
 
     service_with_liveness.run(VALID_CONFIG)
 
     calls = mock_s3.list_objects_v2.call_args_list
     assert any(
-        "io-mlops" in str(call) and "speedplus_yolo" in str(call)
+        "io-mlops" in str(call) and "dataset" in str(call)
         for call in calls
     )
 
 
-def test_dataset_path_not_found_raises_error(service_with_liveness, mocker):
-    mock_s3 = MagicMock()
+def test_dataset_path_not_found_raises_error(service_with_liveness, mock_s3, mocker):
     mock_s3.list_objects_v2.return_value = {"KeyCount": 0}
-    mocker.patch("app.services.config_validation.boto3.client", return_value=mock_s3)
     mocker.patch("app.services.config_validation.httpx.get").return_value = MagicMock(is_success=True)
 
     with pytest.raises(ConfigValidationError, match="not found or empty in S3"):
         service_with_liveness.run(VALID_CONFIG)
 
 
-def test_mlflow_uri_check_calls_health_endpoint(service_with_liveness, mocker):
-    mock_s3 = MagicMock()
+def test_mlflow_uri_check_calls_health_endpoint(service_with_liveness, mock_s3, mocker):
     mock_s3.list_objects_v2.return_value = {"KeyCount": 1}
-    mocker.patch("app.services.config_validation.boto3.client", return_value=mock_s3)
     mock_get = mocker.patch("app.services.config_validation.httpx.get")
     mock_get.return_value = MagicMock(is_success=True)
 
@@ -153,12 +153,10 @@ def test_mlflow_uri_check_calls_health_endpoint(service_with_liveness, mocker):
     assert called_url.endswith("/health")
 
 
-def test_mlflow_uri_unreachable_raises_error(service_with_liveness, mocker):
+def test_mlflow_uri_unreachable_raises_error(service_with_liveness, mock_s3, mocker):
     import httpx
 
-    mock_s3 = MagicMock()
     mock_s3.list_objects_v2.return_value = {"KeyCount": 1}
-    mocker.patch("app.services.config_validation.boto3.client", return_value=mock_s3)
     mocker.patch(
         "app.services.config_validation.httpx.get",
         side_effect=httpx.RequestError("connection refused"),
@@ -168,16 +166,16 @@ def test_mlflow_uri_unreachable_raises_error(service_with_liveness, mocker):
         service_with_liveness.run(VALID_CONFIG)
 
 
-def test_mlflow_uri_not_set_raises_error(mocker):
+def test_mlflow_uri_not_set_raises_error():
+    mock_s3 = MagicMock()
+    mock_s3.list_objects_v2.return_value = {"KeyCount": 1}
     svc = ConfigValidationService(
         skip_liveness_checks=False,
         max_retries=1,
         timeout=5,
         mlflow_tracking_uri=None,
+        s3_client=mock_s3,
     )
-    mock_s3 = MagicMock()
-    mock_s3.list_objects_v2.return_value = {"KeyCount": 1}
-    mocker.patch("app.services.config_validation.boto3.client", return_value=mock_s3)
 
     with pytest.raises(ConfigValidationError, match="MLFLOW_TRACKING_URI"):
         svc.run(VALID_CONFIG)
@@ -196,11 +194,11 @@ def test_resume_from_auto_found_passes(mocker):
             {"Key": "spacecraft-pose-v1-yolov8n/last.pt", "LastModified": datetime.now(timezone.utc)}
         ],
     }
-    mocker.patch("app.services.config_validation.boto3.client", return_value=mock_s3)
     mocker.patch("app.services.config_validation.httpx.get").return_value = MagicMock(is_success=True)
 
     svc = ConfigValidationService(
-        skip_liveness_checks=False, max_retries=1, timeout=5, mlflow_tracking_uri="http://mlflow.test"
+        skip_liveness_checks=False, max_retries=1, timeout=5,
+        mlflow_tracking_uri="http://mlflow.test", s3_client=mock_s3,
     )
     svc.run(config)  # must not raise
 
@@ -215,11 +213,11 @@ def test_resume_from_auto_not_found_raises_error(mocker):
         {"KeyCount": 1},
         {"KeyCount": 0, "Contents": []},
     ]
-    mocker.patch("app.services.config_validation.boto3.client", return_value=mock_s3)
     mocker.patch("app.services.config_validation.httpx.get").return_value = MagicMock(is_success=True)
 
     svc = ConfigValidationService(
-        skip_liveness_checks=False, max_retries=1, timeout=5, mlflow_tracking_uri="http://mlflow.test"
+        skip_liveness_checks=False, max_retries=1, timeout=5,
+        mlflow_tracking_uri="http://mlflow.test", s3_client=mock_s3,
     )
     with pytest.raises(ConfigValidationError, match="no .pt checkpoint found"):
         svc.run(config)
@@ -235,11 +233,11 @@ def test_resume_from_specific_path_found_passes(mocker):
     mock_s3 = MagicMock()
     mock_s3.list_objects_v2.return_value = {"KeyCount": 1}
     mock_s3.head_object.return_value = {}
-    mocker.patch("app.services.config_validation.boto3.client", return_value=mock_s3)
     mocker.patch("app.services.config_validation.httpx.get").return_value = MagicMock(is_success=True)
 
     svc = ConfigValidationService(
-        skip_liveness_checks=False, max_retries=1, timeout=5, mlflow_tracking_uri="http://mlflow.test"
+        skip_liveness_checks=False, max_retries=1, timeout=5,
+        mlflow_tracking_uri="http://mlflow.test", s3_client=mock_s3,
     )
     svc.run(config)  # must not raise
 
@@ -258,20 +256,18 @@ def test_resume_from_specific_path_not_found_raises_error(mocker):
     mock_s3.head_object.side_effect = botocore.exceptions.ClientError(
         {"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject"
     )
-    mocker.patch("app.services.config_validation.boto3.client", return_value=mock_s3)
     mocker.patch("app.services.config_validation.httpx.get").return_value = MagicMock(is_success=True)
 
     svc = ConfigValidationService(
-        skip_liveness_checks=False, max_retries=1, timeout=5, mlflow_tracking_uri="http://mlflow.test"
+        skip_liveness_checks=False, max_retries=1, timeout=5,
+        mlflow_tracking_uri="http://mlflow.test", s3_client=mock_s3,
     )
     with pytest.raises(ConfigValidationError, match="Checkpoint file not found"):
         svc.run(config)
 
 
-def test_pretrained_weights_none_skips_s3_check(service_with_liveness, mocker):
-    mock_s3 = MagicMock()
+def test_pretrained_weights_none_skips_s3_check(service_with_liveness, mock_s3, mocker):
     mock_s3.list_objects_v2.return_value = {"KeyCount": 1}
-    mocker.patch("app.services.config_validation.boto3.client", return_value=mock_s3)
     mocker.patch("app.services.config_validation.httpx.get").return_value = MagicMock(is_success=True)
 
     service_with_liveness.run(VALID_CONFIG)
@@ -288,11 +284,11 @@ def test_pretrained_weights_s3_path_checked(mocker):
     mock_s3 = MagicMock()
     mock_s3.list_objects_v2.return_value = {"KeyCount": 1}
     mock_s3.head_object.return_value = {}
-    mocker.patch("app.services.config_validation.boto3.client", return_value=mock_s3)
     mocker.patch("app.services.config_validation.httpx.get").return_value = MagicMock(is_success=True)
 
     svc = ConfigValidationService(
-        skip_liveness_checks=False, max_retries=1, timeout=5, mlflow_tracking_uri="http://mlflow.test"
+        skip_liveness_checks=False, max_retries=1, timeout=5,
+        mlflow_tracking_uri="http://mlflow.test", s3_client=mock_s3,
     )
     svc.run(config)
 

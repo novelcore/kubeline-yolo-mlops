@@ -50,7 +50,7 @@ def _build_minimal_yolo_tree(root: Path, n: int = 2) -> None:
 
 
 def _make_s3_mock(
-    source_root: Path, prefix: str = "datasets/speedplus_yolo/v1/"
+    source_root: Path, prefix: str = "upload-initial/dataset/v1/"
 ) -> MagicMock:
     """Return a mock S3 client that serves files from *source_root*."""
     mock_s3 = MagicMock()

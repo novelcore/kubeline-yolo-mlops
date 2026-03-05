@@ -7,7 +7,6 @@ import yaml
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-import boto3
 import botocore.exceptions
 import httpx
 from pydantic import ValidationError
@@ -27,11 +26,13 @@ class ConfigValidationService:
         max_retries: int,
         timeout: int,
         mlflow_tracking_uri: Optional[str],
+        s3_client: Optional[object] = None,
     ) -> None:
         self._skip_liveness_checks = skip_liveness_checks
         self._max_retries = max_retries
         self._timeout = timeout
         self._mlflow_tracking_uri = mlflow_tracking_uri
+        self._s3_client = s3_client
         self._logger = logging.getLogger(__name__)
 
     def run(self, config_dict: dict[str, Any], output_path: Optional[str] = None) -> PipelineConfig:
@@ -190,23 +191,22 @@ class ConfigValidationService:
         if config.dataset.path_override is not None:
             s3_path = config.dataset.path_override
         else:
-            # Convention: datasets live at s3://{bucket}/datasets/speedplus_yolo/{version}/
-            # The storage_path is s3://{bucket}/checkpoints; strip the /checkpoints suffix
-            # to get the bucket base URL.
+            # Convention: datasets live at s3://{repo}/{branch}/dataset/{version}/
+            # The storage_path is s3://{repo}/{branch}/checkpoints; strip the
+            # /checkpoints suffix to get the base URL.
             base = config.checkpointing.storage_path.rstrip("/")
             if base.endswith("/checkpoints"):
                 base = base[: -len("/checkpoints")]
-            s3_path = f"{base}/datasets/speedplus_yolo/{config.dataset.version}/"
+            s3_path = f"{base}/dataset/{config.dataset.version}/"
 
         self._logger.info(f"Checking dataset path: {s3_path}")
         parsed = urlparse(s3_path)
         bucket = parsed.netloc
         prefix = parsed.path.lstrip("/")
 
-        s3 = boto3.client("s3")
         for attempt in range(1, self._max_retries + 1):
             try:
-                response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
+                response = self._s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
                 if response.get("KeyCount", 0) == 0:
                     raise ConfigValidationError(
                         f"Dataset path not found or empty in S3: {s3_path}"
@@ -244,10 +244,9 @@ class ConfigValidationService:
         bucket = parsed.netloc
         key = parsed.path.lstrip("/")
 
-        s3 = boto3.client("s3")
         for attempt in range(1, self._max_retries + 1):
             try:
-                s3.head_object(Bucket=bucket, Key=key)
+                self._s3_client.head_object(Bucket=bucket, Key=key)
                 self._logger.info(f"Pretrained weights confirmed: {weights}")
                 return
             except botocore.exceptions.ClientError as e:
@@ -303,8 +302,6 @@ class ConfigValidationService:
         if resume_from is None:
             return
 
-        s3 = boto3.client("s3")
-
         if resume_from == "auto":
             # Scan the experiment's checkpoint directory for any .pt file
             checkpoint_dir = (
@@ -319,7 +316,7 @@ class ConfigValidationService:
             prefix = parsed.path.lstrip("/")
 
             try:
-                response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=100)
+                response = self._s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=100)
                 contents = response.get("Contents", [])
                 pt_files = [obj for obj in contents if obj["Key"].endswith(".pt")]
                 if not pt_files:
@@ -346,7 +343,7 @@ class ConfigValidationService:
             key = parsed.path.lstrip("/")
 
             try:
-                s3.head_object(Bucket=bucket, Key=key)
+                self._s3_client.head_object(Bucket=bucket, Key=key)
                 self._logger.info(f"Checkpoint file confirmed: {resume_from}")
             except botocore.exceptions.ClientError as e:
                 error_code = e.response["Error"]["Code"]

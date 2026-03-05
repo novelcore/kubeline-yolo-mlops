@@ -27,3 +27,14 @@ class Config(BaseSettings):
         default=None,
         description="MLflow tracking server URI. Required when liveness checks are enabled.",
     )
+
+    # AWS / S3 connection settings
+    aws_access_key_id: Optional[str] = Field(default=None, description="AWS access key ID")
+    aws_secret_access_key: Optional[str] = Field(default=None, description="AWS secret access key")
+    aws_default_region: Optional[str] = Field(default=None, description="AWS region")
+    s3_endpoint_url: Optional[str] = Field(default=None, description="Custom S3 endpoint URL")
+
+    # LakeFS connection settings (S3-compatible API)
+    lakefs_endpoint: Optional[str] = Field(default=None, description="LakeFS S3-compatible endpoint URL")
+    lakefs_access_key: Optional[str] = Field(default=None, description="LakeFS access key ID")
+    lakefs_secret_key: Optional[str] = Field(default=None, description="LakeFS secret access key")
