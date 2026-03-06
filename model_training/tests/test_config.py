@@ -11,7 +11,6 @@ def test_config_default_values() -> None:
     assert config.app_name == "io-model-training"
     assert config.log_level == "INFO"
     assert config.mlflow_tracking_uri == "http://localhost:5000"
-    assert config.resource_monitor_interval_sec == 30
     # Optional S3/LakeFS fields default to None
     assert config.aws_access_key_id is None
     assert config.aws_secret_access_key is None
@@ -31,8 +30,6 @@ def test_config_reads_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test-key")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test-secret")
     monkeypatch.setenv("S3_ENDPOINT_URL", "https://minio.test")
-    monkeypatch.setenv("RESOURCE_MONITOR_INTERVAL_SEC", "60")
-
     config = Config()
 
     assert config.app_name == "test-trainer"
@@ -42,7 +39,6 @@ def test_config_reads_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.aws_access_key_id == "test-key"
     assert config.aws_secret_access_key == "test-secret"
     assert config.s3_endpoint_url == "https://minio.test"
-    assert config.resource_monitor_interval_sec == 60
 
 
 def test_config_lakefs_env(monkeypatch: pytest.MonkeyPatch) -> None:

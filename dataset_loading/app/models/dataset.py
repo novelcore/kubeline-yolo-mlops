@@ -13,6 +13,14 @@ class YoloDatasetParams(BaseModel):
         pattern=r"^(s3|lakefs)$",
         description="Storage backend: 's3' or 'lakefs'.",
     )
+    lakefs_repo: Optional[str] = Field(
+        default=None,
+        description="LakeFS repository name. Used to construct the S3-compatible path.",
+    )
+    lakefs_branch: Optional[str] = Field(
+        default=None,
+        description="LakeFS branch name. Used to construct the S3-compatible path.",
+    )
     path_override: Optional[str] = Field(
         default=None,
         description=(

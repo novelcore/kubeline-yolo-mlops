@@ -32,6 +32,10 @@ class Config(BaseSettings):
         description="Name under which the model is registered in the MLflow model registry",
     )
 
+    # MLflow auth
+    mlflow_tracking_username: Optional[str] = Field(default=None, description="MLflow tracking server username")
+    mlflow_tracking_password: Optional[str] = Field(default=None, description="MLflow tracking server password")
+
     # AWS / S3 connection settings
     aws_access_key_id: Optional[str] = Field(default=None, description="AWS access key ID")
     aws_secret_access_key: Optional[str] = Field(default=None, description="AWS secret access key")

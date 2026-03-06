@@ -5,6 +5,7 @@ The ``run`` method is the single orchestration entry point called by the CLI.
 """
 
 import logging
+import os
 from typing import Optional
 
 import boto3
@@ -32,11 +33,16 @@ class Manager:
         setup_logging(level=self._config.log_level)
         self._logger = logging.getLogger(__name__)
 
+        # Export MLflow auth credentials so the MLflow client can pick them up
+        if self._config.mlflow_tracking_username:
+            os.environ["MLFLOW_TRACKING_USERNAME"] = self._config.mlflow_tracking_username
+        if self._config.mlflow_tracking_password:
+            os.environ["MLFLOW_TRACKING_PASSWORD"] = self._config.mlflow_tracking_password
+
         self._s3_client = self._build_s3_client()
         self._service = TrainingService(
             s3_client=self._s3_client,
             mlflow_tracking_uri=self._config.mlflow_tracking_uri,
-            resource_monitor_interval_sec=self._config.resource_monitor_interval_sec,
         )
 
     # ------------------------------------------------------------------
@@ -93,6 +99,8 @@ class Manager:
         # Weight init / resume
         pretrained_weights: Optional[str] = None,
         resume_from: Optional[str] = None,
+        # Device
+        device: Optional[str] = None,
         # Core schedule (keyword-only from here; all callers use explicit kwargs)
         *,
         epochs: int,
@@ -172,6 +180,7 @@ class Manager:
             disk_cache_bytes=disk_cache_bytes,
             pretrained_weights=pretrained_weights,
             resume_from=resume_from,
+            device=device,
             epochs=epochs,
             batch_size=batch_size,
             image_size=image_size,

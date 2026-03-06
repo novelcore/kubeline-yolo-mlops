@@ -1,6 +1,7 @@
 """Manager for the Model Registration pipeline step."""
 
 import logging
+import os
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -17,6 +18,12 @@ class Manager:
 
         setup_logging(level=self._config.log_level)
         self._logger = logging.getLogger(__name__)
+
+        # Export MLflow auth credentials so the MLflow client can pick them up
+        if self._config.mlflow_tracking_username:
+            os.environ["MLFLOW_TRACKING_USERNAME"] = self._config.mlflow_tracking_username
+        if self._config.mlflow_tracking_password:
+            os.environ["MLFLOW_TRACKING_PASSWORD"] = self._config.mlflow_tracking_password
 
         self._service = ModelRegistrationService(
             mlflow_tracking_uri=self._config.mlflow_tracking_uri,

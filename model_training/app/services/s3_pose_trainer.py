@@ -11,7 +11,6 @@ subclass — avoiding any global state.
 """
 
 import logging
-from pathlib import Path
 from typing import Any
 
 _logger = logging.getLogger(__name__)
@@ -58,8 +57,15 @@ class S3PoseTrainer(_PoseTrainer):  # type: ignore[misc]
         """
         from app.services.s3_dataset import S3YoloDataset
 
-        # Determine split from the img_path or mode
-        split = mode if mode in ("train", "val", "test") else "train"
+        # Determine split from img_path first (more reliable), then mode
+        split = "train"
+        for candidate in ("train", "val", "test"):
+            if candidate in img_path:
+                split = candidate
+                break
+        else:
+            if mode in ("train", "val", "test"):
+                split = mode
 
         # Build the S3 prefix for this split's images
         base_prefix = self._s3_prefix.rstrip("/")
@@ -137,5 +143,6 @@ def make_s3_pose_trainer(
         _cache_dir = cache_dir
         _cache_max_bytes = cache_max_bytes
 
+    _Configured.__name__ = "S3PoseTrainer"
     _Configured.__qualname__ = f"S3PoseTrainer[{s3_bucket}/{s3_prefix}]"
     return _Configured

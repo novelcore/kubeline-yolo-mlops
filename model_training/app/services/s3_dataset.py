@@ -194,6 +194,12 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
         """
         self.label_files = self.img2label_paths(self.im_files)
 
+        if not self.label_files:
+            raise RuntimeError(
+                f"No label files found for S3 dataset (split={self._split}). "
+                "Check that S3 paginator returned images."
+            )
+
         # Build a local cache path from the label directory
         cache_path = Path(self.label_files[0]).parent.with_suffix(".cache")
 
@@ -239,7 +245,6 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
         total = len(self.im_files)
 
         nkpt, ndim = self.data.get("kpt_shape", (0, 0))
-        num_cls = len(self.data["names"])
 
         pbar = TQDM(
             zip(self.im_files, self.label_files),
@@ -434,7 +439,7 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
         if self.augment:
             self.ims[i], self.im_hw0[i], self.im_hw[i] = im, (h0, w0), im.shape[:2]
             self.buffer.append(i)
-            if 1 < len(self.buffer) >= self.max_buffer_length:
+            if len(self.buffer) >= self.max_buffer_length:
                 j = self.buffer.pop(0)
                 if self.cache != "ram":
                     self.ims[j], self.im_hw0[j], self.im_hw[j] = None, None, None

@@ -30,6 +30,14 @@ class Config(BaseSettings):
         default="http://localhost:5000",
         description="MLflow tracking server URI.",
     )
+    mlflow_tracking_username: Optional[str] = Field(
+        default=None,
+        description="MLflow tracking server username.",
+    )
+    mlflow_tracking_password: Optional[str] = Field(
+        default=None,
+        description="MLflow tracking server password.",
+    )
 
     # -------------------------------------------------------------------------
     # AWS / S3 connection settings
@@ -72,12 +80,3 @@ class Config(BaseSettings):
         description="LakeFS secret access key.",
     )
 
-    # -------------------------------------------------------------------------
-    # System resource monitoring
-    # -------------------------------------------------------------------------
-    resource_monitor_interval_sec: int = Field(
-        default=30,
-        description=(
-            "Interval in seconds between resource metric samples logged to MLflow."
-        ),
-    )

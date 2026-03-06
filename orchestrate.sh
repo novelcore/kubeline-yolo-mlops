@@ -296,6 +296,8 @@ run_config_validation() {
 
     # ---- Optional ----
     local experiment_description="${CFG_experiment_description:-}"
+    local dataset_lakefs_repo="${CFG_dataset_lakefs_repo:-}"
+    local dataset_lakefs_branch="${CFG_dataset_lakefs_branch:-}"
     local dataset_path_override="${CFG_dataset_path_override:-}"
     local dataset_sample_size="${CFG_dataset_sample_size:-}"
     local dataset_seed="${CFG_dataset_seed:-42}"
@@ -405,6 +407,8 @@ run_config_validation() {
 
     # ---- Append optional safely ----
     [[ -n "$experiment_description" && "$experiment_description" != "null" ]] && args+=(--experiment-description "$experiment_description")
+    [[ -n "$dataset_lakefs_repo" && "$dataset_lakefs_repo" != "null" ]] && args+=(--dataset-lakefs-repo "$dataset_lakefs_repo")
+    [[ -n "$dataset_lakefs_branch" && "$dataset_lakefs_branch" != "null" ]] && args+=(--dataset-lakefs-branch "$dataset_lakefs_branch")
     [[ -n "$dataset_path_override" && "$dataset_path_override" != "null" ]] && args+=(--dataset-path-override "$dataset_path_override")
     [[ -n "$dataset_sample_size" && "$dataset_sample_size" != "null" ]] && args+=(--dataset-sample-size "$dataset_sample_size")
     [[ -n "$model_pretrained_weights" && "$model_pretrained_weights" != "null" ]] && args+=(--model-pretrained-weights "$model_pretrained_weights")
@@ -432,10 +436,14 @@ run_dataset_loading() {
     local output_dir="${REPO_ROOT}/artifacts/dataset"
 
     # Optional fields
+    local lakefs_repo="${CFG_dataset_lakefs_repo:-}"
+    local lakefs_branch="${CFG_dataset_lakefs_branch:-}"
     local path_override="${CFG_dataset_path_override:-}"
     local sample_size="${CFG_dataset_sample_size:-}"
 
     local optional_flags=""
+    optional_flags+="$(append_optional --lakefs-repo "$lakefs_repo")"
+    optional_flags+="$(append_optional --lakefs-branch "$lakefs_branch")"
     optional_flags+="$(append_optional --path-override "$path_override")"
     [[ -n "$sample_size" && "$sample_size" != "null" ]] && \
         optional_flags+=" --sample-size ${sample_size}"
@@ -565,14 +573,20 @@ run_model_training() {
         optional_flags+=" --freeze ${freeze}"
 
     # S3 streaming: pass bucket/prefix so training streams images directly
-    if [[ "$dataset_source" == "s3" ]]; then
+    if [[ "$dataset_source" == "s3" || "$dataset_source" == "lakefs" ]]; then
         local dataset_path_override="${CFG_dataset_path_override:-}"
+        local dataset_lakefs_repo="${CFG_dataset_lakefs_repo:-}"
+        local dataset_lakefs_branch="${CFG_dataset_lakefs_branch:-}"
         local s3_bucket s3_prefix
         if [[ -n "$dataset_path_override" && "$dataset_path_override" != "null" ]]; then
             # Parse s3://bucket/prefix from the override
             local s3_path="${dataset_path_override#s3://}"
             s3_bucket="${s3_path%%/*}"
             s3_prefix="${s3_path#*/}"
+        elif [[ -n "$dataset_lakefs_repo" && "$dataset_lakefs_repo" != "null" ]]; then
+            # Construct from LakeFS repo/branch
+            s3_bucket="$dataset_lakefs_repo"
+            s3_prefix="${dataset_lakefs_branch:-main}/dataset/${CFG_dataset_version:-v1}/"
         else
             s3_bucket="io-audio-text-data"
             s3_prefix="upload-initial/dataset/${CFG_dataset_version:-v1}/"

@@ -11,7 +11,7 @@ class AugmentationParams(BaseModel):
     hsv_h: float = Field(default=0.015, ge=0.0, le=1.0)
     hsv_s: float = Field(default=0.7, ge=0.0, le=1.0)
     hsv_v: float = Field(default=0.4, ge=0.0, le=1.0)
-    degrees: float = Field(default=0.0, ge=0.0)
+    degrees: float = Field(default=0.0, ge=0.0, le=360.0)
     translate: float = Field(default=0.1, ge=0.0)
     scale: float = Field(default=0.5, ge=0.0)
     shear: float = Field(default=0.0, ge=0.0)
@@ -86,7 +86,7 @@ class TrainingParams(BaseModel):
     # ---- Core schedule ----
     epochs: int = Field(default=100, gt=0)
     batch_size: int = Field(default=16, gt=0)
-    image_size: int = Field(default=640, gt=0)
+    image_size: int = Field(default=640, gt=0, multiple_of=32)
 
     # ---- Learning rate ----
     learning_rate: float = Field(default=0.01, gt=0.0)
@@ -94,7 +94,7 @@ class TrainingParams(BaseModel):
     lrf: float = Field(default=0.01, gt=0.0, le=1.0)
 
     # ---- Optimizer ----
-    optimizer: str = Field(default="SGD", pattern=r"^(SGD|Adam|AdamW)$")
+    optimizer: str = Field(default="SGD", pattern=r"^(SGD|Adam|AdamW|auto)$")
     momentum: float = Field(default=0.937, ge=0.0, lt=1.0)
     weight_decay: float = Field(default=0.0005, ge=0.0)
 
@@ -127,6 +127,16 @@ class TrainingParams(BaseModel):
 
     # ---- Early stopping ----
     patience: int = Field(default=50, gt=0)
+
+    # ---- Training device ----
+    device: Optional[str] = Field(
+        default=None,
+        description=(
+            "Device to train on: '0', '0,1', 'cpu', or None for Ultralytics "
+            "auto-select. When a single integer GPU index is given (e.g. '0') "
+            "the ResourceMonitor will track only that GPU."
+        ),
+    )
 
     # ---- S3 streaming cache ----
     disk_cache_bytes: int = Field(

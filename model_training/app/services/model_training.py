@@ -9,13 +9,11 @@ Responsibilities
 5. Write data.yaml to a temp dir (always deleted in a finally block).
 6. Set MLFLOW_TRACKING_URI and MLFLOW_EXPERIMENT_NAME env vars so that
    the Ultralytics built-in MLflow callback handles all logging.
-7. Start the background resource monitor.
-8. Register Ultralytics callbacks for console output and periodic S3
-   checkpoint uploads.
-9. Call model.train() with the full hyperparameter set.
-10. Stop the resource monitor.
-11. Upload best.pt and last.pt to the S3 checkpoint path.
-12. Clean up temp dirs.
+7. Register Ultralytics callbacks for per-epoch metric + system resource
+   logging, console output, and periodic S3 checkpoint uploads.
+8. Call model.train() with the full hyperparameter set.
+9. Upload best.pt and last.pt to the S3 checkpoint path.
+10. Clean up temp dirs.
 """
 
 import json
@@ -23,9 +21,8 @@ import logging
 import os
 import re
 import tempfile
-import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -39,6 +36,8 @@ _logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _S3_URI_RE = re.compile(r"^s3://([^/]+)/(.+)$")
+
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 # Ultralytics metric keys
 _METRIC_PRECISION = "metrics/precision(B)"
@@ -57,8 +56,6 @@ _MANIFEST_FILENAME = "dataset_manifest.json"
 
 class TrainingError(Exception):
     """Raised when a training run fails unrecoverably."""
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -80,19 +77,15 @@ class TrainingService:
         and (when source='s3') image streaming.
     mlflow_tracking_uri:
         URI of the remote MLflow tracking server.
-    resource_monitor_interval_sec:
-        Seconds between resource metric samples during training.
     """
 
     def __init__(
         self,
         s3_client: Any,
         mlflow_tracking_uri: str,
-        resource_monitor_interval_sec: int = 30,
     ) -> None:
         self._s3 = s3_client
         self._mlflow_tracking_uri = mlflow_tracking_uri
-        self._monitor_interval = resource_monitor_interval_sec
         self._logger = logging.getLogger(__name__)
 
     # ------------------------------------------------------------------
@@ -220,7 +213,7 @@ class TrainingService:
     ) -> TrainingResult:
         """Inner pipeline: weights, data.yaml, callbacks, train(), S3 upload."""
 
-        monitor = ResourceMonitor(interval_sec=self._monitor_interval)
+        monitor = ResourceMonitor(gpu_index=self._parse_gpu_index(params.device))
 
         # Validate local dataset structure before starting the run
         if params.source == "local":
@@ -238,96 +231,33 @@ class TrainingService:
             # 3. Build the Ultralytics YOLO model object
             model = yolo_cls(str(model_path))
 
-            # 4. Register callbacks for console output and S3 checkpoints
+            # 4. Register callbacks
             epoch_metrics: dict[str, float] = {}
 
-            def on_train_batch_end(trainer: Any) -> None:
-                """Capture per-batch training losses for TrainingResult."""
-                try:
-                    tloss = getattr(trainer, "tloss", None)
-                    if tloss is None:
-                        return
+            model.add_callback(
+                "on_train_batch_end",
+                self._make_batch_end_callback(epoch_metrics),
+            )
+            model.add_callback(
+                "on_fit_epoch_end",
+                self._make_epoch_end_callback(epoch_metrics, monitor),
+            )
+            model.add_callback(
+                "on_train_epoch_end",
+                self._make_checkpoint_callback(params),
+            )
+            model.add_callback(
+                "on_train_end",
+                self._make_train_end_callback(epoch_metrics),
+            )
 
-                    loss_names = ["box_loss", "pose_loss", "kobj_loss", "cls_loss", "dfl_loss"]
-                    try:
-                        for idx, loss_name in enumerate(loss_names):
-                            if idx < len(tloss):
-                                epoch_metrics[f"train/{loss_name}"] = float(
-                                    tloss[idx].item()
-                                    if hasattr(tloss[idx], "item")
-                                    else tloss[idx]
-                                )
-                    except (TypeError, IndexError):
-                        return
-
-                except Exception as cb_exc:  # noqa: BLE001
-                    _logger.warning("on_train_batch_end callback error: %s", cb_exc)
-
-            def on_fit_epoch_end(trainer: Any) -> None:
-                """Capture per-epoch validation metrics for TrainingResult."""
-                try:
-                    val_metrics_raw = getattr(trainer, "metrics", {}) or {}
-                    val_metrics: dict[str, float] = {
-                        "val/precision": float(val_metrics_raw.get(_METRIC_PRECISION, 0.0)),
-                        "val/recall": float(val_metrics_raw.get(_METRIC_RECALL, 0.0)),
-                        "val/mAP50": float(val_metrics_raw.get(_METRIC_MAP50, 0.0)),
-                        "val/mAP50_95": float(val_metrics_raw.get(_METRIC_MAP50_95, 0.0)),
-                    }
-                    epoch_metrics.update(val_metrics)
-
-                except Exception as cb_exc:  # noqa: BLE001
-                    _logger.warning("on_fit_epoch_end callback error: %s", cb_exc)
-
-            # Periodic S3 checkpoint upload callback
-            def on_train_epoch_end(trainer: Any) -> None:
-                """Upload checkpoint to S3 every checkpoint_interval epochs."""
-                try:
-                    epoch: int = trainer.epoch + 1  # Ultralytics epoch is 0-indexed
-                    if epoch % params.checkpoint_interval != 0:
-                        return
-                    last_pt = Path(trainer.last)
-                    if not last_pt.exists():
-                        return
-                    s3_key = (
-                        f"{params.checkpoint_prefix}/{params.experiment_name}/"
-                        f"epoch_{epoch:04d}.pt"
-                    )
-                    self._upload_to_s3(
-                        local_path=last_pt,
-                        bucket=params.checkpoint_bucket,
-                        key=s3_key,
-                    )
-                    _logger.info(
-                        "Uploaded checkpoint to s3://%s/%s",
-                        params.checkpoint_bucket,
-                        s3_key,
-                    )
-                except Exception as cb_exc:  # noqa: BLE001
-                    _logger.warning("S3 checkpoint upload failed: %s", cb_exc)
-
-            def on_train_end(trainer: Any) -> None:
-                """Log training completion summary."""
-                _logger.info(
-                    "Training complete  best mAP50-95=%.4f  saved to %s",
-                    float(epoch_metrics.get("val/mAP50_95", 0.0)),
-                    getattr(trainer, "best", "?"),
-                )
-
-            model.add_callback("on_train_batch_end", on_train_batch_end)
-            model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
-            model.add_callback("on_train_epoch_end", on_train_epoch_end)
-            model.add_callback("on_train_end", on_train_end)
-
-            # 5. Start resource monitor
-            monitor.start()
-
-            # 6. Build train() kwargs — resume mode sets resume=True
+            # 5. Build train() kwargs — resume mode sets resume=True
             train_kwargs = self._build_train_kwargs(
                 params=params,
                 data_yaml_path=str(data_yaml_path),
             )
 
-            # 6b. S3 streaming mode — inject S3PoseTrainer
+            # 5b. S3 streaming mode — inject S3PoseTrainer
             if params.source == "s3":
                 from app.services.s3_pose_trainer import make_s3_pose_trainer
 
@@ -360,32 +290,22 @@ class TrainingService:
                     params.disk_cache_bytes // (1024 * 1024),
                 )
 
-            try:
-                trainer = model.train(**train_kwargs)
-            finally:
-                monitor.stop()
+            trainer = model.train(**train_kwargs)
 
-            # 7. Determine save directory
+            # 6. Determine save directory
             save_dir = Path(model.trainer.save_dir)  # type: ignore[union-attr]
 
-            # 8. Upload final weights to S3
+            # 7. Upload final weights to S3
             best_s3_uri = self._upload_final_weights(params, save_dir)
 
         # Build result — get MLflow run_id from Ultralytics' run
-        mlflow_run_id = ""
-        try:
-            import mlflow  # noqa: PLC0415
-
-            last_run = mlflow.last_active_run()
-            if last_run:
-                mlflow_run_id = last_run.info.run_id
-        except Exception:  # noqa: BLE001
-            pass
+        mlflow_run_id = self._get_mlflow_run_id()
 
         final_map50 = float(epoch_metrics.get("val/mAP50", 0.0))
         final_map50_95 = float(epoch_metrics.get("val/mAP50_95", 0.0))
 
-        epochs_completed: int = getattr(trainer, "epoch", params.epochs) + 1
+        raw_epoch = getattr(trainer, "epoch", None)
+        epochs_completed: int = raw_epoch + 1 if raw_epoch is not None else params.epochs
 
         return TrainingResult(
             experiment_name=params.experiment_name,
@@ -397,6 +317,188 @@ class TrainingService:
             final_map50=final_map50,
             final_map50_95=final_map50_95,
         )
+
+    # ------------------------------------------------------------------
+    # Callback factories
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_batch_end_callback(
+        epoch_metrics: dict[str, float],
+    ) -> Callable[[Any], None]:
+        """Return a callback that captures per-batch training losses."""
+
+        def on_train_batch_end(trainer: Any) -> None:
+            try:
+                tloss = getattr(trainer, "tloss", None)
+                if tloss is None:
+                    return
+
+                loss_names = ["box_loss", "pose_loss", "kobj_loss", "cls_loss", "dfl_loss"]
+                try:
+                    for idx, loss_name in enumerate(loss_names):
+                        if idx < len(tloss):
+                            epoch_metrics[f"train/{loss_name}"] = float(
+                                tloss[idx].item()
+                                if hasattr(tloss[idx], "item")
+                                else tloss[idx]
+                            )
+                except (TypeError, IndexError):
+                    return
+
+            except Exception as cb_exc:  # noqa: BLE001
+                _logger.warning("on_train_batch_end callback error: %s", cb_exc)
+
+        return on_train_batch_end
+
+    @staticmethod
+    def _make_epoch_end_callback(
+        epoch_metrics: dict[str, float],
+        monitor: ResourceMonitor,
+    ) -> Callable[[Any], None]:
+        """Return a callback that logs per-epoch validation metrics and system resources."""
+
+        def on_fit_epoch_end(trainer: Any) -> None:
+            try:
+                val_metrics_raw = getattr(trainer, "metrics", {}) or {}
+                val_metrics: dict[str, float] = {
+                    "val/precision": float(val_metrics_raw.get(_METRIC_PRECISION, 0.0)),
+                    "val/recall": float(val_metrics_raw.get(_METRIC_RECALL, 0.0)),
+                    "val/mAP50": float(val_metrics_raw.get(_METRIC_MAP50, 0.0)),
+                    "val/mAP50_95": float(val_metrics_raw.get(_METRIC_MAP50_95, 0.0)),
+                }
+                epoch_metrics.update(val_metrics)
+
+                current_epoch: int = getattr(trainer, "epoch", 0) + 1
+
+                # Collect system resource snapshot and log it together with the
+                # model metrics so every metric shares the same epoch step.
+                system_metrics = monitor.collect()
+                all_metrics = {**val_metrics, **system_metrics}
+                try:
+                    import mlflow  # noqa: PLC0415
+
+                    if mlflow.active_run() is not None:
+                        mlflow.log_metrics(all_metrics, step=current_epoch)
+                    else:
+                        _logger.debug(
+                            "No active MLflow run — skipping epoch %d metric logging",
+                            current_epoch,
+                        )
+                except Exception as log_exc:  # noqa: BLE001
+                    _logger.warning(
+                        "Failed to log epoch metrics to MLflow: %s", log_exc
+                    )
+
+            except Exception as cb_exc:  # noqa: BLE001
+                _logger.warning("on_fit_epoch_end callback error: %s", cb_exc)
+
+        return on_fit_epoch_end
+
+    def _make_checkpoint_callback(
+        self,
+        params: TrainingParams,
+    ) -> Callable[[Any], None]:
+        """Return a callback that uploads a checkpoint to S3 every N epochs."""
+
+        def on_train_epoch_end(trainer: Any) -> None:
+            try:
+                epoch: int = trainer.epoch + 1  # Ultralytics epoch is 0-indexed
+                if epoch % params.checkpoint_interval != 0:
+                    return
+                last_pt = Path(trainer.last)
+                if not last_pt.exists():
+                    return
+                s3_key = (
+                    f"{params.checkpoint_prefix}/{params.experiment_name}/"
+                    f"epoch_{epoch:04d}.pt"
+                )
+                self._upload_to_s3(
+                    local_path=last_pt,
+                    bucket=params.checkpoint_bucket,
+                    key=s3_key,
+                )
+                _logger.info(
+                    "Uploaded checkpoint to s3://%s/%s",
+                    params.checkpoint_bucket,
+                    s3_key,
+                )
+            except Exception as cb_exc:  # noqa: BLE001
+                _logger.warning("S3 checkpoint upload failed: %s", cb_exc)
+
+        return on_train_epoch_end
+
+    @staticmethod
+    def _make_train_end_callback(
+        epoch_metrics: dict[str, float],
+    ) -> Callable[[Any], None]:
+        """Return a callback that logs a training completion summary."""
+
+        def on_train_end(trainer: Any) -> None:
+            _logger.info(
+                "Training complete  best mAP50-95=%.4f  saved to %s",
+                float(epoch_metrics.get("val/mAP50_95", 0.0)),
+                getattr(trainer, "best", "?"),
+            )
+
+        return on_train_end
+
+    # ------------------------------------------------------------------
+    # MLflow run ID retrieval
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _get_mlflow_run_id() -> str:
+        """Return the MLflow run ID from the most recent Ultralytics-managed run."""
+        try:
+            import mlflow  # noqa: PLC0415
+
+            last_run = mlflow.last_active_run()
+            if last_run:
+                return last_run.info.run_id
+            _logger.warning(
+                "mlflow.last_active_run() returned None — "
+                "the downstream model_registration step will not be able to "
+                "link this training run. Check that the Ultralytics MLflow "
+                "callback is enabled."
+            )
+        except Exception:  # noqa: BLE001
+            _logger.warning(
+                "Failed to retrieve MLflow run ID — "
+                "model_registration will not be able to link this training run."
+            )
+        return ""
+
+    # ------------------------------------------------------------------
+    # GPU index parsing
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_gpu_index(device: Any) -> "int | None":
+        """Extract a single integer GPU index from a device string.
+
+        Returns the integer index when ``device`` is a single GPU (e.g. ``"0"``
+        or ``0``).  Returns ``None`` for CPU or multi-GPU strings (``"0,1"``).
+        When ``device`` is ``None`` (Ultralytics auto-select), defaults to GPU 0
+        if a GPU is available so that the ResourceMonitor still tracks GPU metrics
+        on single-GPU machines.
+
+        Examples
+        --------
+        >>> _parse_gpu_index("0")   # -> 0
+        >>> _parse_gpu_index(0)     # -> 0
+        >>> _parse_gpu_index("0,1") # -> None  (multi-GPU — monitor skipped)
+        >>> _parse_gpu_index("cpu") # -> None
+        >>> _parse_gpu_index(None)  # -> 0 if GPU available, else None
+        """
+        if device is None:
+            from app.services.resource_monitor import gpu_available  # noqa: PLC0415
+
+            return 0 if gpu_available() else None
+        s = str(device).strip()
+        if s.isdigit():
+            return int(s)
+        return None
 
     # ------------------------------------------------------------------
     # Parameter validation
@@ -462,7 +564,7 @@ class TrainingService:
                 )
             image_files = [
                 p for p in images_dir.iterdir()
-                if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+                if p.is_file() and p.suffix.lower() in _IMAGE_EXTENSIONS
             ]
             if not image_files:
                 raise TrainingError(
@@ -479,7 +581,7 @@ class TrainingService:
         if test_dir.exists():
             test_count = sum(
                 1 for p in test_dir.iterdir()
-                if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+                if p.is_file() and p.suffix.lower() in _IMAGE_EXTENSIONS
             )
             self._logger.info(
                 "Local dataset validation | images/test: %d files found", test_count
@@ -619,6 +721,7 @@ class TrainingService:
         kwargs: dict[str, Any] = {
             "data": data_yaml_path,
             "epochs": params.epochs,
+            "device": params.device,
             "batch": params.batch_size,
             "imgsz": params.image_size,
             "lr0": params.learning_rate,
@@ -703,7 +806,12 @@ class TrainingService:
             self._upload_to_s3(best_pt, params.checkpoint_bucket, best_key)
             self._logger.info("Uploaded best.pt to %s", best_uri)
         else:
-            warnings.warn(f"best.pt not found at {best_pt}; skipping S3 upload.", stacklevel=2)
+            self._logger.warning(
+                "best.pt not found at %s; skipping S3 upload. "
+                "Downstream steps will not have a best checkpoint.",
+                best_pt,
+            )
+            best_uri = ""
 
         if last_pt.exists():
             self._upload_to_s3(last_pt, params.checkpoint_bucket, last_key)

@@ -82,7 +82,14 @@ def _default_run_kwargs(dataset_dir: str, output_dir: str) -> dict[str, Any]:
 def dataset_dir(tmp_path: Path) -> str:
     d = tmp_path / "dataset"
     d.mkdir()
-    (d / "data.yaml").write_text("path: /tmp\ntrain: images/train\n")
+    (d / "data.yaml").write_text(
+        "path: /tmp/dataset\ntrain: images/train\nval: images/val\n"
+        "test: images/test\nkpt_shape: [11, 3]\nnames: {0: spacecraft}\n"
+    )
+    for split in ("train", "val"):
+        img_dir = d / "images" / split
+        img_dir.mkdir(parents=True)
+        (img_dir / "img_001.jpg").write_bytes(b"fake-image")
     return str(d)
 
 

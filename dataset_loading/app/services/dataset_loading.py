@@ -1093,6 +1093,8 @@ class DatasetLoadingService:
         """Return (bucket, key_prefix) based on the user's params.
 
         When ``path_override`` is provided it must be a valid ``s3://`` URI.
+        When ``lakefs_repo`` and ``lakefs_branch`` are set (source=lakefs),
+        the bucket is the repo and the prefix starts with the branch name.
         Otherwise the canonical convention is used.
         """
         if params.path_override:
@@ -1106,6 +1108,11 @@ class DatasetLoadingService:
             prefix = match.group(2)
             if not prefix.endswith("/"):
                 prefix += "/"
+            return bucket, prefix
+
+        if params.lakefs_repo and params.lakefs_branch:
+            bucket = params.lakefs_repo
+            prefix = f"{params.lakefs_branch}/dataset/{params.version}/"
             return bucket, prefix
 
         bucket = _DEFAULT_BUCKET

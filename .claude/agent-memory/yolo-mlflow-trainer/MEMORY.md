@@ -33,6 +33,7 @@
 ## Manager.run() Signature Note
 - source, s3_bucket, s3_prefix have defaults (= "local", = None, = None)
 - disk_cache_bytes has a default (= 2GB)
+- device has a default (= None, Ultralytics auto-select)
 - All remaining params (epochs, batch_size, etc.) are keyword-only (after `*`)
 - This was required to fix pre-existing SyntaxError: param without default after param with default
 
@@ -44,10 +45,27 @@
 - After detection, _validate_params still enforces s3_bucket/s3_prefix when source='s3'
 
 ## Local Mode Validation (_validate_local_dataset)
-- Called in `_run_with_mlflow` when `params.source == "local"` (before training starts)
+- Called in `_run_training` when `params.source == "local"` (before training starts)
 - Checks: data.yaml exists, images/train/ and images/val/ exist with >=1 image file
 - Raises TrainingError on failure; logs split counts at INFO level
 - Image extensions: {.jpg, .jpeg, .png, .bmp, .webp}
+
+## ResourceMonitor — Confirmed Design (epoch-end sampler, no thread)
+- Constructor: ResourceMonitor(gpu_index=Optional[int])  — no interval_sec
+- gpu_index=None → GPU metrics skipped entirely (even if pynvml available)
+- gpu_index=0 → only that device is sampled (no suffix on metric keys)
+- collect() → dict[str, float]: returns a snapshot of system metrics; caller logs to MLflow
+- No background thread, no run_id, no step counter, no start()/stop()
+- Called from on_fit_epoch_end; result merged with val_metrics and logged via mlflow.log_metrics
+- All errors caught inside collect(); returns {} on unexpected failure (never raises)
+- gpu_index is derived by TrainingService._parse_gpu_index(params.device):
+  "0" → 0, 0 → 0, "0,1" → None, "cpu" → None, None → None
+- resource_monitor_interval_sec REMOVED from Config and TrainingService.__init__
+
+## TrainingParams.device field
+- Optional[str], default None (Ultralytics auto-select)
+- Passed through cli.py → Manager.run() → TrainingParams → _build_train_kwargs as "device" kwarg
+- Also consumed by _parse_gpu_index to drive ResourceMonitor GPU targeting
 
 ## Dataset Stats MLflow Logging
 - `_read_dataset_stats()` reads `{dataset_dir}/dataset_stats.json` → None if absent/corrupt
@@ -58,18 +76,24 @@
 ## MLflow Logging
 - Params logged: all hyperparameters in batches of <=100 (MLflow limit)
 - Per-epoch metrics via on_fit_epoch_end callback (captured + fired by test mock)
-- System metrics via ResourceMonitor thread
+- System metrics via ResourceMonitor thread (MlflowClient.log_metric, keyed by run_id)
 - Artifacts after training: weights/best.pt, weights/last.pt, plots/*.png, metrics/results.csv
 - Tags: model.variant, dataset.source, pipeline.step, project, training.status
 
 ## Test Patterns (important gotchas)
 - `dataset_dir` fixture MUST create images/train/ and images/val/ with >=1 .jpg file
-  (local validation runs inside _run_with_mlflow now, not just in run())
+  (local validation runs inside _run_training, not just in run())
 - `_run_with_mocks` uses `mock_model.add_callback.side_effect` to capture callbacks;
   `mock_model.train.side_effect` fires `on_fit_epoch_end` so epoch_metrics is populated
 - `artifact_path` in `mlflow.log_artifact` is a KEYWORD arg → `c[1]["artifact_path"]` not `c[0][1]`
 - Patch make_s3_pose_trainer at source: `app.services.s3_pose_trainer.make_s3_pose_trainer`
   (it's a lazy import inside the if block, not a module-level name in model_training.py)
+- ResourceMonitor tests: patch `app.services.resource_monitor.psutil` and
+  `app.services.resource_monitor._GPU_AVAILABLE`; assert on the returned dict from collect()
+  No MlflowClient, no _seed_run_id, no thread — tests are fully synchronous
+- TrainingService run tests: patch `app.services.resource_monitor.psutil` (for collect()),
+  `app.services.resource_monitor._GPU_AVAILABLE`, and `mlflow.log_metrics` (called inside
+  on_fit_epoch_end closure). No longer need to patch MlflowClient or mlflow.active_run.
 - Pre-existing failures: test_config_default_values, test_s3_dataset (cv2 environment issue)
 
 ## S3 Credential Pattern (same as dataset_loading)

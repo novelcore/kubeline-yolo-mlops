@@ -78,6 +78,14 @@ def main() -> None:
                 "Mutually exclusive with --pretrained-weights."
             ),
         ),
+        # ---- Device ----
+        device: Optional[str] = typer.Option(
+            None,
+            help=(
+                "Device to train on: '0' for GPU 0, '0,1' for multi-GPU, 'cpu', or "
+                "omit for Ultralytics auto-select."
+            ),
+        ),
         # ---- Core schedule ----
         epochs: int = typer.Option(100, help="Number of training epochs."),
         batch_size: int = typer.Option(16, help="Training batch size."),
@@ -186,6 +194,7 @@ def main() -> None:
                 disk_cache_bytes=int(disk_cache_gb * 1024**3),
                 pretrained_weights=pretrained_weights,
                 resume_from=resume_from,
+                device=device,
                 epochs=epochs,
                 batch_size=batch_size,
                 image_size=image_size,

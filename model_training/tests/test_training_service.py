@@ -77,7 +77,6 @@ def _make_service(s3_client: Any = None) -> TrainingService:
     return TrainingService(
         s3_client=s3_client or MagicMock(),
         mlflow_tracking_uri="http://localhost:5000",
-        resource_monitor_interval_sec=1,
     )
 
 
@@ -123,8 +122,72 @@ def output_dir(tmp_path: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
+# GPU index parsing
+# ---------------------------------------------------------------------------
+
+
+class TestParseGpuIndex:
+    """Tests for TrainingService._parse_gpu_index."""
+
+    def test_single_digit_string(self) -> None:
+        assert TrainingService._parse_gpu_index("0") == 0
+
+    def test_integer_input(self) -> None:
+        assert TrainingService._parse_gpu_index(0) == 0
+
+    def test_multi_digit_string(self) -> None:
+        assert TrainingService._parse_gpu_index("2") == 2
+
+    def test_multi_gpu_string_returns_none(self) -> None:
+        assert TrainingService._parse_gpu_index("0,1") is None
+
+    def test_cpu_string_returns_none(self) -> None:
+        assert TrainingService._parse_gpu_index("cpu") is None
+
+    def test_none_with_gpu_available(self) -> None:
+        with patch("app.services.resource_monitor._GPU_AVAILABLE", True):
+            assert TrainingService._parse_gpu_index(None) == 0
+
+    def test_none_without_gpu(self) -> None:
+        with patch("app.services.resource_monitor._GPU_AVAILABLE", False):
+            assert TrainingService._parse_gpu_index(None) is None
+
+
+# ---------------------------------------------------------------------------
 # Validation tests
 # ---------------------------------------------------------------------------
+
+
+class TestTrainingParamsValidation:
+    """Tests for TrainingParams Pydantic validation rules."""
+
+    def test_image_size_must_be_multiple_of_32(self, dataset_dir: str, output_dir: str) -> None:
+        """image_size=500 raises ValidationError (not a multiple of 32)."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="multiple"):
+            _make_params(dataset_dir=dataset_dir, output_dir=output_dir, image_size=500)
+
+    def test_image_size_valid_multiple_of_32(self, dataset_dir: str, output_dir: str) -> None:
+        """image_size=320 is accepted."""
+        params = _make_params(dataset_dir=dataset_dir, output_dir=output_dir, image_size=320)
+        assert params.image_size == 320
+
+    def test_optimizer_auto_accepted(self, dataset_dir: str, output_dir: str) -> None:
+        """optimizer='auto' is accepted."""
+        params = _make_params(dataset_dir=dataset_dir, output_dir=output_dir, optimizer="auto")
+        assert params.optimizer == "auto"
+
+    def test_degrees_upper_bound(self, dataset_dir: str, output_dir: str) -> None:
+        """degrees > 360 raises ValidationError."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="less than or equal"):
+            _make_params(
+                dataset_dir=dataset_dir,
+                output_dir=output_dir,
+                augmentation=AugmentationParams(degrees=400.0),
+            )
 
 
 class TestValidation:
@@ -540,9 +603,10 @@ class TestTrainingServiceRun:
         mock_yolo_cls = MagicMock(return_value=mock_model)
 
         with (
-            patch("app.services.resource_monitor.mlflow"),
             patch("app.services.resource_monitor.psutil") as mock_psutil,
             patch("app.services.resource_monitor._GPU_AVAILABLE", False),
+            patch("mlflow.log_metrics"),
+            patch("mlflow.active_run", return_value=MagicMock()),
         ):
             vm = MagicMock()
             vm.used = 1e9
@@ -630,7 +694,6 @@ class TestTrainingServiceRun:
         mock_yolo_cls = MagicMock(return_value=mock_model)
 
         with (
-            patch("app.services.resource_monitor.mlflow"),
             patch("app.services.resource_monitor.psutil") as mock_psutil,
             patch("app.services.resource_monitor._GPU_AVAILABLE", False),
         ):
@@ -666,9 +729,10 @@ class TestTrainingServiceRun:
             mock_yolo_cls = MagicMock(return_value=mock_model)
 
             with (
-                patch("app.services.resource_monitor.mlflow"),
                 patch("app.services.resource_monitor.psutil") as mock_psutil,
                 patch("app.services.resource_monitor._GPU_AVAILABLE", False),
+                patch("mlflow.log_metrics"),
+                patch("mlflow.active_run", return_value=MagicMock()),
             ):
                 vm = MagicMock()
                 vm.used = 1e9
@@ -711,9 +775,10 @@ class TestTrainingServiceRun:
             mock_yolo_cls = MagicMock(return_value=mock_model)
 
             with (
-                patch("app.services.resource_monitor.mlflow"),
                 patch("app.services.resource_monitor.psutil") as mock_psutil,
                 patch("app.services.resource_monitor._GPU_AVAILABLE", False),
+                patch("mlflow.log_metrics"),
+                patch("mlflow.active_run", return_value=MagicMock()),
                 patch("app.services.s3_pose_trainer.make_s3_pose_trainer"),
             ):
                 vm = MagicMock()
@@ -725,6 +790,109 @@ class TestTrainingServiceRun:
                 service._run_training(params, mock_yolo_cls)
 
         mock_validate.assert_not_called()
+
+    def test_system_metrics_logged_at_epoch_end(
+        self, dataset_dir: str, output_dir: str, tmp_path: Path
+    ) -> None:
+        """on_fit_epoch_end calls mlflow.log_metrics with system metric keys."""
+        mock_s3 = MagicMock()
+        service = _make_service(s3_client=mock_s3)
+        params = _make_params(dataset_dir=dataset_dir, output_dir=output_dir)
+        save_dir = _fake_trainer_save_dir(tmp_path)
+
+        mock_trainer = MagicMock()
+        mock_trainer.save_dir = str(save_dir)
+        mock_trainer.epoch = 0
+        mock_trainer.metrics = {
+            "metrics/mAP50(B)": 0.6,
+            "metrics/mAP50-95(B)": 0.4,
+            "metrics/precision(B)": 0.7,
+            "metrics/recall(B)": 0.65,
+        }
+        mock_trainer.loss_items = []
+        mock_trainer.last = str(save_dir / "weights" / "last.pt")
+
+        registered_callbacks: dict[str, Any] = {}
+
+        def _capture(event: str, fn: Any) -> None:
+            registered_callbacks[event] = fn
+
+        def _fake_train(**kwargs: Any) -> Any:
+            cb = registered_callbacks.get("on_fit_epoch_end")
+            if cb:
+                cb(mock_trainer)
+            return mock_trainer
+
+        mock_model = MagicMock()
+        mock_model.add_callback.side_effect = _capture
+        mock_model.train.side_effect = _fake_train
+        mock_model.trainer = mock_trainer
+        mock_yolo_cls = MagicMock(return_value=mock_model)
+
+        with (
+            patch("app.services.resource_monitor.psutil") as mock_psutil,
+            patch("app.services.resource_monitor._GPU_AVAILABLE", False),
+            patch("mlflow.log_metrics") as mock_log_metrics,
+            patch("mlflow.active_run", return_value=MagicMock()),
+        ):
+            vm = MagicMock()
+            vm.used = 2e9
+            vm.percent = 15.0
+            mock_psutil.virtual_memory.return_value = vm
+            mock_psutil.cpu_percent.return_value = 30.0
+
+            service._run_training(params, mock_yolo_cls)
+
+        # mlflow.log_metrics must have been called at least once
+        assert mock_log_metrics.called
+
+        # Collect all keys that were ever logged
+        all_logged: dict[str, float] = {}
+        for c in mock_log_metrics.call_args_list:
+            metrics_arg: dict[str, float] = c.args[0] if c.args else c.kwargs.get("metrics", {})
+            all_logged.update(metrics_arg)
+
+        # System metrics must be present in the logged dict
+        assert "system/ram_used_gb" in all_logged
+        assert "system/ram_percent" in all_logged
+        assert "system/cpu_percent" in all_logged
+        # Val metrics must also be present
+        assert "val/mAP50" in all_logged
+
+
+# ---------------------------------------------------------------------------
+# Upload final weights
+# ---------------------------------------------------------------------------
+
+
+class TestUploadFinalWeights:
+    def test_returns_empty_string_when_best_pt_missing(
+        self, dataset_dir: str, output_dir: str, tmp_path: Path
+    ) -> None:
+        """When best.pt doesn't exist, returns empty string (not a phantom URI)."""
+        save_dir = tmp_path / "runs" / "no-best"
+        weights_dir = save_dir / "weights"
+        weights_dir.mkdir(parents=True)
+        # Only last.pt, no best.pt
+        (weights_dir / "last.pt").write_bytes(b"fake-last")
+
+        service = _make_service()
+        params = _make_params(dataset_dir=dataset_dir, output_dir=output_dir)
+        result = service._upload_final_weights(params, save_dir)
+
+        assert result == ""
+
+    def test_returns_s3_uri_when_best_pt_exists(
+        self, dataset_dir: str, output_dir: str, tmp_path: Path
+    ) -> None:
+        """When best.pt exists, returns the S3 URI."""
+        save_dir = _fake_trainer_save_dir(tmp_path)
+        service = _make_service()
+        params = _make_params(dataset_dir=dataset_dir, output_dir=output_dir)
+        result = service._upload_final_weights(params, save_dir)
+
+        assert result.startswith("s3://")
+        assert "best.pt" in result
 
 
 # ---------------------------------------------------------------------------
@@ -780,3 +948,120 @@ class TestBuildTrainKwargs:
         assert "hsv_h" in kwargs
         assert "mosaic" in kwargs
         assert "fliplr" in kwargs
+
+
+# ---------------------------------------------------------------------------
+# S3 checkpoint upload callback
+# ---------------------------------------------------------------------------
+
+
+class TestCheckpointUploadCallback:
+    def test_uploads_at_checkpoint_interval(
+        self, dataset_dir: str, output_dir: str, tmp_path: Path
+    ) -> None:
+        """on_train_epoch_end uploads checkpoint when epoch % interval == 0."""
+        mock_s3 = MagicMock()
+        service = _make_service(s3_client=mock_s3)
+        save_dir = _fake_trainer_save_dir(tmp_path)
+
+        params = _make_params(
+            dataset_dir=dataset_dir,
+            output_dir=output_dir,
+            checkpoint_interval=2,
+        )
+
+        registered_callbacks: dict[str, Any] = {}
+
+        def _capture(event: str, fn: Any) -> None:
+            registered_callbacks[event] = fn
+
+        mock_trainer = MagicMock()
+        mock_trainer.save_dir = str(save_dir)
+        mock_trainer.epoch = 1  # 0-indexed, so epoch 2
+        mock_trainer.last = str(save_dir / "weights" / "last.pt")
+        mock_trainer.metrics = {}
+
+        def _fake_train(**kwargs: Any) -> Any:
+            cb = registered_callbacks.get("on_train_epoch_end")
+            if cb:
+                cb(mock_trainer)
+            return mock_trainer
+
+        mock_model = MagicMock()
+        mock_model.add_callback.side_effect = _capture
+        mock_model.train.side_effect = _fake_train
+        mock_model.trainer = mock_trainer
+        mock_yolo_cls = MagicMock(return_value=mock_model)
+
+        with (
+            patch("app.services.resource_monitor.psutil") as mock_psutil,
+            patch("app.services.resource_monitor._GPU_AVAILABLE", False),
+            patch("mlflow.log_metrics"),
+            patch("mlflow.active_run", return_value=MagicMock()),
+        ):
+            vm = MagicMock()
+            vm.used = 1e9
+            vm.percent = 10.0
+            mock_psutil.virtual_memory.return_value = vm
+            mock_psutil.cpu_percent.return_value = 5.0
+
+            service._run_training(params, mock_yolo_cls)
+
+        # Should have uploaded checkpoint (epoch 2 % 2 == 0) plus final weights
+        upload_calls = [str(c) for c in mock_s3.upload_file.call_args_list]
+        assert any("epoch_0002.pt" in c for c in upload_calls)
+
+    def test_skips_non_checkpoint_epoch(
+        self, dataset_dir: str, output_dir: str, tmp_path: Path
+    ) -> None:
+        """on_train_epoch_end does NOT upload when epoch % interval != 0."""
+        mock_s3 = MagicMock()
+        service = _make_service(s3_client=mock_s3)
+        save_dir = _fake_trainer_save_dir(tmp_path)
+
+        params = _make_params(
+            dataset_dir=dataset_dir,
+            output_dir=output_dir,
+            checkpoint_interval=5,
+        )
+
+        registered_callbacks: dict[str, Any] = {}
+
+        def _capture(event: str, fn: Any) -> None:
+            registered_callbacks[event] = fn
+
+        mock_trainer = MagicMock()
+        mock_trainer.save_dir = str(save_dir)
+        mock_trainer.epoch = 1  # 0-indexed, so epoch 2 (not divisible by 5)
+        mock_trainer.last = str(save_dir / "weights" / "last.pt")
+        mock_trainer.metrics = {}
+
+        def _fake_train(**kwargs: Any) -> Any:
+            cb = registered_callbacks.get("on_train_epoch_end")
+            if cb:
+                cb(mock_trainer)
+            return mock_trainer
+
+        mock_model = MagicMock()
+        mock_model.add_callback.side_effect = _capture
+        mock_model.train.side_effect = _fake_train
+        mock_model.trainer = mock_trainer
+        mock_yolo_cls = MagicMock(return_value=mock_model)
+
+        with (
+            patch("app.services.resource_monitor.psutil") as mock_psutil,
+            patch("app.services.resource_monitor._GPU_AVAILABLE", False),
+            patch("mlflow.log_metrics"),
+            patch("mlflow.active_run", return_value=MagicMock()),
+        ):
+            vm = MagicMock()
+            vm.used = 1e9
+            vm.percent = 10.0
+            mock_psutil.virtual_memory.return_value = vm
+            mock_psutil.cpu_percent.return_value = 5.0
+
+            service._run_training(params, mock_yolo_cls)
+
+        # Only final weight uploads (best.pt + last.pt), no intermediate checkpoint
+        upload_calls = [str(c) for c in mock_s3.upload_file.call_args_list]
+        assert not any("epoch_" in c for c in upload_calls)

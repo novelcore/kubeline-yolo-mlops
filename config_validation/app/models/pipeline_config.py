@@ -30,6 +30,8 @@ class DatasetConfig(BaseModel):
     version: str
     source: str
     path_override: Optional[str] = None
+    lakefs_repo: Optional[str] = None
+    lakefs_branch: Optional[str] = None
     sample_size: Optional[int] = None
     seed: int = 42
 
@@ -49,6 +51,20 @@ class DatasetConfig(BaseModel):
             )
         return v
 
+    @field_validator("lakefs_repo", mode="after")
+    @classmethod
+    def lakefs_repo_must_be_non_empty(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v.strip():
+            raise ValueError("dataset.lakefs_repo must not be empty when set")
+        return v
+
+    @field_validator("lakefs_branch", mode="after")
+    @classmethod
+    def lakefs_branch_must_be_non_empty(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v.strip():
+            raise ValueError("dataset.lakefs_branch must not be empty when set")
+        return v
+
     @field_validator("sample_size", mode="after")
     @classmethod
     def sample_size_must_be_positive(cls, v: Optional[int]) -> Optional[int]:
@@ -57,6 +73,19 @@ class DatasetConfig(BaseModel):
                 f"dataset.sample_size must be > 0 when set, got: {v}"
             )
         return v
+
+    @model_validator(mode="after")
+    def lakefs_fields_required_when_lakefs_source(self) -> "DatasetConfig":
+        if self.source == "lakefs" and not self.path_override:
+            if not self.lakefs_repo:
+                raise ValueError(
+                    "dataset.lakefs_repo is required when source='lakefs' and no path_override is set"
+                )
+            if not self.lakefs_branch:
+                raise ValueError(
+                    "dataset.lakefs_branch is required when source='lakefs' and no path_override is set"
+                )
+        return self
 
 
 class ModelConfig(BaseModel):

@@ -91,6 +91,8 @@ class Manager:
         version: str,
         source: str,
         output_dir: str,
+        lakefs_repo: Optional[str] = None,
+        lakefs_branch: Optional[str] = None,
         path_override: Optional[str] = None,
         labels_only: bool = False,
         manifest_only: bool = False,
@@ -107,6 +109,10 @@ class Manager:
             Storage backend: ``"s3"`` or ``"lakefs"``.
         output_dir:
             Local directory where the YOLO dataset tree will be written.
+        lakefs_repo:
+            LakeFS repository name (used when source is ``"lakefs"``).
+        lakefs_branch:
+            LakeFS branch name (used when source is ``"lakefs"``).
         path_override:
             Optional full S3 URI that overrides the default location.
         sample_size:
@@ -122,6 +128,8 @@ class Manager:
             version=version,
             source=source,
             output_dir=output_dir,
+            lakefs_repo=lakefs_repo,
+            lakefs_branch=lakefs_branch,
             path_override=path_override or None,
             labels_only=labels_only,
             manifest_only=manifest_only,

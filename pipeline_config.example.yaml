@@ -10,7 +10,9 @@ experiment:
 dataset:
   version: "v1"
   source: "lakefs"                 # "s3" or "lakefs"
-  path_override: "s3://io-audio-text-data/upload-initial/dataset/"
+  lakefs_repo: "io-audio-text-data"   # LakeFS repository name (required when source=lakefs)
+  lakefs_branch: "main"              # LakeFS branch (required when source=lakefs)
+  path_override: null              # null = auto-construct from repo/branch/version; or full s3:// URI
   sample_size: null               # null = full dataset; integer = sampled subset
   seed: 42                        # Seed for reproducible dataset sampling
 

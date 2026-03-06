@@ -27,6 +27,14 @@ def main() -> None:
             ...,
             help="Storage backend to use: 's3' or 'lakefs'.",
         ),
+        lakefs_repo: Optional[str] = typer.Option(
+            None,
+            help="LakeFS repository name (used when source='lakefs').",
+        ),
+        lakefs_branch: Optional[str] = typer.Option(
+            None,
+            help="LakeFS branch name (used when source='lakefs').",
+        ),
         output_dir: str = typer.Option(
             ...,
             help="Local directory where the YOLO dataset tree will be written.",
@@ -71,6 +79,8 @@ def main() -> None:
                 version=version,
                 source=source,
                 output_dir=output_dir,
+                lakefs_repo=lakefs_repo,
+                lakefs_branch=lakefs_branch,
                 path_override=path_override if path_override else None,
                 labels_only=labels_only,
                 manifest_only=manifest_only,

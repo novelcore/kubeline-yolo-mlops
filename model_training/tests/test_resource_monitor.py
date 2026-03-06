@@ -1,11 +1,20 @@
-"""Tests for the ResourceMonitor background thread."""
+"""Tests for ResourceMonitor.collect().
 
-import time
+ResourceMonitor is now a synchronous, on-demand sampler.  There is no
+background thread, no run_id gating, and no step counter.  Tests call
+collect() directly and assert on the returned dict.
+"""
+
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.services.resource_monitor import ResourceMonitor
+
+
+# ---------------------------------------------------------------------------
+# Shared fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -18,170 +27,192 @@ def mock_psutil_vm() -> MagicMock:
     return vm
 
 
-def _make_monitor(interval_sec: int = 1) -> ResourceMonitor:
-    return ResourceMonitor(interval_sec=interval_sec)
+def _make_monitor(gpu_index: "int | None" = None) -> ResourceMonitor:
+    return ResourceMonitor(gpu_index=gpu_index)
 
 
-class TestResourceMonitorLifecycle:
-    def test_start_and_stop(self) -> None:
-        """Monitor thread starts and stops cleanly."""
-        monitor = _make_monitor(interval_sec=1)
-        with (
-            patch("app.services.resource_monitor.psutil") as mock_psutil,
-            patch("app.services.resource_monitor.mlflow"),
-            patch("app.services.resource_monitor._GPU_AVAILABLE", False),
-        ):
-            vm = MagicMock()
-            vm.used = 1e9
-            vm.percent = 10.0
-            mock_psutil.virtual_memory.return_value = vm
-            mock_psutil.cpu_percent.return_value = 5.0
-
-            monitor.start()
-            assert monitor._thread is not None
-            assert monitor._thread.is_alive()
-
-            time.sleep(0.1)
-            monitor.stop()
-
-            assert not monitor._thread.is_alive()
-
-    def test_double_start_is_idempotent(self) -> None:
-        """Calling start() twice does not spawn a second thread."""
-        monitor = _make_monitor(interval_sec=60)
-        with (
-            patch("app.services.resource_monitor.psutil"),
-            patch("app.services.resource_monitor.mlflow"),
-            patch("app.services.resource_monitor._GPU_AVAILABLE", False),
-        ):
-            monitor.start()
-            first_thread = monitor._thread
-            monitor.start()  # second call should be a no-op
-            assert monitor._thread is first_thread
-            monitor.stop()
+# ---------------------------------------------------------------------------
+# CPU / RAM sampling
+# ---------------------------------------------------------------------------
 
 
-class TestResourceMonitorSampling:
-    def test_cpu_and_ram_metrics_logged(self, mock_psutil_vm: MagicMock) -> None:
-        """CPU and RAM metrics are logged to MLflow on each sample."""
-        monitor = _make_monitor(interval_sec=60)
+class TestCpuRamSampling:
+    def test_cpu_and_ram_metrics_returned(self, mock_psutil_vm: MagicMock) -> None:
+        """collect() returns CPU and RAM metrics as a dict."""
+        monitor = _make_monitor(gpu_index=None)
 
         with (
             patch("app.services.resource_monitor.psutil") as mock_psutil,
-            patch("app.services.resource_monitor.mlflow") as mock_mlflow,
             patch("app.services.resource_monitor._GPU_AVAILABLE", False),
         ):
             mock_psutil.virtual_memory.return_value = mock_psutil_vm
             mock_psutil.cpu_percent.return_value = 42.0
 
-            monitor._sample()
+            result = monitor.collect()
 
-            mock_mlflow.log_metrics.assert_called_once()
-            logged: dict = mock_mlflow.log_metrics.call_args[0][0]
+        assert "system/ram_used_gb" in result
+        assert "system/ram_percent" in result
+        assert "system/cpu_percent" in result
+        assert result["system/cpu_percent"] == 42.0
+        assert result["system/ram_percent"] == 25.0
+        assert result["system/ram_used_gb"] == pytest.approx(4.0)
 
-            assert "system/ram_used_gb" in logged
-            assert "system/ram_percent" in logged
-            assert "system/cpu_percent" in logged
-            assert logged["system/cpu_percent"] == 42.0
-            assert logged["system/ram_percent"] == 25.0
-            # No GPU keys when _GPU_AVAILABLE is False
-            assert not any("gpu" in k for k in logged)
-
-    def test_gpu_metrics_logged_when_available(self, mock_psutil_vm: MagicMock) -> None:
-        """GPU VRAM and utilisation metrics are included when pynvml is available."""
-        monitor = _make_monitor(interval_sec=60)
-
-        mock_handle = MagicMock()
-        mock_mem = MagicMock()
-        mock_mem.used = 8_000_000_000
-        mock_mem.total = 40_000_000_000
-        mock_util = MagicMock()
-        mock_util.gpu = 87
-
-        mock_pynvml = MagicMock()
-        mock_pynvml.nvmlDeviceGetHandleByIndex.return_value = mock_handle
-        mock_pynvml.nvmlDeviceGetMemoryInfo.return_value = mock_mem
-        mock_pynvml.nvmlDeviceGetUtilizationRates.return_value = mock_util
+    def test_no_gpu_keys_when_gpu_index_is_none(self, mock_psutil_vm: MagicMock) -> None:
+        """No GPU keys appear in the result when gpu_index=None."""
+        monitor = _make_monitor(gpu_index=None)
 
         with (
             patch("app.services.resource_monitor.psutil") as mock_psutil,
-            patch("app.services.resource_monitor.mlflow") as mock_mlflow,
             patch("app.services.resource_monitor._GPU_AVAILABLE", True),
-            patch("app.services.resource_monitor._GPU_COUNT", 1),
-            patch("app.services.resource_monitor.pynvml", mock_pynvml, create=True),
+        ):
+            mock_psutil.virtual_memory.return_value = mock_psutil_vm
+            mock_psutil.cpu_percent.return_value = 5.0
+
+            result = monitor.collect()
+
+        assert not any("gpu" in k for k in result)
+
+    def test_returns_dict_of_floats(self, mock_psutil_vm: MagicMock) -> None:
+        """All values in the returned dict are plain Python floats."""
+        monitor = _make_monitor(gpu_index=None)
+
+        with (
+            patch("app.services.resource_monitor.psutil") as mock_psutil,
+            patch("app.services.resource_monitor._GPU_AVAILABLE", False),
         ):
             mock_psutil.virtual_memory.return_value = mock_psutil_vm
             mock_psutil.cpu_percent.return_value = 10.0
 
-            monitor._sample()
+            result = monitor.collect()
 
-            logged: dict = mock_mlflow.log_metrics.call_args[0][0]
-            assert "system/gpu_vram_used_gb" in logged
-            assert "system/gpu_vram_total_gb" in logged
-            assert "system/gpu_utilization_pct" in logged
-            assert logged["system/gpu_utilization_pct"] == 87.0
+        for key, value in result.items():
+            assert isinstance(value, float), f"{key} value is not a float: {type(value)}"
 
-    def test_multi_gpu_metrics_have_suffix(self, mock_psutil_vm: MagicMock) -> None:
-        """With multiple GPUs each metric key gets a _gpu{i} suffix."""
-        monitor = _make_monitor(interval_sec=60)
 
+# ---------------------------------------------------------------------------
+# GPU sampling
+# ---------------------------------------------------------------------------
+
+
+class TestGpuSampling:
+    def _make_pynvml_mock(
+        self,
+        vram_used: int = 8_000_000_000,
+        vram_total: int = 40_000_000_000,
+        utilization: int = 87,
+    ) -> MagicMock:
         mock_mem = MagicMock()
-        mock_mem.used = 4_000_000_000
-        mock_mem.total = 40_000_000_000
+        mock_mem.used = vram_used
+        mock_mem.total = vram_total
         mock_util = MagicMock()
-        mock_util.gpu = 50
-
+        mock_util.gpu = utilization
         mock_pynvml = MagicMock()
         mock_pynvml.nvmlDeviceGetHandleByIndex.return_value = MagicMock()
         mock_pynvml.nvmlDeviceGetMemoryInfo.return_value = mock_mem
         mock_pynvml.nvmlDeviceGetUtilizationRates.return_value = mock_util
+        return mock_pynvml
+
+    def test_gpu_metrics_included_when_index_provided(
+        self, mock_psutil_vm: MagicMock
+    ) -> None:
+        """GPU VRAM and utilisation appear in the result when gpu_index is set."""
+        monitor = _make_monitor(gpu_index=0)
+        mock_pynvml = self._make_pynvml_mock()
 
         with (
             patch("app.services.resource_monitor.psutil") as mock_psutil,
-            patch("app.services.resource_monitor.mlflow") as mock_mlflow,
             patch("app.services.resource_monitor._GPU_AVAILABLE", True),
-            patch("app.services.resource_monitor._GPU_COUNT", 2),
             patch("app.services.resource_monitor.pynvml", mock_pynvml, create=True),
         ):
             mock_psutil.virtual_memory.return_value = mock_psutil_vm
             mock_psutil.cpu_percent.return_value = 10.0
 
-            monitor._sample()
+            result = monitor.collect()
 
-            logged: dict = mock_mlflow.log_metrics.call_args[0][0]
-            assert "system/gpu_vram_used_gb_gpu0" in logged
-            assert "system/gpu_vram_used_gb_gpu1" in logged
+        assert "system/gpu_vram_used_gb" in result
+        assert "system/gpu_vram_total_gb" in result
+        assert "system/gpu_utilization_pct" in result
+        assert result["system/gpu_utilization_pct"] == 87.0
+        assert result["system/gpu_vram_used_gb"] == pytest.approx(8.0)
+        assert result["system/gpu_vram_total_gb"] == pytest.approx(40.0)
 
-    def test_mlflow_failure_does_not_raise(self, mock_psutil_vm: MagicMock) -> None:
-        """A broken MLflow connection must not crash the monitor thread."""
-        monitor = _make_monitor(interval_sec=60)
+    def test_correct_device_index_queried(self, mock_psutil_vm: MagicMock) -> None:
+        """pynvml is called with the gpu_index supplied at construction time."""
+        monitor = _make_monitor(gpu_index=0)
+        mock_pynvml = self._make_pynvml_mock()
 
         with (
             patch("app.services.resource_monitor.psutil") as mock_psutil,
-            patch("app.services.resource_monitor.mlflow") as mock_mlflow,
-            patch("app.services.resource_monitor._GPU_AVAILABLE", False),
+            patch("app.services.resource_monitor._GPU_AVAILABLE", True),
+            patch("app.services.resource_monitor.pynvml", mock_pynvml, create=True),
+        ):
+            mock_psutil.virtual_memory.return_value = mock_psutil_vm
+            mock_psutil.cpu_percent.return_value = 10.0
+            monitor.collect()
+
+        mock_pynvml.nvmlDeviceGetHandleByIndex.assert_called_once_with(0)
+
+    def test_gpu_metrics_absent_when_gpu_index_none(
+        self, mock_psutil_vm: MagicMock
+    ) -> None:
+        """GPU metrics are NOT in the result when gpu_index=None, even if pynvml works."""
+        monitor = _make_monitor(gpu_index=None)
+        mock_pynvml = self._make_pynvml_mock()
+
+        with (
+            patch("app.services.resource_monitor.psutil") as mock_psutil,
+            patch("app.services.resource_monitor._GPU_AVAILABLE", True),
+            patch("app.services.resource_monitor.pynvml", mock_pynvml, create=True),
         ):
             mock_psutil.virtual_memory.return_value = mock_psutil_vm
             mock_psutil.cpu_percent.return_value = 5.0
-            mock_mlflow.log_metrics.side_effect = ConnectionError("MLflow down")
 
-            # Must not raise
-            monitor._sample()
+            result = monitor.collect()
 
-    def test_step_counter_increments(self, mock_psutil_vm: MagicMock) -> None:
-        """The step counter increments with each sample."""
-        monitor = _make_monitor(interval_sec=60)
+        assert not any("gpu" in k for k in result)
+        mock_pynvml.nvmlDeviceGetHandleByIndex.assert_not_called()
+
+    def test_pynvml_error_is_swallowed_cpu_metrics_still_returned(
+        self, mock_psutil_vm: MagicMock
+    ) -> None:
+        """A pynvml error during GPU sampling does not raise; CPU/RAM are still returned."""
+        monitor = _make_monitor(gpu_index=0)
+
+        mock_pynvml = MagicMock()
+        mock_pynvml.nvmlDeviceGetHandleByIndex.side_effect = RuntimeError("GPU lost")
 
         with (
             patch("app.services.resource_monitor.psutil") as mock_psutil,
-            patch("app.services.resource_monitor.mlflow"),
-            patch("app.services.resource_monitor._GPU_AVAILABLE", False),
+            patch("app.services.resource_monitor._GPU_AVAILABLE", True),
+            patch("app.services.resource_monitor.pynvml", mock_pynvml, create=True),
         ):
             mock_psutil.virtual_memory.return_value = mock_psutil_vm
-            mock_psutil.cpu_percent.return_value = 0.0
+            mock_psutil.cpu_percent.return_value = 10.0
 
-            assert monitor._step[0] == 0
-            monitor._sample()
-            assert monitor._step[0] == 1
-            monitor._sample()
-            assert monitor._step[0] == 2
+            result = monitor.collect()
+
+        # CPU/RAM metrics must still be present
+        assert "system/cpu_percent" in result
+        assert "system/ram_used_gb" in result
+        # No GPU keys because the pynvml call failed
+        assert not any("gpu" in k for k in result)
+
+
+# ---------------------------------------------------------------------------
+# Error handling
+# ---------------------------------------------------------------------------
+
+
+class TestErrorHandling:
+    def test_psutil_error_returns_empty_dict(self) -> None:
+        """An unexpected psutil failure returns an empty dict, not an exception."""
+        monitor = _make_monitor(gpu_index=None)
+
+        with patch(
+            "app.services.resource_monitor.psutil"
+        ) as mock_psutil:
+            mock_psutil.virtual_memory.side_effect = OSError("no proc fs")
+
+            result = monitor.collect()
+
+        assert result == {}

@@ -23,6 +23,8 @@ def main() -> None:
         # Dataset
         dataset_version: str = typer.Option(..., help="Dataset version string."),
         dataset_source: str = typer.Option(..., help="Dataset source: 's3' or 'lakefs'."),
+        dataset_lakefs_repo: Optional[str] = typer.Option(default=None, help="LakeFS repository name (required when source=lakefs)."),
+        dataset_lakefs_branch: Optional[str] = typer.Option(default=None, help="LakeFS branch name (required when source=lakefs)."),
         dataset_path_override: Optional[str] = typer.Option(default=None, help="Optional S3/LakeFS path override for the dataset."),
         dataset_sample_size: Optional[int] = typer.Option(default=None, help="Optional sample size (must be > 0)."),
         dataset_seed: int = typer.Option(default=42, help="Random seed for dataset splitting."),
@@ -100,6 +102,8 @@ def main() -> None:
                 "dataset": {
                     "version": dataset_version,
                     "source": dataset_source,
+                    "lakefs_repo": dataset_lakefs_repo,
+                    "lakefs_branch": dataset_lakefs_branch,
                     "path_override": dataset_path_override,
                     "sample_size": dataset_sample_size,
                     "seed": dataset_seed,

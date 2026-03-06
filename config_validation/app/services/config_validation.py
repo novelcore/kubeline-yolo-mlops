@@ -82,6 +82,8 @@ class ConfigValidationService:
             ("Dataset", {
                 "Version": config.dataset.version,
                 "Source": config.dataset.source,
+                "LakeFS repo": config.dataset.lakefs_repo or "(none)",
+                "LakeFS branch": config.dataset.lakefs_branch or "(none)",
                 "Path override": config.dataset.path_override or "(none)",
                 "Sample size": config.dataset.sample_size or "full",
                 "Seed": config.dataset.seed,
@@ -190,10 +192,13 @@ class ConfigValidationService:
         """Verify the dataset path exists in S3/LakeFS."""
         if config.dataset.path_override is not None:
             s3_path = config.dataset.path_override
+        elif config.dataset.lakefs_repo and config.dataset.lakefs_branch:
+            s3_path = (
+                f"s3://{config.dataset.lakefs_repo}/"
+                f"{config.dataset.lakefs_branch}/dataset/{config.dataset.version}/"
+            )
         else:
-            # Convention: datasets live at s3://{repo}/{branch}/dataset/{version}/
-            # The storage_path is s3://{repo}/{branch}/checkpoints; strip the
-            # /checkpoints suffix to get the base URL.
+            # Fallback: derive from checkpointing storage_path
             base = config.checkpointing.storage_path.rstrip("/")
             if base.endswith("/checkpoints"):
                 base = base[: -len("/checkpoints")]
