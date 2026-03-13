@@ -1,0 +1,19 @@
+# Validated config artifacts (local runs)
+.tmp/*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+
+# Environment files
+.env
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+artifacts/
