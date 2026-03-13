@@ -29,7 +29,12 @@ jobs:
       - name: Detect changed step directories
         id: detect
         run: |
-          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+          else
+            # Initial commit — treat all tracked files as changed
+            CHANGED_FILES=$(git ls-tree -r --name-only HEAD)
+          fi
           CHANGED_STEPS="[]"
           for STEP_PATH in ${{ steps.parse.outputs.step_paths }}; do
             if echo "$CHANGED_FILES" | grep -q "^${STEP_PATH}/"; then
