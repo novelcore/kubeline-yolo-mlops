@@ -59,6 +59,8 @@ jobs:
 
               image = f'{registry}/{ecr_repo}:{s[\"path\"]}-latest'
               compute = s.get('compute', 'cpu')
+              pipeline_label = f'{proj}-{app}'
+              nodepool = f'{pipeline_label}-{compute}'
 
               init_env = [
                   {'name': 'LAKEFS_ENDPOINT', 'value': lakefs},
@@ -87,7 +89,7 @@ jobs:
 
               tmpl = {
                   'name': s['name'],
-                  'nodeSelector': {'karpenter.sh/nodepool': compute},
+                  'nodeSelector': {'karpenter.sh/nodepool': nodepool},
                   'initContainers': [{
                       'name': 'ml-project-init',
                       'image': 'novelcore.azurecr.io/kubecore/ml-project-init:latest',
