@@ -101,8 +101,12 @@ jobs:
                   }],
                   'container': container,
               }
+              # Tolerate the nodepool taint (all ML nodepools have burst taint)
+              tmpl['tolerations'] = [
+                  {'key': 'platform.kubecore.io/burst', 'operator': 'Equal', 'value': 'true', 'effect': 'NoSchedule'},
+              ]
               if compute == 'gpu':
-                  tmpl['tolerations'] = [{'key': 'nvidia.com/gpu', 'operator': 'Exists', 'effect': 'NoSchedule'}]
+                  tmpl['tolerations'].append({'key': 'nvidia.com/gpu', 'operator': 'Exists', 'effect': 'NoSchedule'})
                   tmpl['container']['resources']['limits']['nvidia.com/gpu'] = '1'
               templates.append(tmpl)
 
