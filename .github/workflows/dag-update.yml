@@ -14,7 +14,6 @@ env:
   MLFLOW_ENDPOINT: ${{ vars.KUBECORE_MLFLOW_ENDPOINT }}
   REGISTRY: ${{ vars.KUBECORE_REGISTRY }}
   ECR_REPO: ${{ vars.KUBECORE_ECR_REPO }}
-  ML_INIT_IMAGE: ${{ vars.KUBECORE_ML_INIT_IMAGE || 'public.ecr.aws/l3k1j3t6/kubecore/ml-project-init:latest' }}
 
 jobs:
   render-and-dispatch:
@@ -91,15 +90,6 @@ jobs:
               tmpl = {
                   'name': s['name'],
                   'nodeSelector': {'karpenter.sh/nodepool': nodepool},
-                  'initContainers': [{
-                      'name': 'ml-project-init',
-                      'image': os.environ.get('ML_INIT_IMAGE', 'public.ecr.aws/l3k1j3t6/kubecore/ml-project-init:latest'),
-                      'env': init_env,
-                      'resources': {
-                          'requests': {'cpu': '50m', 'memory': '64Mi'},
-                          'limits': {'cpu': '200m', 'memory': '128Mi'},
-                      },
-                  }],
                   'container': container,
               }
               # Tolerate the nodepool taint (all ML nodepools have burst taint)
