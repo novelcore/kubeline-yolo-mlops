@@ -13,15 +13,13 @@ env:
   LAKEFS_ENDPOINT: ${{ vars.KUBECORE_LAKEFS_ENDPOINT }}
   MLFLOW_ENDPOINT: ${{ vars.KUBECORE_MLFLOW_ENDPOINT }}
   REGISTRY: ${{ vars.KUBECORE_REGISTRY }}
+  ECR_REPO: ${{ vars.KUBECORE_ECR_REPO }}
 
 jobs:
   render-and-dispatch:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install yq
-        uses: mikefarah/yq@master
 
       - name: Determine target branch
         id: branch
@@ -32,89 +30,107 @@ jobs:
             echo "target=dev" >> $GITHUB_OUTPUT
           fi
 
-      - name: Read kubeline.yaml and render WorkflowTemplate
+      - name: Render WorkflowTemplate from kubeline.yaml
         id: render
         run: |
-          BRANCH="${{ steps.branch.outputs.target }}"
+          python3 -c "
+          import yaml, json, os, base64, sys
 
-          # Build DAG tasks YAML from kubeline.yaml
-          TASKS=""
-          TEMPLATES=""
-          STEP_COUNT=$(yq e '.steps | length' kubeline.yaml)
+          with open('kubeline.yaml') as f:
+              kl = yaml.safe_load(f)
 
-          for i in $(seq 0 $(($STEP_COUNT - 1))); do
-            NAME=$(yq e ".steps[$i].name" kubeline.yaml)
-            PATH_DIR=$(yq e ".steps[$i].path" kubeline.yaml)
-            COMPUTE=$(yq e ".steps[$i].compute // \"cpu\"" kubeline.yaml)
-            DEPS=$(yq e ".steps[$i].dependencies // []" kubeline.yaml)
+          steps = kl.get('steps', [])
+          registry = os.environ['REGISTRY']
+          ecr_repo = os.environ['ECR_REPO']
+          app = os.environ['APP_NAME']
+          ns = os.environ['ML_NAMESPACE']
+          proj = os.environ['PROJECT_NAME']
+          branch = '${{ steps.branch.outputs.target }}'
+          lakefs = os.environ['LAKEFS_ENDPOINT']
+          mlflow = os.environ['MLFLOW_ENDPOINT']
 
-            # Build DAG task entry
-            TASK="      - name: $NAME\n        template: $NAME"
-            if [ "$DEPS" != "[]" ]; then
-              TASK="$TASK\n        dependencies:"
-              for DEP in $(yq e ".steps[$i].dependencies[]" kubeline.yaml); do
-                TASK="$TASK\n        - $DEP"
-              done
-            fi
-            TASKS="${TASKS}${TASK}\n"
+          dag_tasks = []
+          templates = []
+          for s in steps:
+              task = {'name': s['name'], 'template': s['name']}
+              if s.get('dependencies'):
+                  task['dependencies'] = s['dependencies']
+              dag_tasks.append(task)
 
-            # Build template entry
-            NODESELECTOR="      nodeSelector:\n        karpenter.sh/nodepool: cpu"
-            TOLERATIONS=""
-            GPU_LIMIT=""
-            if [ "$COMPUTE" = "gpu" ]; then
-              NODESELECTOR="      nodeSelector:\n        karpenter.sh/nodepool: gpu"
-              TOLERATIONS="      tolerations:\n      - key: nvidia.com/gpu\n        operator: Exists\n        effect: NoSchedule"
-              GPU_LIMIT="\n            nvidia.com/gpu: \"1\""
-            fi
+              image = f'{registry}/{ecr_repo}:{s[\"path\"]}-latest'
+              compute = s.get('compute', 'cpu')
 
-            IMAGE="${REGISTRY}/${APP_NAME}-${PATH_DIR}:latest"
+              init_env = [
+                  {'name': 'LAKEFS_ENDPOINT', 'value': lakefs},
+                  {'name': 'MLFLOW_TRACKING_URI', 'value': mlflow},
+                  {'name': 'PROJECT_NAME', 'value': proj},
+                  {'name': 'APP_NAME', 'value': app},
+                  {'name': 'LAKEFS_REPO', 'value': app},
+                  {'name': 'BRANCH', 'value': branch},
+              ]
 
-            TEMPLATE="    - name: $NAME\n${NODESELECTOR}"
-            if [ -n "$TOLERATIONS" ]; then
-              TEMPLATE="$TEMPLATE\n${TOLERATIONS}"
-            fi
-            TEMPLATE="$TEMPLATE\n      container:\n        image: $IMAGE\n        resources:\n          requests:\n            cpu: \"250m\"\n            memory: \"512Mi\"\n          limits:\n            cpu: \"1\"\n            memory: \"2Gi\"${GPU_LIMIT}"
-            TEMPLATES="${TEMPLATES}${TEMPLATE}\n"
-          done
+              tmpl = {
+                  'name': s['name'],
+                  'nodeSelector': {'karpenter.sh/nodepool': compute},
+                  'initContainers': [{
+                      'name': 'ml-project-init',
+                      'image': 'novelcore.azurecr.io/kubecore/ml-project-init:latest',
+                      'env': init_env,
+                      'resources': {
+                          'requests': {'cpu': '50m', 'memory': '64Mi'},
+                          'limits': {'cpu': '200m', 'memory': '128Mi'},
+                      },
+                  }],
+                  'container': {
+                      'image': image,
+                      'env': list(init_env),
+                      'resources': {
+                          'requests': {'cpu': '250m', 'memory': '512Mi'},
+                          'limits': {'cpu': '1', 'memory': '2Gi'},
+                      },
+                  },
+              }
+              if compute == 'gpu':
+                  tmpl['tolerations'] = [{'key': 'nvidia.com/gpu', 'operator': 'Exists', 'effect': 'NoSchedule'}]
+                  tmpl['container']['resources']['limits']['nvidia.com/gpu'] = '1'
+              templates.append(tmpl)
 
-          # Render full WorkflowTemplate
-          cat > /tmp/workflow-template.yaml << WFTEOF
-          apiVersion: argoproj.io/v1alpha1
-          kind: WorkflowTemplate
-          metadata:
-            name: ${APP_NAME}-pipeline
-            namespace: ${ML_NAMESPACE}
-            labels:
-              platform.kubecore.io/project: ${PROJECT_NAME}
-              platform.kubecore.io/app: ${APP_NAME}
-              platform.kubecore.io/managed-by: ci-dag-update
-          spec:
-            serviceAccountName: argo-workflow
-            entrypoint: pipeline-dag
-            arguments:
-              parameters:
-              - name: lakefs-endpoint
-                value: "${LAKEFS_ENDPOINT}"
-              - name: mlflow-endpoint
-                value: "${MLFLOW_ENDPOINT}"
-              - name: project-name
-                value: "${PROJECT_NAME}"
-              - name: lakefs-repo
-                value: "${APP_NAME}"
-              - name: branch
-                value: "${BRANCH}"
-            templates:
-            - name: pipeline-dag
-              dag:
-                tasks:
-          $(echo -e "$TASKS")
-          $(echo -e "$TEMPLATES")
-          WFTEOF
-
-          # Base64 encode for dispatch payload
-          WFT_CONTENT=$(cat /tmp/workflow-template.yaml | base64 -w0)
-          echo "wft_content=$WFT_CONTENT" >> $GITHUB_OUTPUT
+          wft = {
+              'apiVersion': 'argoproj.io/v1alpha1',
+              'kind': 'WorkflowTemplate',
+              'metadata': {
+                  'name': f'{app}-pipeline',
+                  'namespace': ns,
+                  'labels': {
+                      'platform.kubecore.io/project': proj,
+                      'platform.kubecore.io/app': app,
+                      'platform.kubecore.io/managed-by': 'ci-dag-update',
+                  },
+              },
+              'spec': {
+                  'imagePullSecrets': [{'name': f'{proj}-{app}-ecr-dockerconfig'}],
+                  'serviceAccountName': 'argo-workflow',
+                  'entrypoint': 'pipeline-dag',
+                  'arguments': {
+                      'parameters': [
+                          {'name': 'lakefs-endpoint', 'value': lakefs},
+                          {'name': 'mlflow-endpoint', 'value': mlflow},
+                          {'name': 'project-name', 'value': proj},
+                          {'name': 'lakefs-repo', 'value': app},
+                          {'name': 'branch', 'value': branch},
+                      ],
+                  },
+                  'templates': [
+                      {'name': 'pipeline-dag', 'dag': {'tasks': dag_tasks}},
+                      *templates,
+                  ],
+              },
+          }
+          content = yaml.dump(wft, default_flow_style=False, sort_keys=False)
+          encoded = base64.b64encode(content.encode()).decode()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'wft_content={encoded}\n')
+          "
 
       - name: Generate GitHub App token
         id: app-token

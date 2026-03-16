@@ -8,6 +8,7 @@ env:
   REGISTRY: ${{ vars.KUBECORE_REGISTRY }}
   APP_NAME: ${{ vars.KUBECORE_APP_NAME }}
   PROJECT_NAME: ${{ vars.KUBECORE_PROJECT_NAME }}
+  ECR_REPO: ${{ vars.KUBECORE_ECR_REPO }}
 
 jobs:
   detect-changes:
@@ -72,8 +73,8 @@ jobs:
           context: ./${{ matrix.step.path }}
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.APP_NAME }}-${{ matrix.step.path }}:${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.APP_NAME }}-${{ matrix.step.path }}:latest
+            ${{ env.REGISTRY }}/${{ env.ECR_REPO }}:${{ matrix.step.path }}-${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.ECR_REPO }}:${{ matrix.step.path }}-latest
 
       - name: Generate GitHub App token
         id: app-token
@@ -106,6 +107,6 @@ jobs:
               "branch": "${{ steps.branch.outputs.target }}",
               "step_name": "${{ matrix.step.name }}",
               "step_path": "${{ matrix.step.path }}",
-              "image": "${{ env.REGISTRY }}/${{ env.APP_NAME }}-${{ matrix.step.path }}",
-              "version": "${{ github.sha }}"
+              "image": "${{ env.REGISTRY }}/${{ env.ECR_REPO }}",
+              "version": "${{ matrix.step.path }}-${{ github.sha }}"
             }
