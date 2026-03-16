@@ -69,6 +69,22 @@ jobs:
                   {'name': 'BRANCH', 'value': branch},
               ]
 
+              # Per-step resources (fallback to defaults)
+              res = s.get('resources', {})
+              req = res.get('requests', {'cpu': '250m', 'memory': '512Mi'})
+              lim = res.get('limits', {'cpu': '1', 'memory': '2Gi'})
+
+              container = {
+                  'image': image,
+                  'env': list(init_env),
+                  'resources': {'requests': req, 'limits': dict(lim)},
+              }
+              # Explicit command so Argo doesn't need to inspect the image
+              if s.get('command'):
+                  container['command'] = s['command'] if isinstance(s['command'], list) else [s['command']]
+              if s.get('args'):
+                  container['args'] = s['args'] if isinstance(s['args'], list) else [s['args']]
+
               tmpl = {
                   'name': s['name'],
                   'nodeSelector': {'karpenter.sh/nodepool': compute},
@@ -81,14 +97,7 @@ jobs:
                           'limits': {'cpu': '200m', 'memory': '128Mi'},
                       },
                   }],
-                  'container': {
-                      'image': image,
-                      'env': list(init_env),
-                      'resources': {
-                          'requests': {'cpu': '250m', 'memory': '512Mi'},
-                          'limits': {'cpu': '1', 'memory': '2Gi'},
-                      },
-                  },
+                  'container': container,
               }
               if compute == 'gpu':
                   tmpl['tolerations'] = [{'key': 'nvidia.com/gpu', 'operator': 'Exists', 'effect': 'NoSchedule'}]
