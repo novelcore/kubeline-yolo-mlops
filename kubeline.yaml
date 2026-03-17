@@ -2,23 +2,17 @@ steps:
   - name: config-validation
     path: config_validation
     compute: cpu
-    command: ["config-validation"]
-    args: ["run"]
     dependencies: []
 
   - name: dataset-loading
     path: dataset_loading
     compute: cpu
-    command: ["dataset-loading"]
-    args: ["run"]
     dependencies:
       - config-validation
 
   - name: model-training
     path: model_training
     compute: gpu
-    command: ["model-training"]
-    args: ["run"]
     resources:
       requests:
         cpu: "1"
@@ -32,7 +26,5 @@ steps:
   - name: model-registration
     path: model_registration
     compute: cpu
-    command: ["model-registration"]
-    args: ["run"]
     dependencies:
       - model-training

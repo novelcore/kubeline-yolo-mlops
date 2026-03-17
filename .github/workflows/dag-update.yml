@@ -6,6 +6,7 @@ on:
     paths:
       - 'kubeline.yaml'
       - '*/env.example'
+      - 'pipeline_config.yaml'
 
 env:
   APP_NAME: ${{ vars.KUBECORE_APP_NAME }}
@@ -39,6 +40,201 @@ jobs:
 
           with open('kubeline.yaml') as f:
               kl = yaml.safe_load(f)
+
+          # Load pipeline config (required)
+          config_file = 'pipeline_config.yaml'
+          if not os.path.exists(config_file):
+              print(f'ERROR: {config_file} not found', file=sys.stderr)
+              sys.exit(1)
+          with open(config_file) as f:
+              cfg = yaml.safe_load(f)
+
+          # --- Arg builder helpers ---
+
+          def bool_flag(flag, value):
+              if str(value).lower() in ('true', '1'):
+                  return [flag]
+              return ['--no-' + flag.lstrip('-')]
+
+          def optional(flag, value):
+              if value is not None and str(value).lower() != 'null' and str(value) != '':
+                  return [flag, str(value)]
+              return []
+
+          # --- Per-step arg builders ---
+
+          def build_config_validation_args(cfg):
+              exp = cfg.get('experiment', {})
+              ds = cfg.get('dataset', {})
+              mdl = cfg.get('model', {})
+              tr = cfg.get('training', {})
+              ckpt = cfg.get('checkpointing', {})
+              es = cfg.get('early_stopping', {})
+              aug = cfg.get('augmentation', {})
+              args = ['run',
+                  '--experiment-name', str(exp['name']),
+                  '--dataset-version', str(ds['version']),
+                  '--dataset-source', str(ds['source']),
+                  '--dataset-seed', str(ds.get('seed', 42)),
+                  '--model-variant', str(mdl['variant']),
+                  '--training-epochs', str(tr['epochs']),
+                  '--training-batch-size', str(tr['batch_size']),
+                  '--training-image-size', str(tr['image_size']),
+                  '--training-learning-rate', str(tr['learning_rate']),
+                  '--training-optimizer', str(tr['optimizer']),
+                  '--training-lrf', str(tr.get('lrf', 0.01)),
+                  '--training-momentum', str(tr.get('momentum', 0.937)),
+                  '--training-warmup-epochs', str(tr.get('warmup_epochs', 3.0)),
+                  '--training-warmup-momentum', str(tr.get('warmup_momentum', 0.8)),
+                  '--training-weight-decay', str(tr.get('weight_decay', 0.0005)),
+                  '--training-dropout', str(tr.get('dropout', 0.0)),
+                  '--training-label-smoothing', str(tr.get('label_smoothing', 0.0)),
+                  '--training-nbs', str(tr.get('nbs', 64)),
+                  '--training-close-mosaic', str(tr.get('close_mosaic', 10)),
+                  '--training-seed', str(tr.get('seed', 0)),
+                  '--training-pose', str(tr.get('pose', 12.0)),
+                  '--training-kobj', str(tr.get('kobj', 2.0)),
+                  '--training-box', str(tr.get('box', 7.5)),
+                  '--training-cls', str(tr.get('cls', 0.5)),
+                  '--training-dfl', str(tr.get('dfl', 1.5)),
+                  '--checkpointing-interval-epochs', str(ckpt['interval_epochs']),
+                  '--checkpointing-storage-path', str(ckpt['storage_path']),
+                  '--early-stopping-patience', str(es['patience']),
+                  '--aug-hsv-h', str(aug.get('hsv_h', 0.015)),
+                  '--aug-hsv-s', str(aug.get('hsv_s', 0.7)),
+                  '--aug-hsv-v', str(aug.get('hsv_v', 0.4)),
+                  '--aug-degrees', str(aug.get('degrees', 0.0)),
+                  '--aug-translate', str(aug.get('translate', 0.1)),
+                  '--aug-scale', str(aug.get('scale', 0.5)),
+                  '--aug-shear', str(aug.get('shear', 0.0)),
+                  '--aug-perspective', str(aug.get('perspective', 0.0)),
+                  '--aug-flipud', str(aug.get('flipud', 0.0)),
+                  '--aug-fliplr', str(aug.get('fliplr', 0.0)),
+                  '--aug-mosaic', str(aug.get('mosaic', 1.0)),
+                  '--aug-mixup', str(aug.get('mixup', 0.0)),
+                  '--aug-copy-paste', str(aug.get('copy_paste', 0.0)),
+                  '--aug-erasing', str(aug.get('erasing', 0.4)),
+                  '--aug-bgr', str(aug.get('bgr', 0.0)),
+              ]
+              args += bool_flag('--training-cos-lr', tr.get('cos_lr', True))
+              args += bool_flag('--training-amp', tr.get('amp', True))
+              args += bool_flag('--training-deterministic', tr.get('deterministic', True))
+              args += optional('--experiment-description', exp.get('description'))
+              args += optional('--dataset-lakefs-repo', ds.get('lakefs_repo'))
+              args += optional('--dataset-lakefs-branch', ds.get('lakefs_branch'))
+              args += optional('--dataset-path-override', ds.get('path_override'))
+              args += optional('--dataset-sample-size', ds.get('sample_size'))
+              args += optional('--model-pretrained-weights', mdl.get('pretrained_weights'))
+              args += optional('--checkpointing-resume-from', ckpt.get('resume_from'))
+              args += optional('--training-freeze', tr.get('freeze'))
+              return args
+
+          def build_dataset_loading_args(cfg):
+              ds = cfg.get('dataset', {})
+              args = ['run',
+                  '--version', str(ds['version']),
+                  '--source', str(ds['source']),
+                  '--output-dir', '/data/dataset',
+                  '--seed', str(ds.get('seed', 42)),
+              ]
+              args += optional('--lakefs-repo', ds.get('lakefs_repo'))
+              args += optional('--lakefs-branch', ds.get('lakefs_branch'))
+              args += optional('--path-override', ds.get('path_override'))
+              args += optional('--sample-size', ds.get('sample_size'))
+              return args
+
+          def build_model_training_args(cfg):
+              exp = cfg.get('experiment', {})
+              ds = cfg.get('dataset', {})
+              mdl = cfg.get('model', {})
+              tr = cfg.get('training', {})
+              ckpt = cfg.get('checkpointing', {})
+              es = cfg.get('early_stopping', {})
+              aug = cfg.get('augmentation', {})
+              storage_path = str(ckpt.get('storage_path', 's3://temp/checkpoints'))
+              s3_path = storage_path.replace('s3://', '', 1)
+              ckpt_bucket = s3_path.split('/')[0]
+              ckpt_prefix = '/'.join(s3_path.split('/')[1:])
+              args = ['run',
+                  '--model-variant', str(mdl['variant']),
+                  '--experiment-name', str(exp['name']),
+                  '--dataset-dir', '/data/dataset',
+                  '--output-dir', '/data/training',
+                  '--epochs', str(tr.get('epochs', 100)),
+                  '--batch-size', str(tr.get('batch_size', 16)),
+                  '--image-size', str(tr.get('image_size', 640)),
+                  '--learning-rate', str(tr.get('learning_rate', 0.01)),
+                  '--lrf', str(tr.get('lrf', 0.01)),
+                  '--optimizer', str(tr.get('optimizer', 'SGD')),
+                  '--momentum', str(tr.get('momentum', 0.937)),
+                  '--weight-decay', str(tr.get('weight_decay', 0.0005)),
+                  '--warmup-epochs', str(tr.get('warmup_epochs', 3.0)),
+                  '--warmup-momentum', str(tr.get('warmup_momentum', 0.8)),
+                  '--dropout', str(tr.get('dropout', 0.0)),
+                  '--label-smoothing', str(tr.get('label_smoothing', 0.0)),
+                  '--nbs', str(tr.get('nbs', 64)),
+                  '--close-mosaic', str(tr.get('close_mosaic', 10)),
+                  '--seed', str(tr.get('seed', 0)),
+                  '--pose', str(tr.get('pose', 12.0)),
+                  '--kobj', str(tr.get('kobj', 2.0)),
+                  '--box', str(tr.get('box', 7.5)),
+                  '--cls', str(tr.get('cls', 0.5)),
+                  '--dfl', str(tr.get('dfl', 1.5)),
+                  '--patience', str(es.get('patience', 50)),
+                  '--checkpoint-interval', str(ckpt.get('interval_epochs', 10)),
+                  '--checkpoint-bucket', ckpt_bucket,
+                  '--checkpoint-prefix', ckpt_prefix,
+                  '--hsv-h', str(aug.get('hsv_h', 0.015)),
+                  '--hsv-s', str(aug.get('hsv_s', 0.7)),
+                  '--hsv-v', str(aug.get('hsv_v', 0.4)),
+                  '--degrees', str(aug.get('degrees', 0.0)),
+                  '--translate', str(aug.get('translate', 0.1)),
+                  '--scale', str(aug.get('scale', 0.5)),
+                  '--shear', str(aug.get('shear', 0.0)),
+                  '--perspective', str(aug.get('perspective', 0.0)),
+                  '--flipud', str(aug.get('flipud', 0.0)),
+                  '--fliplr', str(aug.get('fliplr', 0.0)),
+                  '--mosaic', str(aug.get('mosaic', 1.0)),
+                  '--mixup', str(aug.get('mixup', 0.0)),
+                  '--copy-paste', str(aug.get('copy_paste', 0.0)),
+                  '--erasing', str(aug.get('erasing', 0.4)),
+                  '--bgr', str(aug.get('bgr', 0.0)),
+              ]
+              args += bool_flag('--cos-lr', tr.get('cos_lr', True))
+              args += bool_flag('--amp', tr.get('amp', True))
+              args += bool_flag('--deterministic', tr.get('deterministic', True))
+              args += optional('--pretrained-weights', mdl.get('pretrained_weights'))
+              args += optional('--resume-from', ckpt.get('resume_from'))
+              if tr.get('freeze') is not None and str(tr['freeze']).lower() != 'null':
+                  args += ['--freeze', str(tr['freeze'])]
+              if ds.get('source') in ('s3', 'lakefs'):
+                  path_override = ds.get('path_override')
+                  if path_override and str(path_override).lower() != 'null':
+                      s3p = str(path_override).replace('s3://', '', 1)
+                      args += ['--source', 's3', '--s3-bucket', s3p.split('/')[0], '--s3-prefix', '/'.join(s3p.split('/')[1:])]
+                  elif ds.get('lakefs_repo'):
+                      args += ['--source', 's3', '--s3-bucket', str(ds['lakefs_repo']),
+                               '--s3-prefix', f\"{ds.get('lakefs_branch', 'main')}/dataset/{ds.get('version', 'v1')}/\"]
+              return args
+
+          def build_model_registration_args(cfg):
+              reg = cfg.get('registration', {})
+              ds = cfg.get('dataset', {})
+              mdl = cfg.get('model', {})
+              args = ['run']
+              args += optional('--registered-model-name', reg.get('registered_model_name'))
+              args += optional('--promote-to', reg.get('promote_to'))
+              args += optional('--dataset-version', ds.get('version'))
+              args += optional('--dataset-sample-size', ds.get('sample_size'))
+              args += optional('--model-variant', mdl.get('variant'))
+              return args
+
+          ARG_BUILDERS = {
+              'config_validation': build_config_validation_args,
+              'dataset_loading': build_dataset_loading_args,
+              'model_training': build_model_training_args,
+              'model_registration': build_model_registration_args,
+          }
 
           steps = kl.get('steps', [])
           registry = os.environ['REGISTRY']
@@ -124,16 +320,25 @@ jobs:
               req = res.get('requests', {'cpu': '250m', 'memory': '512Mi'})
               lim = res.get('limits', {'cpu': '1', 'memory': '2Gi'})
 
+              # Build CLI args from pipeline_config
+              builder = ARG_BUILDERS.get(s['path'])
+              if builder:
+                  step_args = builder(cfg)
+              else:
+                  step_args = s.get('args', ['run'])
+                  if isinstance(step_args, str):
+                      step_args = [step_args]
+
+              # Command: use step name as entrypoint
+              step_command = [s['name']]
+
               container = {
                   'image': image,
+                  'command': step_command,
+                  'args': step_args,
                   'env': step_env,
                   'resources': {'requests': req, 'limits': dict(lim)},
               }
-              # Explicit command so Argo doesn't need to inspect the image
-              if s.get('command'):
-                  container['command'] = s['command'] if isinstance(s['command'], list) else [s['command']]
-              if s.get('args'):
-                  container['args'] = s['args'] if isinstance(s['args'], list) else [s['args']]
 
               tmpl = {
                   'name': s['name'],
