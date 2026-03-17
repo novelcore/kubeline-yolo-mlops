@@ -5,6 +5,7 @@ on:
     branches: [main, develop]
     paths:
       - 'kubeline.yaml'
+      - '*/env.example'
 
 env:
   APP_NAME: ${{ vars.KUBECORE_APP_NAME }}
@@ -62,14 +63,61 @@ jobs:
               pipeline_label = f'{proj}-{app}'
               nodepool = f'{pipeline_label}-{compute}'
 
-              init_env = [
-                  {'name': 'LAKEFS_ENDPOINT', 'value': lakefs},
-                  {'name': 'MLFLOW_TRACKING_URI', 'value': mlflow},
-                  {'name': 'PROJECT_NAME', 'value': proj},
-                  {'name': 'APP_NAME', 'value': app},
-                  {'name': 'LAKEFS_REPO', 'value': app},
-                  {'name': 'BRANCH', 'value': branch},
-              ]
+              # Platform overrides: env var name -> actual value
+              platform_values = {
+                  'MLFLOW_TRACKING_URI': mlflow,
+                  'LAKEFS_ENDPOINT': lakefs,
+                  'APP_NAME': app,
+                  'PROJECT_NAME': proj,
+                  'MLFLOW_EXPERIMENT_NAME': proj,
+              }
+
+              # Platform secrets: env var name -> (secretName, key)
+              platform_secrets = {
+                  'LAKEFS_ACCESS_KEY': (f'{proj}-lakefs-admin', 'accessKeyId'),
+                  'LAKEFS_SECRET_KEY': (f'{proj}-lakefs-admin', 'secretAccessKey'),
+                  'MLFLOW_TRACKING_USERNAME': (f'{proj}-mlflow-admin', 'username'),
+                  'MLFLOW_TRACKING_PASSWORD': (f'{proj}-mlflow-admin', 'password'),
+              }
+
+              # Parse env.example for this step
+              step_env = []
+              env_file = os.path.join(s['path'], 'env.example')
+              seen_keys = set()
+              if os.path.exists(env_file):
+                  with open(env_file) as ef:
+                      for line in ef:
+                          line = line.strip()
+                          if not line or line.startswith('#') or '=' not in line:
+                              continue
+                          key, _, val = line.partition('=')
+                          key = key.strip()
+                          val = val.split('#')[0].strip()
+                          if key in seen_keys:
+                              continue
+                          seen_keys.add(key)
+
+                          if key in platform_secrets:
+                              secret_name, secret_key = platform_secrets[key]
+                              step_env.append({
+                                  'name': key,
+                                  'valueFrom': {
+                                      'secretKeyRef': {
+                                          'name': secret_name,
+                                          'key': secret_key,
+                                      }
+                                  }
+                              })
+                          elif key in platform_values:
+                              step_env.append({'name': key, 'value': platform_values[key]})
+                          else:
+                              step_env.append({'name': key, 'value': val})
+
+              # Always inject platform vars even if not in env.example
+              for key, val in platform_values.items():
+                  if key not in seen_keys:
+                      step_env.append({'name': key, 'value': val})
+                      seen_keys.add(key)
 
               # Per-step resources (fallback to defaults)
               res = s.get('resources', {})
@@ -78,7 +126,7 @@ jobs:
 
               container = {
                   'image': image,
-                  'env': list(init_env),
+                  'env': step_env,
                   'resources': {'requests': req, 'limits': dict(lim)},
               }
               # Explicit command so Argo doesn't need to inspect the image
