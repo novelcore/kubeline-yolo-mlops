@@ -1,0 +1,30 @@
+steps:
+  - name: config-validation
+    path: config_validation
+    compute: cpu
+    dependencies: []
+
+  - name: dataset-loading
+    path: dataset_loading
+    compute: cpu
+    dependencies:
+      - config-validation
+
+  - name: model-training
+    path: model_training
+    compute: gpu
+    resources:
+      requests:
+        cpu: "1"
+        memory: "4Gi"
+      limits:
+        cpu: "4"
+        memory: "16Gi"
+    dependencies:
+      - dataset-loading
+
+  - name: model-registration
+    path: model_registration
+    compute: cpu
+    dependencies:
+      - model-training

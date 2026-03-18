@@ -1,0 +1,108 @@
+name: ML Pipeline CI - Build Step Images
+
+on:
+  push:
+    branches: [main, develop]
+
+env:
+  REGISTRY: ${{ vars.KUBECORE_REGISTRY }}
+  APP_NAME: ${{ vars.KUBECORE_APP_NAME }}
+  PROJECT_NAME: ${{ vars.KUBECORE_PROJECT_NAME }}
+  ECR_REPO: ${{ vars.KUBECORE_ECR_REPO }}
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      changed_steps: ${{ steps.detect.outputs.changed_steps }}
+      has_changes: ${{ steps.detect.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Parse kubeline.yaml for step directories
+        id: parse
+        run: |
+          STEP_PATHS=$(yq e '.steps[].path' kubeline.yaml | tr '\n' ' ')
+          echo "step_paths=$STEP_PATHS" >> $GITHUB_OUTPUT
+
+      - name: Detect changed step directories
+        id: detect
+        run: |
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+          else
+            # Initial commit — treat all tracked files as changed
+            CHANGED_FILES=$(git ls-tree -r --name-only HEAD)
+          fi
+          CHANGED_STEPS="[]"
+          for STEP_PATH in ${{ steps.parse.outputs.step_paths }}; do
+            if echo "$CHANGED_FILES" | grep -q "^${STEP_PATH}/"; then
+              STEP_NAME=$(yq e ".steps[] | select(.path == \"$STEP_PATH\") | .name" kubeline.yaml)
+              CHANGED_STEPS=$(echo "$CHANGED_STEPS" | jq -c ". + [{\"name\": \"$STEP_NAME\", \"path\": \"$STEP_PATH\"}]")
+            fi
+          done
+          echo "changed_steps=$CHANGED_STEPS" >> $GITHUB_OUTPUT
+          if [ "$CHANGED_STEPS" = "[]" ]; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
+
+  build-and-push:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        step: ${{ fromJson(needs.detect-changes.outputs.changed_steps) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to ECR
+        run: echo "${{ secrets.KUBECORE_REGISTRY_PWD }}" | docker login --username "${{ secrets.KUBECORE_REGISTRY_UNAME }}" --password-stdin "${{ env.REGISTRY }}"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.step.path }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.ECR_REPO }}:${{ matrix.step.path }}-${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.ECR_REPO }}:${{ matrix.step.path }}-latest
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.KUBECORE_APP_ID }}
+          private-key: ${{ secrets.KUBECORE_APP_PKEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Determine target branch
+        id: branch
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "target=main" >> $GITHUB_OUTPUT
+            echo "event_type=ml-main-environment-update" >> $GITHUB_OUTPUT
+          else
+            echo "target=dev" >> $GITHUB_OUTPUT
+            echo "event_type=ml-dev-environment-update" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Dispatch image update to gitops repo
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          repository: ${{ github.repository_owner }}/${{ env.PROJECT_NAME }}
+          event-type: ${{ steps.branch.outputs.event_type }}
+          client-payload: |
+            {
+              "app_name": "${{ env.APP_NAME }}",
+              "branch": "${{ steps.branch.outputs.target }}",
+              "step_name": "${{ matrix.step.name }}",
+              "step_path": "${{ matrix.step.path }}",
+              "image": "${{ env.REGISTRY }}/${{ env.ECR_REPO }}",
+              "version": "${{ matrix.step.path }}-${{ github.sha }}"
+            }

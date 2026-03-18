@@ -60,7 +60,6 @@ class Manager:
             retries={"max_attempts": 3, "mode": "adaptive"},
         )
 
-
         return boto3.client(
             "s3",
             endpoint_url=self._config.s3_endpoint_url,
