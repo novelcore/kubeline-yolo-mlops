@@ -50,26 +50,16 @@ class Manager:
     # ------------------------------------------------------------------
 
     def _build_s3_client(self) -> object:
-        """Construct a boto3 S3 client from the step config.
+        """Construct a boto3 S3 client for real AWS S3 (checkpoint uploads).
 
-        LakeFS credentials take precedence when the LakeFS endpoint is
-        configured, mirroring the pattern established in dataset_loading.
+        Always uses the default credential chain (IRSA / instance role) so
+        that checkpoint uploads target real AWS S3, not the lakeFS S3 gateway.
+        The lakeFS endpoint is only relevant for dataset_loading (separate step).
         """
         boto_cfg = BotoConfig(
             retries={"max_attempts": 3, "mode": "adaptive"},
         )
 
-        if self._config.lakefs_endpoint:
-            self._logger.debug(
-                "Configuring boto3 for LakeFS at %s", self._config.lakefs_endpoint
-            )
-            return boto3.client(
-                "s3",
-                endpoint_url=self._config.lakefs_endpoint,
-                aws_access_key_id=self._config.lakefs_access_key,
-                aws_secret_access_key=self._config.lakefs_secret_key,
-                config=boto_cfg,
-            )
 
         return boto3.client(
             "s3",

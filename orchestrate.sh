@@ -239,13 +239,31 @@ docker_build() {
 
 docker_run() {
     local image="$1"; shift
+    local step_name="$1"; shift
     local args=("$@")
 
-    run_cmd "docker run --rm \
-        -v '${CONFIG_PATH}:/data/pipeline_config.yaml:ro' \
-        -v '${REPO_ROOT}/artifacts:/artifacts' \
-        '${image}:latest' \
-        ${args[*]}"
+    local env_file="${REPO_ROOT}/${step_name}/.env"
+    local env_flags=()
+    if [[ -f "$env_file" ]]; then
+        env_flags=(--env-file "$env_file")
+        log_info "Using env file: ${env_file}"
+    fi
+
+    if [[ "$DRY_RUN" == true ]]; then
+        echo -e "${YELLOW}[DRY-RUN]${NC} docker run --rm ${env_flags[*]} -v ...:/data/pipeline_config.yaml:ro -v ...:/artifacts ${image}:latest ${args[*]}"
+        return 0
+    fi
+    if [[ "$VERBOSE" == true ]]; then
+        log_info "exec: docker run --rm ${env_flags[*]} -v ${CONFIG_PATH}:/data/pipeline_config.yaml:ro -v ${REPO_ROOT}/artifacts:/artifacts ${image}:latest ${args[*]}"
+    fi
+
+    docker run --rm \
+        --network host \
+        "${env_flags[@]}" \
+        -v "${CONFIG_PATH}:/data/pipeline_config.yaml:ro" \
+        -v "${REPO_ROOT}/artifacts:/artifacts" \
+        "${image}:latest" \
+        "${args[@]}"
 }
 
 # ---------------------------------------------------------------------------
@@ -418,7 +436,7 @@ run_config_validation() {
     # ---- Execute ----
     if [[ "$MODE" == "docker" ]]; then
         [[ "$SKIP_BUILD" == false ]] && docker_build config_validation
-        docker_run "${IMAGE_PREFIX}-config-validation" "${args[@]}"
+        docker_run "${IMAGE_PREFIX}-config-validation" "config_validation" "${args[@]}"
     else
         poetry_install "${REPO_ROOT}/config_validation"
         (cd "${REPO_ROOT}/config_validation" && poetry run config-validation "${args[@]}")
@@ -463,12 +481,21 @@ run_dataset_loading() {
 
     if [[ "$MODE" == "docker" ]]; then
         [[ "$SKIP_BUILD" == false ]] && docker_build dataset_loading
-        docker_run "${IMAGE_PREFIX}-dataset-loading" \
-            "--version '${version}'" \
-            "--source '${source}'" \
-            "--output-dir /artifacts/dataset" \
-            "--seed ${seed}" \
-            "${optional_flags}"
+        local dl_args=(
+            --version "$version"
+            --source "$source"
+            --output-dir /artifacts/dataset
+            --seed "$seed"
+        )
+        [[ -n "$lakefs_repo" && "$lakefs_repo" != "null" ]] && dl_args+=(--lakefs-repo "$lakefs_repo")
+        [[ -n "$lakefs_branch" && "$lakefs_branch" != "null" ]] && dl_args+=(--lakefs-branch "$lakefs_branch")
+        [[ -n "$path_override" && "$path_override" != "null" ]] && dl_args+=(--path-override "$path_override")
+        [[ -n "$sample_size" && "$sample_size" != "null" ]] && dl_args+=(--sample-size "$sample_size")
+        [[ "$streaming_mode" == "manifest_only" ]] && dl_args+=(--manifest-only)
+        if [[ "$streaming_mode" == "labels_only" ]] || [[ "$source" == "s3" && -z "$streaming_mode" ]]; then
+            dl_args+=(--labels-only)
+        fi
+        docker_run "${IMAGE_PREFIX}-dataset-loading" "dataset_loading" "${dl_args[@]}"
     else
         poetry_install "${REPO_ROOT}/dataset_loading"
         run_cmd "cd '${REPO_ROOT}/dataset_loading' && \
@@ -588,8 +615,8 @@ run_model_training() {
             s3_bucket="$dataset_lakefs_repo"
             s3_prefix="${dataset_lakefs_branch:-main}/dataset/${CFG_dataset_version:-v1}/"
         else
-            s3_bucket="io-audio-text-data"
-            s3_prefix="upload-initial/dataset/${CFG_dataset_version:-v1}/"
+            s3_bucket="infinite-orbits-ml-yolo-v1"
+            s3_prefix="main/dataset/${CFG_dataset_version:-v1}/"
         fi
         optional_flags+=" --source s3"
         optional_flags+=" --s3-bucket '${s3_bucket}'"
@@ -600,54 +627,61 @@ run_model_training() {
 
     if [[ "$MODE" == "docker" ]]; then
         [[ "$SKIP_BUILD" == false ]] && docker_build model_training
-        docker_run "${IMAGE_PREFIX}-model-training" \
-            "--model-variant '${model_variant}'" \
-            "--experiment-name '${experiment_name}'" \
-            "--dataset-dir /artifacts/dataset" \
-            "--output-dir /artifacts/training" \
-            "--epochs ${epochs}" \
-            "--batch-size ${batch_size}" \
-            "--image-size ${image_size}" \
-            "--learning-rate ${learning_rate}" \
-            "$(bool_flag --cos-lr "$cos_lr")" \
-            "--lrf ${lrf}" \
-            "--optimizer '${optimizer}'" \
-            "--momentum ${momentum}" \
-            "--weight-decay ${weight_decay}" \
-            "--warmup-epochs ${warmup_epochs}" \
-            "--warmup-momentum ${warmup_momentum}" \
-            "--dropout ${dropout}" \
-            "--label-smoothing ${label_smoothing}" \
-            "--nbs ${nbs}" \
-            "$(bool_flag --amp "$amp")" \
-            "--close-mosaic ${close_mosaic}" \
-            "--seed ${seed}" \
-            "$(bool_flag --deterministic "$deterministic")" \
-            "--pose ${pose_gain}" \
-            "--kobj ${kobj}" \
-            "--box ${box}" \
-            "--cls ${cls_gain}" \
-            "--dfl ${dfl}" \
-            "--patience ${patience}" \
-            "--checkpoint-interval ${checkpoint_interval}" \
-            "--checkpoint-bucket '${checkpoint_bucket}'" \
-            "--checkpoint-prefix '${checkpoint_prefix}'" \
-            "--hsv-h ${hsv_h}" \
-            "--hsv-s ${hsv_s}" \
-            "--hsv-v ${hsv_v}" \
-            "--degrees ${degrees}" \
-            "--translate ${translate}" \
-            "--scale ${scale}" \
-            "--shear ${shear}" \
-            "--perspective ${perspective}" \
-            "--flipud ${flipud}" \
-            "--fliplr ${fliplr}" \
-            "--mosaic ${mosaic}" \
-            "--mixup ${mixup}" \
-            "--copy-paste ${copy_paste}" \
-            "--erasing ${erasing}" \
-            "--bgr ${bgr}" \
-            "${optional_flags}"
+        local mt_args=(
+            --model-variant "$model_variant"
+            --experiment-name "$experiment_name"
+            --dataset-dir /artifacts/dataset
+            --output-dir /artifacts/training
+            --epochs "$epochs"
+            --batch-size "$batch_size"
+            --image-size "$image_size"
+            --learning-rate "$learning_rate"
+            "$(bool_flag --cos-lr "$cos_lr")"
+            --lrf "$lrf"
+            --optimizer "$optimizer"
+            --momentum "$momentum"
+            --weight-decay "$weight_decay"
+            --warmup-epochs "$warmup_epochs"
+            --warmup-momentum "$warmup_momentum"
+            --dropout "$dropout"
+            --label-smoothing "$label_smoothing"
+            --nbs "$nbs"
+            "$(bool_flag --amp "$amp")"
+            --close-mosaic "$close_mosaic"
+            --seed "$seed"
+            "$(bool_flag --deterministic "$deterministic")"
+            --pose "$pose_gain"
+            --kobj "$kobj"
+            --box "$box"
+            --cls "$cls_gain"
+            --dfl "$dfl"
+            --patience "$patience"
+            --checkpoint-interval "$checkpoint_interval"
+            --checkpoint-bucket "$checkpoint_bucket"
+            --checkpoint-prefix "$checkpoint_prefix"
+            --hsv-h "$hsv_h"
+            --hsv-s "$hsv_s"
+            --hsv-v "$hsv_v"
+            --degrees "$degrees"
+            --translate "$translate"
+            --scale "$scale"
+            --shear "$shear"
+            --perspective "$perspective"
+            --flipud "$flipud"
+            --fliplr "$fliplr"
+            --mosaic "$mosaic"
+            --mixup "$mixup"
+            --copy-paste "$copy_paste"
+            --erasing "$erasing"
+            --bgr "$bgr"
+        )
+        [[ -n "$pretrained_weights" && "$pretrained_weights" != "null" ]] && mt_args+=(--pretrained-weights "$pretrained_weights")
+        [[ -n "$resume_from" && "$resume_from" != "null" ]] && mt_args+=(--resume-from "$resume_from")
+        [[ -n "$freeze" && "$freeze" != "null" ]] && mt_args+=(--freeze "$freeze")
+        if [[ "$dataset_source" == "s3" || "$dataset_source" == "lakefs" ]]; then
+            mt_args+=(--source s3 --s3-bucket "$s3_bucket" --s3-prefix "$s3_prefix")
+        fi
+        docker_run "${IMAGE_PREFIX}-model-training" "model_training" "${mt_args[@]}"
     else
         poetry_install "${REPO_ROOT}/model_training"
         run_cmd "cd '${REPO_ROOT}/model_training' && \
@@ -755,10 +789,18 @@ run_model_registration() {
 
     if [[ "$MODE" == "docker" ]]; then
         [[ "$SKIP_BUILD" == false ]] && docker_build model_registration
-        docker_run "${IMAGE_PREFIX}-model-registration" \
-            "--mlflow-run-id '${mlflow_run_id}'" \
-            "--best-checkpoint-path '${best_checkpoint_s3}'" \
-            "${extra_flags}"
+        local mr_args=(
+            --mlflow-run-id "$mlflow_run_id"
+            --best-checkpoint-path "$best_checkpoint_s3"
+        )
+        [[ -n "$registered_model_name" && "$registered_model_name" != "null" ]] && mr_args+=(--registered-model-name "$registered_model_name")
+        [[ -n "$promote_to" && "$promote_to" != "null" ]] && mr_args+=(--promote-to "$promote_to")
+        [[ -n "$dataset_version" && "$dataset_version" != "null" ]] && mr_args+=(--dataset-version "$dataset_version")
+        [[ -n "$dataset_sample_size" && "$dataset_sample_size" != "null" ]] && mr_args+=(--dataset-sample-size "$dataset_sample_size")
+        [[ -n "$git_commit" ]] && mr_args+=(--git-commit "$git_commit")
+        [[ -n "$model_variant_result" ]] && mr_args+=(--model-variant "$model_variant_result")
+        [[ -n "$final_map50" && "$final_map50" != "0.0" ]] && mr_args+=(--best-map50 "$final_map50")
+        docker_run "${IMAGE_PREFIX}-model-registration" "model_registration" "${mr_args[@]}"
     else
         poetry_install "${REPO_ROOT}/model_registration"
         run_cmd "cd '${REPO_ROOT}/model_registration' && \

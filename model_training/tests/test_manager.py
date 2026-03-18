@@ -119,10 +119,10 @@ class TestManagerInit:
             manager = Manager(config=config)
         assert manager._config.log_level == "DEBUG"
 
-    def test_lakefs_client_used_when_endpoint_set(
+    def test_s3_client_ignores_lakefs_endpoint(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When LAKEFS_ENDPOINT is set, the S3 client is pointed at LakeFS."""
+        """S3 client always uses default credentials, never lakeFS endpoint."""
         monkeypatch.setenv("LAKEFS_ENDPOINT", "https://lakefs.test")
         monkeypatch.setenv("LAKEFS_ACCESS_KEY", "lf-key")
         monkeypatch.setenv("LAKEFS_SECRET_KEY", "lf-secret")
@@ -130,8 +130,8 @@ class TestManagerInit:
         with patch("app.manager.boto3") as mock_boto3:
             Manager()
             call_kwargs = mock_boto3.client.call_args[1]
-            assert call_kwargs["endpoint_url"] == "https://lakefs.test"
-            assert call_kwargs["aws_access_key_id"] == "lf-key"
+            assert call_kwargs.get("endpoint_url") is None
+            assert call_kwargs.get("aws_access_key_id") is None
 
 
 class TestManagerRun:
