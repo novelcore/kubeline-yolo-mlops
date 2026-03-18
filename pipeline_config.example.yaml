@@ -10,7 +10,7 @@ experiment:
 dataset:
   version: "v1"
   source: "lakefs"                 # "s3" or "lakefs"
-  lakefs_repo: "io-audio-text-data"   # LakeFS repository name (required when source=lakefs)
+  lakefs_repo: "infinite-orbits-ml-yolo-v1"   # LakeFS repository name (required when source=lakefs)
   lakefs_branch: "main"              # LakeFS branch (required when source=lakefs)
   path_override: null              # null = auto-construct from repo/branch/version; or full s3:// URI
   sample_size: null               # null = full dataset; integer = sampled subset
@@ -72,7 +72,7 @@ training:
 # --- Checkpointing ---
 checkpointing:
   interval_epochs: 10             # Save checkpoint every N epochs
-  storage_path: "s3://io-audio-text-data/upload-initial/checkpoints"
+  storage_path: "s3://infinite-orbits-ml-yolo-v1/main/checkpoints"
   resume_from: null               # null | "auto" | specific S3 path to .pt file
 
 # --- Early Stopping ---

@@ -1,6 +1,6 @@
 # --- Toy experiment: 1000 samples, few epochs ---
 experiment:
-  name: "spacecraft-pose-toy-1k"
+  name: "spacecraft-pose-toy"
   description: "Toy run with 1000 samples for pipeline smoke-test"
   tags:
     project: "infinite-orbits"
@@ -9,9 +9,10 @@ experiment:
 dataset:
   version: "v1"
   source: "lakefs"
-  lakefs_repo: "io-audio-text-data"
-  lakefs_branch: "upload-initial"
-  path_override: "s3://io-audio-text-data/upload-initial/dataset/"
+  lakefs_repo: "infinite-orbits-ml-yolo-v1"
+  lakefs_branch: "main"
+  path_override: "s3://infinite-orbits-ml-yolo-v1/main/dataset/"
+  streaming_mode: "labels_only"
   sample_size: 10
   seed: 42
 
@@ -47,7 +48,7 @@ training:
 
 checkpointing:
   interval_epochs: 2
-  storage_path: "s3://io-audio-text-data/upload-initial/checkpoints"
+  storage_path: "s3://infinite-orbits-ml-yolo-v1/main/checkpoints"
   resume_from: null
 
 early_stopping:
