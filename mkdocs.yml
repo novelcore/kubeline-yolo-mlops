@@ -93,6 +93,7 @@ plugins:
   - git-committers:
       repository: novelcore/kubeline-yolo-mlops
       branch: docs
+      enabled: !ENV [CI, false]
 
 extra:
   social:
