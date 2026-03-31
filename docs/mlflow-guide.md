@@ -37,14 +37,7 @@ MLflow has four main components. We use two of them:
 
 ### Experiments
 
-An **experiment** is a named group of related training runs. In our pipeline, the experiment name is set in `pipeline_config.yaml`:
-
-```yaml
-experiment:
-  name: "spacecraft-pose-toy"
-```
-
-All runs for this experiment appear together in the MLflow UI, making it easy to compare them.
+An **experiment** is a named group of related training runs. All runs for this experiment appear together in the MLflow UI, making it easy to compare them.
 
 ### Runs
 
