@@ -8,6 +8,7 @@ on:
     paths:
       - '.docs/**'
       - 'mkdocs.yml'
+      - 'docs-requirements.txt'
       - '.github/workflows/gh-pages.yml'
   workflow_dispatch:
 
@@ -32,13 +33,13 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.12'
 
       - name: Cache dependencies
         uses: actions/cache@v4
         with:
-          key: ${{ github.ref }}
-          path: .cache
+          key: mkdocs-${{ hashFiles('docs-requirements.txt') }}
+          path: ~/.cache/pip
 
       - name: Install MkDocs dependencies
         run: pip install -r docs-requirements.txt
