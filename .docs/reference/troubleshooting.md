@@ -122,6 +122,26 @@ Both steps need read/write access to the same S3 bucket.
 
 ---
 
+## MLflow issues
+
+### Metrics appear as single points instead of line charts
+
+If metrics show as a single dot rather than a curve over epochs, they were logged without a `step` parameter. The pipeline's custom callbacks log with `step=current_epoch`. If you see flat metrics, the Ultralytics callback may be overriding with step-less logging — check the Ultralytics MLflow integration version (v8.0.196+ required).
+
+### `Failed to ensure MLflow experiment` error
+
+The training service could not create or find the experiment. Check:
+
+- Network connectivity to the MLflow tracking server
+- Authentication credentials (`MLFLOW_TRACKING_USERNAME` / `MLFLOW_TRACKING_PASSWORD`)
+- Server health: `curl <MLFLOW_TRACKING_URI>/api/2.0/mlflow/experiments/list`
+
+### Artifact upload is slow
+
+Artifacts are uploaded through the MLflow tracking server (proxy mode), not directly to S3. Large files like `best.pt` (~25 MB) go through the server first. This is by design to avoid giving training containers direct S3 credentials. If this is too slow, consider increasing MLflow server resources.
+
+---
+
 ## Argo Workflows issues
 
 ### `WorkflowTemplate not found in namespace ml-<project>`

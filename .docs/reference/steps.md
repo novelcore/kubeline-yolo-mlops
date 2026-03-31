@@ -151,3 +151,17 @@ Detailed reference for each of the four pipeline steps.
 - MLflow server unreachable
 - `best.pt` S3 URI is not accessible
 - All retries exhausted (MLflow timeout)
+
+---
+
+## Future: Evaluation Step
+
+!!! note "Coming Soon"
+    A fifth pipeline step — **Evaluation** — is planned as a stretch goal. It will:
+
+    - Run batch inference on a held-out test set (lightbox + sunlamp images)
+    - Reconstruct 3D pose from predicted keypoints using PnP solving
+    - Compute domain-specific metrics: translation error (meters), rotation error (degrees)
+    - Log evaluation metrics and visualization overlays to MLflow
+
+    This step will use a GPU node and is expected to take 10–60 minutes.

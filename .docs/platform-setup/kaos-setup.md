@@ -196,6 +196,30 @@ kubectl get kubeapp <your-app-name> -o jsonpath='{.status.mlPipelineStatus}'
 
 ---
 
+## Status Fields to Watch
+
+After creating resources, monitor these status fields during rollout:
+
+```bash
+# Project ML stack readiness
+kubectl get kubeproject <project> -o jsonpath='{.status.mlStack}'
+
+# App ML pipeline status
+kubectl get kubeapp <app> -o jsonpath='{.status.xK8sMLAppRef}'
+kubectl get kubeapp <app> -o jsonpath='{.status.mlPipelineStatus}'
+
+# WorkflowTemplate link (where your Argo template lives)
+kubectl get xk8smlapps.platform.kubecore.io <app> -o jsonpath='{.status.workflowTemplateLink}'
+
+# Cost tracking dashboard URL
+kubectl get xk8smlapps.platform.kubecore.io <app> -o jsonpath='{.status.costTracking.dashboardUrl}'
+```
+
+!!! tip
+    The `workflowTemplateLink` field tells you the exact path of your rendered WorkflowTemplate in the GitOps repo. The `costTracking.dashboardUrl` gives you a direct link to the Grafana cost dashboard for your pipeline.
+
+---
+
 ## All Done
 
 Your environment is fully provisioned. You should now have:

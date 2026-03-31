@@ -39,6 +39,29 @@ MLflow has four main components. This pipeline uses two:
 
 ---
 
+## How MLflow Is Deployed
+
+Your MLflow instance runs as a remote tracking server:
+
+```
+┌─────────────────────┐
+│   MLflow UI + API    │  ← Your MLFLOW_TRACKING_URI
+│   (Tracking Server)  │
+├─────────────────────┤
+│  Backend Store:      │  ← PostgreSQL (params, metrics, tags, metadata)
+│  Artifact Store:     │  ← S3 bucket (model files, plots, large outputs)
+└─────────────────────┘
+```
+
+- **Backend store** (PostgreSQL) holds structured data: run metadata, parameters, metrics, and tags.
+- **Artifact store** (S3) holds binary files: model checkpoints (`best.pt`, `last.pt`), training plots, and config files.
+- **Proxy artifact storage** — Artifact uploads go *through* the tracking server to S3. You do not need direct S3 credentials for artifact logging.
+
+!!! info "Why uploads go through the server"
+    This is by design — it avoids giving the training container direct S3 write credentials. Large files like `best.pt` (~25 MB for YOLOv8n) pass through the server before reaching S3. If uploads feel slow, this is normal.
+
+---
+
 ## Opening the Dashboard
 
 Open your MLflow URL in a browser (ask your administrator if you do not have it). If prompted, enter your username and password.
@@ -109,8 +132,36 @@ Shows all metrics logged during training as line charts over epochs.
 | `val/recall` | Validation recall |
 | `val/mAP50` | Mean average precision at IoU=0.50 — the primary quality indicator |
 | `val/mAP50_95` | mAP averaged over IoU thresholds 0.50–0.95 — stricter quality measure |
-| `system/gpu_utilization_pct` | GPU compute usage — should be consistently high (>70%) |
-| `system/gpu_vram_used_gb` | GPU memory in use |
+| `system/ram_used_gb` | System RAM in use (GB) |
+| `system/ram_percent` | System RAM usage as a percentage |
+| `system/cpu_percent` | CPU utilization percentage |
+| `system/gpu_vram_used_gb` | GPU VRAM in use (GB) |
+| `system/gpu_vram_total_gb` | Total GPU VRAM (GB) |
+| `system/gpu_utilization_pct` | GPU compute utilization (%) |
+
+All system metrics are logged per epoch with `step=current_epoch`, so they render as line charts.
+
+### Visualizing Metric Charts
+
+1. Select one or more metrics from the list on the left
+2. The chart area renders a line plot with epoch on the x-axis
+3. Use the controls to:
+    - Switch between **linear** and **log** scale (useful for loss curves)
+    - **Zoom** into specific epoch ranges by clicking and dragging
+    - **Download** the data as CSV for external analysis
+    - Toggle **smoothing** for noisy metrics
+
+### Useful Chart Combinations
+
+| Combination | What It Tells You |
+|---|---|
+| `val/mAP50` + `val/mAP50_95` | Track overall model quality improvement over epochs |
+| `train/box_loss` + `train/pose_loss` | Watch for convergence or divergence between loss terms |
+| `system/gpu_vram_used_gb` + `system/gpu_utilization_pct` | Check if GPU is being fully utilized |
+| `system/ram_used_gb` | Detect memory leaks during long training runs |
+
+!!! tip "Low GPU utilization?"
+    If `system/gpu_utilization_pct` is consistently low, the bottleneck is likely data loading, not compute. Try increasing the number of data loader workers or reducing image size.
 
 ### Artifacts Tab
 
