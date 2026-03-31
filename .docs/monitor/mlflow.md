@@ -2,6 +2,43 @@
 
 MLflow is where your experiment results are stored. Think of it as version control for your training runs — it records what you trained, how you trained it, and what the results were.
 
+## Core Concepts
+
+**Experiments** — A named group of related training runs. All runs for an experiment appear together in the MLflow UI.
+
+**Runs** — A single execution of the training step. Each run has:
+
+- **Parameters** — Inputs (learning rate, batch size, epochs, optimizer, etc.)
+- **Metrics** — Output measurements (loss, mAP50, precision, recall), optionally logged per epoch
+- **Artifacts** — Files produced (model checkpoints, plots, config files)
+- **Tags** — Key-value metadata (dataset version, git commit, pipeline ID)
+
+**Registered Models** — A named entry in the Model Registry. Each registration creates a new version:
+
+```
+Registered Model: "spacecraft-pose-yolo"
+  ├── Version 1  (best.pt from run abc123)
+  ├── Version 2  (best.pt from run def456)
+  └── Version 3  (best.pt from run ghi789)  ← latest
+```
+
+**Model Stages** — Versions move through lifecycle stages:
+
+```
+None → Staging → Production → Archived
+```
+
+MLflow has four main components. This pipeline uses two:
+
+| Component | What It Does | Used by Pipeline? |
+|---|---|---|
+| **Tracking** | Logs parameters, metrics, and artifacts per run | Yes |
+| **Model Registry** | Versions and stages trained models | Yes |
+| **Projects** | Packages ML code in a reproducible format | No |
+| **Models** | Standard format for deploying models | No |
+
+---
+
 ## Opening the Dashboard
 
 Open your MLflow URL in a browser (ask your administrator if you do not have it). If prompted, enter your username and password.
@@ -63,10 +100,15 @@ Shows all metrics logged during training as line charts over epochs.
 
 | Metric | What It Means |
 | --- | --- |
+| `train/box_loss` | Bounding box regression loss |
+| `train/pose_loss` | Keypoint pose estimation loss — should decrease steadily |
+| `train/kobj_loss` | Keypoint objectness loss |
+| `train/cls_loss` | Classification loss |
+| `train/dfl_loss` | Distribution focal loss |
+| `val/precision` | Validation precision |
+| `val/recall` | Validation recall |
 | `val/mAP50` | Mean average precision at IoU=0.50 — the primary quality indicator |
 | `val/mAP50_95` | mAP averaged over IoU thresholds 0.50–0.95 — stricter quality measure |
-| `train/pose_loss` | Keypoint regression loss — should decrease steadily |
-| `train/box_loss` | Bounding box loss |
 | `system/gpu_utilization_pct` | GPU compute usage — should be consistently high (>70%) |
 | `system/gpu_vram_used_gb` | GPU memory in use |
 
@@ -76,11 +118,14 @@ Shows files uploaded during the run:
 
 | Artifact | Description |
 | --- | --- |
-| `best.pt` | Model checkpoint with the highest `val/mAP50` |
+| `best.pt` | Model checkpoint with the highest validation mAP50 |
 | `last.pt` | Model checkpoint from the final epoch |
-| `results.png` | Training metrics plotted over all epochs |
-| `args.yaml` | Full configuration used for the run |
-| `confusion_matrix.png` | Validation confusion matrix |
+| `args.yaml` | Full Ultralytics configuration used for the run |
+| `results.png` | Training metrics plotted across all epochs |
+| `confusion_matrix.png` | Confusion matrix on validation data |
+| `P_curve.png` | Precision-confidence curve |
+| `R_curve.png` | Recall-confidence curve |
+| `PR_curve.png` | Precision-recall curve |
 
 Click any image to preview it inline. Click a `.pt` file to download it.
 
@@ -98,6 +143,26 @@ The comparison view shows:
 - **Scatter plots** — plot any metric against any parameter (e.g., `learning_rate` vs `val/mAP50`)
 
 This is the fastest way to answer *"what changed between my best and worst run?"*
+
+---
+
+## Key Terminology
+
+| Term | Definition |
+|---|---|
+| **Tracking URI** | The URL of the MLflow server (e.g., `http://mlflow.example.com:5000`) |
+| **Experiment** | A named collection of runs (e.g., `spacecraft-pose-toy`) |
+| **Run** | One training execution — has params, metrics, artifacts, and tags |
+| **Parameter** | A training input logged once per run (e.g., `lr0=0.01`) |
+| **Metric** | A training output, optionally logged per step/epoch (e.g., `val/mAP50=0.82`) |
+| **Artifact** | A file attached to a run (e.g., `best.pt`, `results.png`) |
+| **Tag** | A key-value label on a run or model version (e.g., `dataset_version=v1`) |
+| **Registered Model** | A named model entry in the registry with one or more versions |
+| **Model Version** | A specific checkpoint registered under a model name |
+| **Stage** | A lifecycle label on a model version: `None`, `Staging`, `Production`, `Archived` |
+| **Backend Store** | Database (PostgreSQL) that holds run metadata, params, metrics |
+| **Artifact Store** | Object storage (S3) that holds model files and other binary artifacts |
+| **Proxy Artifacts** | Artifact uploads that go through the tracking server instead of directly to S3 |
 
 ---
 

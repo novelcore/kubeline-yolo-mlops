@@ -2,6 +2,15 @@
 
 Detailed reference for each of the four pipeline steps.
 
+## Resource Requirements
+
+| Step | CPU | Memory | GPU | Storage | Typical Duration |
+|---|---|---|---|---|---|
+| Config Validation | 1 core | 512 MB | None | Minimal | ~5 seconds |
+| Dataset Loading | 4 cores | 8 GB | None | Up to 20 GB | 1–30 minutes |
+| Model Training | 32 cores | 128 GB | 2x A100-40GB | 10 TB | 2–48 hours |
+| Model Registration | 1 core | 1 GB | None | Minimal | ~10 seconds |
+
 ---
 
 ## Step 1: Config Validation

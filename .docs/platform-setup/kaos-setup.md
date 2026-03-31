@@ -59,6 +59,7 @@ A `KubePool` provisions an EKS cluster and installs the operators required for M
 | `spec.operators.nvidiaGpu.enabled` | `true` — required for GPU training steps |
 | `spec.operators.karpenter.enabled` | `true` — required for dynamic node scaling |
 | `spec.operators.karpenter.nodeRoleName` | IAM role name for Karpenter-managed nodes |
+| `spec.operators.karpenter.controllerRoleArn` | IRSA role for Karpenter controller |
 | `spec.operators.postgres.enabled` | `true` — required for MLflow backend |
 | `spec.features.observability` | `true` — enables cost dashboards (recommended) |
 
@@ -112,13 +113,13 @@ kubectl get kubeproject <your-project-name> -o yaml | grep -A5 "mlStack"
 
 ---
 
-## Step 4: Register the KubeAppTemplate
+## Step 4: Register the XKubeAppTemplate
 
-A `KubeAppTemplate` defines the pipeline template type. For YOLO MLOps, use:
+An `XKubeAppTemplate` defines the pipeline template type. For YOLO MLOps, use:
 
 ```yaml
 apiVersion: platform.kubecore.io/v1beta1
-kind: KubeAppTemplate
+kind: XKubeAppTemplate
 metadata:
   name: kubeline-yolo-mlops
 spec:
@@ -126,14 +127,35 @@ spec:
   source:
     url: https://github.com/novelcore/kubeline-yolo-mlops
     branch: main
+  profiles:
+    small:
+      gpu: "1"
+      cpu: "8"
+      memory: "32Gi"
+    medium:
+      gpu: "2"
+      cpu: "16"
+      memory: "64Gi"
+    large:
+      gpu: "4"
+      cpu: "32"
+      memory: "128Gi"
+  environment:
+    schema:
+      LAKEFS_ENDPOINT:
+        type: string
+        description: LakeFS server URL
+      MLFLOW_TRACKING_URI:
+        type: string
+        description: MLflow tracking server URL
 ```
 
-This tells KAOS that the `kubeline-yolo-mlops` template is an ML pipeline type and where to find the source.
+This tells KAOS that the `kubeline-yolo-mlops` template is an ML pipeline type and where to find the source. The `profiles` section defines pre-configured resource tiers (small, medium, large), and the `environment.schema` declares the environment variables that each pipeline instance must provide.
 
 **Verify:**
 
 ```bash
-kubectl get kubeapptemplate kubeline-yolo-mlops
+kubectl get xkubeapptemplate kubeline-yolo-mlops
 # Expected: READY = true
 ```
 
