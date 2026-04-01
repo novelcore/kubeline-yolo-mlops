@@ -1,46 +1,47 @@
 # Configure Your Experiment
 
-Before submitting a pipeline run, you fill in a single YAML file: `pipeline_config.yaml`.
+When the KAOS platform creates your pipeline, it scaffolds an Argo WorkflowTemplate with **sensible defaults for every parameter**. You configure each experiment at submission time by overriding only the parameters you care about.
 
-## Two Layers of Configuration
+## How Configuration Works
 
-The pipeline has two configuration layers. As a data scientist, **you only need to touch one of them**.
+The WorkflowTemplate has roughly 60 parameters. They fall into two categories:
 
-| Layer | File | What It Controls | Who Sets It |
-| --- | --- | --- | --- |
-| **Pipeline config** | `pipeline_config.yaml` | Your experiment — dataset, model, hyperparameters, registration | You |
-| **Runtime config** | Environment variables (`.env`) | Platform plumbing — server URLs, credentials, timeouts | Platform administrator |
+| Category | Who Sets It | When |
+| --- | --- | --- |
+| **Experiment parameters** | You | At workflow submission time, in the Argo UI |
+| **Platform parameters** | KAOS (automatic) | Pre-filled when the WorkflowTemplate is created |
 
-The runtime configuration is handled by the KAOS platform automatically. The only file you need to edit is `pipeline_config.yaml`.
+Platform parameters (MLflow endpoint, lakeFS endpoint, S3 buckets, etc.) are injected automatically. You never need to change them.
 
-## Getting the Config File
+## What You Configure at Submission Time
 
-The `pipeline_config.yaml` is stored in the pipeline's Git repository. To start a new experiment:
+When you click **Submit** on your WorkflowTemplate in the Argo UI, you see a parameters form. Every parameter has a default value — you only override what you want to change.
 
-1. Copy the example config from the repository:
-
-    ```bash
-    cp pipeline_config.example.yaml pipeline_config.yaml
-    ```
-
-2. Edit `pipeline_config.yaml` with your experiment settings.
-
-3. Submit the pipeline (see [Run a Pipeline](../run/argo-ui.md)).
-
-## What's in pipeline_config.yaml
-
-The file has seven sections:
+The parameters are grouped into these categories:
 
 ```
-experiment    ← Name and tags for this run in MLflow
-dataset       ← Where to load data from and how much
-model         ← Which YOLO variant to use
-training      ← All hyperparameters (epochs, batch size, learning rate, etc.)
-checkpointing ← How often to save progress and where
-augmentation  ← Image augmentation settings
-registration  ← How to save the trained model
+Experiment     ← Description for this run in MLflow
+Dataset        ← Which data version to train on and how much
+Model          ← Which YOLO variant to use
+Training       ← All hyperparameters (epochs, batch size, learning rate, etc.)
+Loss Gains     ← Pose-specific loss weights
+Early Stopping ← When to stop if the model converges
+Checkpointing  ← How often to save progress and how to resume
+Augmentation   ← Image augmentation settings
+Registration   ← How to save and promote the trained model
 ```
 
-Continue to the full field-by-field walkthrough:
+## Most Users Only Need a Handful of Parameters
 
-[:octicons-arrow-right-24: pipeline_config.yaml Reference](pipeline-config.md)
+For a typical experiment, you might override just four or five values:
+
+- `dataset-version` — which version of your data to train on
+- `epochs` — how long to train
+- `model-config` — which YOLO variant to use
+- `batch-size` — how many images per gradient update
+
+Everything else stays at its default. As you get more advanced, you can tune learning rates, augmentation, loss gains, and more.
+
+Continue to the full parameter-by-parameter reference:
+
+[:octicons-arrow-right-24: Parameter Reference](pipeline-config.md)

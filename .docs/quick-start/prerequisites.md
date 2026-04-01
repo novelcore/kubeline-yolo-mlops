@@ -1,6 +1,6 @@
 # Prerequisites
 
-Before you can run a pipeline, confirm you have the following three things.
+Before you can run a pipeline, confirm you have the following two things.
 
 ## 1. SSO Access to Argo Workflows
 
@@ -29,16 +29,8 @@ https://mlflow.your-project.kaos.io
 
 You will use this address to monitor runs and access your trained models after each pipeline execution.
 
-## 3. Your `pipeline_config.yaml`
-
-The pipeline is controlled by a single YAML configuration file. Before running a pipeline, you need to fill this file in with your experiment settings.
-
-If you do not have a `pipeline_config.yaml` yet, start here:
-
-[:octicons-arrow-right-24: Configure Your Experiment](../configure/index.md)
-
 ---
 
-Once you have Argo access, the MLflow URL, and a filled-in `pipeline_config.yaml`, you are ready to run.
+Once you have Argo access and the MLflow URL, you are ready to run. Your WorkflowTemplate is already configured with sensible defaults for all parameters — you just override what you need at submission time.
 
-[:octicons-arrow-right-24: Run a Pipeline — Argo Workflows UI](../run/argo-ui.md)
+[:octicons-arrow-right-24: Configure Your Experiment](../configure/index.md)

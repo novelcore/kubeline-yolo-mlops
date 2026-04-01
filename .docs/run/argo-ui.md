@@ -4,8 +4,8 @@ The Argo Workflows UI is the primary way to submit and monitor pipeline runs.
 
 ## Before You Start
 
-- [ ] You have filled in `pipeline_config.yaml` — see [Configure Your Experiment](../configure/index.md)
 - [ ] You can log in to the Argo Workflows UI (ask your administrator for the URL if you do not have it)
+- [ ] You know which experiment parameters you want to override (see [Configure Your Experiment](../configure/index.md))
 
 ## Step 1: Log In
 
@@ -30,14 +30,26 @@ Find the template named after your pipeline (e.g., `kubeline-yolo-mlops-<project
 
 1. Click on your WorkflowTemplate to open it.
 2. Click the **Submit** button (top right).
-3. A **Submit Workflow** dialog appears. You need to provide your pipeline configuration as a parameter.
+3. A **Submit Workflow** dialog appears with a **parameters form**. Every parameter has a default value already filled in.
 
-In the **pipeline-config** parameter field, paste the full contents of your `pipeline_config.yaml` file.
+**Platform parameters** (like `mlflow-endpoint`, `lakefs-endpoint`, `s3-artifacts-bucket`) are pre-filled by the platform. Do not change these.
 
-!!! info "Parameters"
-    The WorkflowTemplate accepts your `pipeline_config.yaml` content as a parameter. The platform routes it to each step automatically.
+**Experiment parameters** are what you override to configure your run. For example, to run a quick 50-epoch experiment on a smaller model with a data subset:
+
+| Parameter | Override to |
+| --- | --- |
+| `epochs` | `50` |
+| `model-config` | `yolov8s-pose.pt` |
+| `dataset-version` | `v2` |
+| `batch-size` | `32` |
+| `dataset-sample-size` | `500` |
+
+Leave everything else at its default. You only need to change the parameters relevant to your experiment.
 
 4. Click **Submit**.
+
+!!! tip "Most runs only need a few overrides"
+    The defaults are tuned for a reasonable baseline. For a first run, you might only change `dataset-version` and `epochs`. See the [full parameter reference](../configure/pipeline-config.md) for what each parameter does.
 
 ## Step 5: Watch the DAG
 
@@ -63,7 +75,7 @@ Click any node to see its logs in real time.
 Click a running or completed step to open its detail panel. Switch to the **Logs** tab to see the step's standard output.
 
 !!! tip "What to look for"
-    - **Config Validation:** `✓ Config validated` — confirms your YAML is valid
+    - **Config Validation:** `✓ Config validated` — confirms your parameters are valid
     - **Dataset Loading:** shows download progress and number of images found
     - **Model Training:** shows per-epoch loss and mAP metrics
     - **Model Registration:** shows the registered model name and version number

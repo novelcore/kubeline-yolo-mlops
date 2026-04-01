@@ -2,7 +2,7 @@
 
 An end-to-end machine learning pipeline for YOLO pose estimation, built to run on the [KAOS platform](https://novelcore.github.io/kubecore-operator/).
 
-The pipeline takes a configuration file, loads your dataset from S3 or LakeFS, trains a YOLO pose model on a GPU node, and registers the result in MLflow — all fully automated through Argo Workflows.
+The pipeline loads your dataset from S3 or LakeFS, trains a YOLO pose model on a GPU node, and registers the result in MLflow — all fully automated through Argo Workflows. You configure each experiment by setting parameters when you submit a workflow run.
 
 ## Pipeline Overview
 

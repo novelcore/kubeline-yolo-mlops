@@ -51,42 +51,35 @@ If you are using a different dataset, it must conform to the YOLO Pose format ab
 
 LakeFS provides Git-like versioning for your dataset on top of S3. Use this option when you want to track exactly which version of the data was used for each experiment.
 
-Set these fields in `pipeline_config.yaml`:
+When submitting a workflow, set these parameters:
 
-```yaml
-dataset:
-  source: "lakefs"
-  lakefs_repo: "your-repo-name"
-  lakefs_branch: "main"
-  version: "v1"
-```
+| Parameter | Value |
+| --- | --- |
+| `dataset-source` | `lakefs` |
+| `dataset-version` | `v1` (or your version tag) |
 
-The pipeline constructs the S3 path automatically:
-
-```
-s3://<bucket>/<lakefs_repo>/<lakefs_branch>/<version>/
-```
+The lakeFS repository and branch are pre-filled by the platform. The pipeline constructs the S3 path automatically from the version you provide.
 
 ### Option 2: Direct S3
 
-Point directly to an S3 path using `path_override`:
+Point directly to an S3 path using the `dataset-path-override` parameter:
 
-```yaml
-dataset:
-  source: "s3"
-  path_override: "s3://your-bucket/datasets/spacecraft-pose-v1/"
-```
+| Parameter | Value |
+| --- | --- |
+| `dataset-source` | `s3` |
+| `dataset-path-override` | `s3://your-bucket/datasets/spacecraft-pose-v1/` |
 
-When `path_override` is set, the `lakefs_repo`, `lakefs_branch`, and `version` fields are ignored.
+When `dataset-path-override` is set, the `dataset-version` parameter is ignored.
 
 ## Subsampling for Development
 
-Training on the full dataset can take hours. While iterating on hyperparameters or debugging, use a random subset:
+Training on the full dataset can take hours. While iterating on hyperparameters or debugging, use a random subset by setting these parameters at submission time:
 
-```yaml
-dataset:
-  sample_size: 200    # Use only 200 images
-  seed: 42            # Same seed = same 200 images each time
-```
+| Parameter | Value |
+| --- | --- |
+| `dataset-sample-size` | `200` |
+| `dataset-seed` | `42` |
 
-Set `sample_size: null` to switch back to the full dataset for a real training run.
+This trains on 200 random images. Using the same seed gives you the same 200 images each time.
+
+Leave `dataset-sample-size` empty (the default) to use the full dataset for a real training run.
