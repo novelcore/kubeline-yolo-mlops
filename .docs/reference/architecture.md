@@ -7,10 +7,10 @@ Technical overview of the Kubeline YOLO MLOps pipeline system.
 ```mermaid
 graph TB
     subgraph Workstation["Your Workstation"]
-        YAML["pipeline_config.yaml"]
+        Params["Argo Submission Parameters"]
     end
 
-    YAML -->|submit via Argo UI / GitHub PR| ArgoAPI["Argo Workflows"]
+    Params -->|submit via Argo UI / GitHub PR| ArgoAPI["Argo Workflows"]
 
     subgraph K8s["Kubernetes Cluster (KAOS / EKS)"]
         subgraph Argo["Argo Workflows Controller"]
@@ -68,7 +68,7 @@ flowchart LR
         Reg["Registry"]
     end
 
-    YAML["pipeline_config.yaml"] --> S1
+    Params["Argo Submission Parameters"] --> S1
     DS -->|fetch| S2
     S3 -->|periodic checkpoints| CK
     CK -->|resume| S3

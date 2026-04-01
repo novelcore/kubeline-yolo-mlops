@@ -77,12 +77,7 @@ The MLflow UI has two main sections, accessible from the top navigation bar:
 
 ## Finding Your Experiment
 
-In the left sidebar under **Experiments**, find the experiment name matching your `pipeline_config.yaml`:
-
-```yaml
-experiment:
-  name: "spacecraft-pose-v1-yolov8n"
-```
+In the left sidebar under **Experiments**, find the experiment name matching the `experiment-name` parameter you submitted with your workflow (e.g., `spacecraft-pose-v1-yolov8n`).
 
 Click it to see all runs in that experiment.
 
@@ -191,7 +186,7 @@ The comparison view shows:
 
 - **Parameter diff** — highlights which parameters differ between runs
 - **Metric charts** — overlaid training curves for direct visual comparison
-- **Scatter plots** — plot any metric against any parameter (e.g., `learning_rate` vs `val/mAP50`)
+- **Scatter plots** — plot any metric against any parameter (e.g., `lr0` vs `val/mAP50`)
 
 This is the fastest way to answer *"what changed between my best and worst run?"*
 

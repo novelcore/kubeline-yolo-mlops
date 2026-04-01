@@ -6,6 +6,7 @@ Complete parameter reference for the Argo WorkflowTemplate. All parameters are s
 
 | Parameter | Default | Description |
 | --- | --- | --- |
+| `experiment-name` | `""` | Name for the MLflow experiment. All runs with the same name are grouped together. **Required.** |
 | `experiment-description` | `""` | Free-text description shown in MLflow. |
 
 ## Dataset
@@ -70,7 +71,7 @@ Complete parameter reference for the Argo WorkflowTemplate. All parameters are s
 | Parameter | Default | Description |
 | --- | --- | --- |
 | `checkpointing-interval-epochs` | `"10"` | Save checkpoint every N epochs |
-| `checkpoint-resume-from` | `""` | Empty = start fresh; S3 path = resume from that checkpoint |
+| `checkpoint-resume-from` | `""` | Empty = start fresh; `"auto"` = resume from latest checkpoint in experiment directory; S3 path = resume from that specific checkpoint |
 
 ## Augmentation
 

@@ -15,13 +15,13 @@ Detailed reference for each of the four pipeline steps.
 
 ## Step 1: Config Validation
 
-**Purpose:** Validates `pipeline_config.yaml` and verifies that all external services are reachable before committing to compute-intensive steps.
+**Purpose:** Validates the submitted workflow parameters and verifies that all external services are reachable before committing to compute-intensive steps.
 
 **Compute:** CPU · **Typical duration:** 10–30 seconds
 
 **Inputs:**
 
-- `pipeline_config.yaml` (passed as a CLI parameter by Argo)
+- Argo submission parameters (passed as CLI arguments by Argo)
 
 **Outputs:**
 
@@ -31,10 +31,10 @@ Detailed reference for each of the four pipeline steps.
 **What it checks:**
 
 - All required fields are present with correct types
-- Field values are within allowed ranges (e.g., `image_size` is a multiple of 32)
+- Field values are within allowed ranges (e.g., `image-size` is a multiple of 32)
 - MLflow tracking server is reachable
 - S3 / LakeFS endpoint is reachable
-- If `dataset.source: "lakefs"`: LakeFS repo and branch exist
+- If `dataset-source` is `"lakefs"`: LakeFS repo and branch exist
 
 **Fails if:**
 
@@ -65,7 +65,7 @@ Detailed reference for each of the four pipeline steps.
 1. Connects to S3 or LakeFS using credentials from environment variables
 2. Downloads dataset images and label files
 3. Validates YOLO Pose label format (keypoint count, coordinate ranges)
-4. If `sample_size` is set: selects a deterministic random subset using `dataset.seed`
+4. If `dataset-sample-size` is set: selects a deterministic random subset using `dataset-seed`
 5. Writes the dataset to the shared artifact volume for Step 3
 
 **Fails if:**
@@ -87,7 +87,7 @@ Detailed reference for each of the four pipeline steps.
 
 - Dataset from Step 2 (artifact volume)
 - Validated config from Step 1
-- Optional: checkpoint from `checkpointing.resume_from`
+- Optional: checkpoint from the `checkpoint-resume-from` parameter
 
 **Outputs:**
 
@@ -99,11 +99,11 @@ Detailed reference for each of the four pipeline steps.
 **What it does:**
 
 1. Creates or retrieves the MLflow experiment
-2. Initializes YOLO model from `model.variant` (or `pretrained_weights` if set)
+2. Initializes YOLO model from `model-config` (or `pretrained-weights` if set)
 3. Registers custom callbacks for:
    - Per-epoch validation metrics (mAP50, precision, recall)
    - System resource monitoring (GPU VRAM, GPU utilization, RAM)
-   - Periodic S3 checkpoint saves every `checkpointing.interval_epochs` epochs
+   - Periodic S3 checkpoint saves every `checkpointing-interval-epochs` epochs
 4. Calls `model.train()` — Ultralytics handles all MLflow logging automatically
 5. Tags the completed run with `KUBECORE_*` metadata
 6. Passes `best.pt` S3 path to Step 4
@@ -112,7 +112,7 @@ Detailed reference for each of the four pipeline steps.
 
 - GPU not available or CUDA not initialized
 - MLflow server unreachable
-- Out of GPU memory (reduce `batch_size` or `image_size`)
+- Out of GPU memory (reduce `batch-size` or `image-size`)
 - Dataset corrupt or empty
 
 ---
@@ -131,19 +131,19 @@ Detailed reference for each of the four pipeline steps.
 
 **Outputs:**
 
-- New version in MLflow Model Registry for `registration.registered_model_name`
+- New version in MLflow Model Registry for the `registered-model-name` parameter
 - Lineage tags set on each version
-- Stage promotion if `registration.promote_to` is set
+- Stage promotion if `promote-to` is set
 
 **What it does:**
 
-1. Registers `best.pt` as a new model version under `registered_model_name`
+1. Registers `best.pt` as a new model version under `registered-model-name`
 2. Registers `last.pt` as a second version
 3. Sets lineage tags on both versions:
    - `training_run_id`, `dataset_version`, `dataset_sample_size`
    - `config_hash`, `git_commit`, `model_variant`
    - `best_mAP50`, `checkpoint_type`
-4. If `promote_to` is set: transitions both versions to the specified stage
+4. If `promote-to` is set: transitions both versions to the specified stage
 5. Retries MLflow API calls up to `MAX_RETRIES` times with exponential backoff
 
 **Fails if:**

@@ -12,6 +12,7 @@ Each image in your dataset needs a corresponding label file with keypoint annota
 
 ```
 dataset/
+├── data.yaml
 ├── images/
 │   ├── train/
 │   │   ├── img_001.jpg
@@ -29,6 +30,26 @@ dataset/
         ├── img_101.txt
         └── ...
 ```
+
+### The `data.yaml` file
+
+Every YOLO dataset requires a `data.yaml` file at the root of the dataset directory. This file tells Ultralytics where to find the image splits and describes the keypoint and class structure:
+
+```yaml
+path: /data/speedplus_yolo
+train: images/train
+val: images/val
+test: images/test
+
+kpt_shape: [11, 3]      # 11 keypoints, 3 dims (x, y, visibility)
+flip_idx: []             # No horizontal flip symmetry for spacecraft
+names:
+  0: spacecraft
+```
+
+- **`kpt_shape`** — `[num_keypoints, dims]`. For SPEED+, this is `[11, 3]` (11 keypoints, each with x, y, and visibility).
+- **`flip_idx`** — Maps each keypoint to its mirror counterpart for horizontal flip augmentation. This is empty (`[]`) because a spacecraft is not left-right symmetric. Horizontal flip augmentation should be disabled or used with caution (the `aug-fliplr` parameter defaults to `0.0` for this reason).
+- **`names`** — Class name mapping. For single-class spacecraft detection, there is only class `0: spacecraft`.
 
 **Label file format** (one line per object):
 

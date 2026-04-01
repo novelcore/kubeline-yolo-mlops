@@ -6,11 +6,11 @@ Common failure modes and how to resolve them.
 
 ## Config Validation failures
 
-### `pipeline_config.yaml validation failed: image_size must be a multiple of 32`
+### `image_size must be a multiple of 32`
 
-`image_size` must be 320, 352, 384, ..., 640, 672, ... etc.
+`image-size` must be 320, 352, 384, ..., 640, 672, ... etc.
 
-**Fix:** Change `training.image_size` to the nearest multiple of 32.
+**Fix:** Change the `image-size` parameter to the nearest multiple of 32 when resubmitting the workflow.
 
 ### `Failed to reach MLflow at http://...`
 
@@ -27,9 +27,9 @@ SKIP_LIVENESS_CHECKS=true
 
 ### `LakeFS repository 'my-repo' not found`
 
-The `dataset.lakefs_repo` value does not match any existing LakeFS repository.
+The `lakefs-repo` parameter value does not match any existing LakeFS repository. Note that `lakefs-repo` is a platform-injected parameter — it is pre-filled by the KAOS platform, not set by the user.
 
-**Fix:** Check the repository name in the LakeFS UI. Repository names are case-sensitive.
+**Fix:** Verify the repository name in the LakeFS UI (names are case-sensitive). If it is incorrect, contact your platform administrator to update the platform configuration.
 
 ---
 
@@ -72,14 +72,13 @@ The training step cannot schedule because no GPU nodes are available.
 
 The model and batch do not fit in GPU VRAM.
 
-**Fix:** Reduce one or more of these in `pipeline_config.yaml`:
+**Fix:** Reduce one or more of these Argo submission parameters when resubmitting:
 
-```yaml
-training:
-  batch_size: 8          # Halve the batch size
-  image_size: 320        # Reduce image resolution
-  amp: true              # Ensure AMP is enabled (halves memory)
-```
+| Parameter | Suggested Value | Why |
+| --- | --- | --- |
+| `batch-size` | `8` | Halve the batch size |
+| `image-size` | `320` | Reduce image resolution |
+| `amp` | `true` | Ensure AMP is enabled (halves memory) |
 
 ### `No active MLflow run` warnings
 
@@ -98,8 +97,8 @@ Numerical instability during training.
 
 **Fix:**
 
-1. Ensure `training.amp: true` (mixed precision helps stabilize gradients).
-2. Reduce `training.learning_rate` (try dividing by 10).
+1. Ensure `amp` is set to `true` (mixed precision helps stabilize gradients).
+2. Reduce `learning-rate` (try dividing by 10).
 3. Check that the dataset does not contain corrupt images.
 
 ---
@@ -117,7 +116,7 @@ Increase `MAX_RETRIES` and `TIMEOUT` environment variables if the server is slow
 
 The S3 path for `best.pt` could not be read by the registration step.
 
-**Fix:** Verify the `checkpointing.storage_path` bucket is accessible from both the training and registration pods.
+**Fix:** Verify the `checkpoint-bucket` (a platform-injected parameter) is accessible from both the training and registration pods.
 Both steps need read/write access to the same S3 bucket.
 
 ---

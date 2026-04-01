@@ -34,11 +34,11 @@ A well-behaved training run looks like this:
 
 | Pattern | Likely Cause |
 | --- | --- |
-| Loss spikes repeatedly | Learning rate too high — reduce `learning_rate` |
+| Loss spikes repeatedly | Learning rate too high — reduce `learning-rate` |
 | mAP50 plateaus very early (< 20 epochs) | Model may be underfitting — try a larger variant or more epochs |
 | Loss decreases but mAP50 stays flat | Validation set mismatch — check dataset distribution |
-| mAP50 rises then drops | Overfitting — add `dropout`, reduce `epochs`, or increase `weight_decay` |
-| `gpu_utilization_pct` < 30% throughout | Data loading bottleneck — consider increasing `batch_size` |
+| mAP50 rises then drops | Overfitting — add `dropout`, reduce `epochs`, or increase `weight-decay` |
+| `gpu_utilization_pct` < 30% throughout | Data loading bottleneck — consider increasing `batch-size` |
 
 ### Checking System Resource Usage
 
@@ -46,7 +46,7 @@ The **system metrics** charts tell you how efficiently the GPU was used:
 
 - `system/gpu_utilization_pct` should stay above 70% during training steps
 - `system/gpu_vram_used_gb` should be comfortably below `system/gpu_vram_total_gb`
-  - If they are close, reduce `batch_size` or `image_size` to avoid out-of-memory crashes on future runs
+  - If they are close, reduce `batch-size` or `image-size` to avoid out-of-memory crashes on future runs
 
 ## Comparing Runs
 
@@ -54,7 +54,7 @@ To find which hyperparameter change made the biggest difference:
 
 1. Select the runs you want to compare (checkboxes in the runs table)
 2. Click **Compare**
-3. Use the **Scatter Plot** view: set X-axis to a parameter (e.g., `learning_rate`) and Y-axis to `val/mAP50`
+3. Use the **Scatter Plot** view: set X-axis to a parameter (e.g., `lr0`) and Y-axis to `val/mAP50`
 
 This quickly reveals which parameter values correlate with higher accuracy.
 
@@ -67,11 +67,14 @@ Use the search bar above the runs table to filter runs programmatically:
 metrics.`val/mAP50` > 0.6
 
 # Only runs that used learning rate 0.001
-params.learning_rate = "0.001"
+params.lr0 = "0.001"
 
 # Only runs from a specific pipeline execution
 tags.`kubecore.workflow_name` = "spacecraft-pose-v1-20260401-143022"
 ```
+
+!!! note "MLflow parameter names"
+    MLflow stores parameters using Ultralytics' internal names, not the Argo parameter names. For example, the Argo parameter `learning-rate` appears as `lr0` in MLflow, `batch-size` appears as `batch`, and `image-size` appears as `imgsz`.
 
 ## Using the Python SDK
 
@@ -88,7 +91,7 @@ best = mlflow.search_runs(
     order_by=["metrics.`val/mAP50` DESC"],
     max_results=1,
 )
-print(best.iloc[0][["run_id", "metrics.val/mAP50", "params.learning_rate"]])
+print(best.iloc[0][["run_id", "metrics.val/mAP50", "params.lr0"]])
 ```
 
 ---

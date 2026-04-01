@@ -68,8 +68,8 @@ Environment variables configure the platform plumbing for each step — server U
 | `MLFLOW_TRACKING_URI` | Yes | — | Remote MLflow server URL |
 | `MLFLOW_TRACKING_USERNAME` | No | — | MLflow basic auth username |
 | `MLFLOW_TRACKING_PASSWORD` | No | — | MLflow basic auth password |
-| `MLFLOW_EXPERIMENT_NAME` | No | `infinite-orbits` | Experiment name (overrides `pipeline_config.yaml` if set) |
-| `REGISTERED_MODEL_NAME` | No | `spacecraft-pose-yolo` | Default model name when `registration.registered_model_name` is null |
+| `MLFLOW_EXPERIMENT_NAME` | No | `infinite-orbits` | Experiment name (overrides the `experiment-name` parameter if set) |
+| `REGISTERED_MODEL_NAME` | No | `spacecraft-pose-yolo` | Default model name when `registered-model-name` is empty |
 | `AWS_ACCESS_KEY_ID` | No | — | S3 credential (for checkpoint access) |
 | `AWS_SECRET_ACCESS_KEY` | No | — | S3 credential |
 | `AWS_DEFAULT_REGION` | No | `eu-central-1` | AWS region |

@@ -16,17 +16,16 @@ The Model Registry gives each trained checkpoint a **stage** label:
 
 Stages are metadata — they do not deploy the model anywhere. They signal to downstream systems and team members which version to use.
 
-## Automatic Promotion via pipeline_config.yaml
+## Automatic Promotion via Parameters
 
-Set the `promote_to` field to automatically promote the model when the pipeline finishes:
+Set the `promote-to` and `registered-model-name` parameters at Argo submission time to automatically promote the model when the pipeline finishes:
 
-```yaml
-registration:
-  registered_model_name: "spacecraft-pose-yolo"
-  promote_to: "Staging"      # null | "Staging" | "Production"
-```
+| Parameter | Value |
+| --- | --- |
+| `registered-model-name` | `spacecraft-pose-yolo` |
+| `promote-to` | `Staging` |
 
-With this config, after every successful run the newly registered `best.pt` is automatically promoted to `Staging`.
+With these parameters, after every successful run the newly registered `best.pt` is automatically promoted to `Staging`. Set `promote-to` to empty (the default) for no automatic promotion, or to `Production` to promote directly.
 
 ## Manual Promotion via MLflow UI
 
@@ -45,10 +44,9 @@ The stage change is immediate and recorded in the version history.
 ## Manual Promotion via Python SDK
 
 ```python
-import mlflow
+from mlflow.tracking import MlflowClient
 
-client = mlflow.tracking.MlflowClient()
-client.set_tracking_uri("http://mlflow.example.com:5000")
+client = MlflowClient(tracking_uri="http://mlflow.example.com:5000")
 
 # Promote version 3 of spacecraft-pose-yolo to Production
 client.transition_model_version_stage(
@@ -64,7 +62,9 @@ client.transition_model_version_stage(
 Every registered version has full lineage tags set by the pipeline:
 
 ```python
-client = mlflow.tracking.MlflowClient()
+from mlflow.tracking import MlflowClient
+
+client = MlflowClient(tracking_uri="http://mlflow.example.com:5000")
 version = client.get_model_version("spacecraft-pose-yolo", "3")
 
 # Key lineage tags

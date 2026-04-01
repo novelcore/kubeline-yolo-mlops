@@ -21,8 +21,8 @@ The DAG view shows the four pipeline steps as connected nodes:
 
 | Colour | Status |
 | --- | --- |
-| Grey | Pending |
-| Blue / pulsing | Running |
+| Yellow | Pending / Waiting |
+| Blue | Running |
 | Green | Succeeded |
 | Red | Failed |
 | Orange | Skipped or error |
@@ -52,7 +52,7 @@ INFO  ✓ S3/LakeFS endpoint reachable
 INFO  Config validation passed.
 ```
 
-If you see `ERROR` lines here, your `pipeline_config.yaml` has invalid values. The error message will indicate which field failed.
+If you see `ERROR` lines here, your submitted parameters have invalid values. The error message will indicate which field failed.
 
 ### Dataset Loading
 
@@ -84,7 +84,7 @@ INFO  Training complete. Best mAP50: 0.82 at epoch 87
 ```
 
 !!! tip "Monitor GPU utilization"
-    If you see `gpu/utilization_pct` staying below 30% in the logs, the bottleneck is likely data loading rather than compute. Consider increasing `batch_size` or reducing `image_size`.
+    If you see `gpu/utilization_pct` staying below 30% in the logs, the bottleneck is likely data loading rather than compute. Consider increasing `batch-size` or reducing `image-size`.
 
 ### Model Registration
 

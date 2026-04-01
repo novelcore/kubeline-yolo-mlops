@@ -13,6 +13,7 @@ Describes this run in MLflow.
 
 | Parameter | Default | Description |
 | --- | --- | --- |
+| `experiment-name` | `""` | Name for the MLflow experiment. All runs submitted with the same experiment name appear together in the MLflow UI, making it easy to compare them. **Required** — set this when submitting a workflow. |
 | `experiment-description` | `""` | Free-text description shown in the MLflow experiment view. |
 
 ---
@@ -150,10 +151,18 @@ Controls how often intermediate model checkpoints are saved.
 | Parameter | Default | Description |
 | --- | --- | --- |
 | `checkpointing-interval-epochs` | `"10"` | Save a checkpoint every N epochs. Smaller values = more storage, more resume points. |
-| `checkpoint-resume-from` | `""` | Resume training from a checkpoint. Empty = start fresh. Provide an S3 path to resume from a specific checkpoint. |
+| `checkpoint-resume-from` | `""` | Resume training from a checkpoint. Accepts three modes — see below. |
+
+**`checkpoint-resume-from` modes:**
+
+| Value | Behaviour |
+| --- | --- |
+| `""` (empty, default) | Start training from scratch. |
+| `"auto"` | Automatically scan the experiment's checkpoint directory for the latest checkpoint and resume from it. |
+| A specific S3 path (e.g., `s3://bucket/checkpoints/exp/last.pt`) | Resume from that exact checkpoint. |
 
 !!! tip "Resuming after an interruption"
-    If a training run is interrupted (node eviction, timeout, OOM), set `checkpoint-resume-from` to the S3 path of the last checkpoint to continue from where you left off instead of restarting from scratch.
+    If a training run is interrupted (node eviction, timeout, OOM), set `checkpoint-resume-from` to `"auto"` to automatically pick up from the latest checkpoint, or provide the S3 path of a specific checkpoint to continue from.
 
 ---
 
