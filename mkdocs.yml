@@ -97,6 +97,9 @@ plugins:
       branch: docs
       enabled: !ENV [CI, false]
 
+extra_css:
+  - assets/extra.css
+
 extra:
   social:
     - icon: fontawesome/brands/github
