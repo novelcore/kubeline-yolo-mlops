@@ -9,7 +9,7 @@
 | **Parent Document** | MLOps Training Pipeline — Phase 1 PRD |
 | **Version** | 1.0 – Draft |
 | **Date** | February 2026 |
-| **Classification** | Confidential |
+| **Classification** | OSS |
 
 ---
 
