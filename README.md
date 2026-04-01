@@ -1,4 +1,4 @@
-# Infinite Orbits MLOps Pipeline
+# KAOS YOLO MLOps Pipeline Template
 
 An Argo Workflows-based MLOps pipeline for the Infinite Orbits project, built with the Kubestep Python Template pattern.
 
