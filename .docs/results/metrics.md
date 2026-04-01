@@ -2,9 +2,9 @@
 
 After a training run completes, here is how to read and act on the results in MLflow.
 
-## The Primary Metric: mAP50
+## Key Metric: mAP50
 
-The most important number after training is `val/mAP50` — **Mean Average Precision at IoU threshold 0.50**.
+One of the most important numbers after training is `val/mAP50` — **Mean Average Precision at IoU threshold 0.50**.
 
 This is a single number between 0 and 1 that measures how accurately the model detects and localizes objects in validation images.
 
@@ -14,9 +14,7 @@ This is a single number between 0 and 1 that measures how accurately the model d
 | 0.3–0.5 | Developing — may need more epochs or different hyperparameters |
 | 0.5–0.7 | Good — viable baseline for further tuning |
 | 0.7–0.85 | Strong — production-quality for many use cases |
-| > 0.85 | Excellent — typically near the ceiling for this dataset |
-
-For spacecraft pose estimation specifically, `mAP50 > 0.7` is a reasonable target for Phase 1.
+| > 0.85 | Excellent — high-performing model |
 
 ## Reading the Metric Charts
 
