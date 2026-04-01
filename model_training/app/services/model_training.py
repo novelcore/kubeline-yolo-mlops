@@ -124,12 +124,50 @@ class TrainingService:
         os.environ["MLFLOW_TRACKING_URI"] = self._mlflow_tracking_uri
         os.environ["MLFLOW_EXPERIMENT_NAME"] = params.experiment_name
 
+        # Ensure the experiment uses proxy artifact storage so the client
+        # uploads through the tracking server (which has IAM S3 access)
+        # instead of requiring direct AWS credentials.
+        self._ensure_proxied_experiment(params.experiment_name)
+
         try:
             result = self._run_training(params, YOLO)
         except Exception as exc:
             raise TrainingError(f"Training failed: {exc}") from exc
 
         return result
+
+    # ------------------------------------------------------------------
+    # MLflow experiment setup
+    # ------------------------------------------------------------------
+
+    def _ensure_proxied_experiment(self, experiment_name: str) -> None:
+        """Create the MLflow experiment with proxy artifact storage if it
+        doesn't exist yet.  Existing experiments are left as-is.
+        """
+        try:
+            import mlflow  # noqa: PLC0415
+
+            experiment = mlflow.get_experiment_by_name(experiment_name)
+            if experiment is None:
+                mlflow.create_experiment(
+                    experiment_name,
+                    artifact_location="mlflow-artifacts:",
+                )
+                self._logger.info(
+                    "Created MLflow experiment '%s' with proxied artifact storage",
+                    experiment_name,
+                )
+            else:
+                self._logger.debug(
+                    "MLflow experiment '%s' exists (id=%s, artifacts=%s)",
+                    experiment_name,
+                    experiment.experiment_id,
+                    experiment.artifact_location,
+                )
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning(
+                "Failed to ensure MLflow experiment: %s", exc
+            )
 
     # ------------------------------------------------------------------
     # Manifest auto-detection
