@@ -65,9 +65,20 @@ def main() -> None:
             None,
             help="Lineage tag: best validation mAP50 achieved during training.",
         ),
+        exported_models: Optional[str] = typer.Option(
+            None,
+            help=(
+                "JSON dict mapping export labels to S3 URIs, "
+                "e.g. '{\"engine_fp16\": \"s3://bucket/model.engine\"}'."
+            ),
+        ),
     ) -> None:
         try:
             manager = Manager()
+            parsed_exports: Optional[dict[str, str]] = None
+            if exported_models:
+                parsed_exports = json.loads(exported_models)
+
             result = manager.run(
                 mlflow_run_id=mlflow_run_id,
                 best_checkpoint_path=best_checkpoint_path,
@@ -80,6 +91,7 @@ def main() -> None:
                 git_commit=git_commit,
                 model_variant=model_variant,
                 best_map50=best_map50,
+                exported_models=parsed_exports,
             )
             typer.echo(result.model_dump_json(indent=2))
         except Exception as e:

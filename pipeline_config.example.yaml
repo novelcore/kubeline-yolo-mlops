@@ -15,6 +15,9 @@ dataset:
   path_override: null              # null = auto-construct from repo/branch/version; or full s3:// URI
   sample_size: null               # null = full dataset; integer = sampled subset
   seed: 42                        # Seed for reproducible dataset sampling
+  # Streaming modes (mutually exclusive). Default: both false (full local download).
+  labels_only: false              # true = download labels + data.yaml; stream images from S3 at train time
+  manifest_only: false            # true = download only data.yaml; stream images AND labels from S3 at train time
 
 # --- Model Configuration ---
 model:
@@ -110,6 +113,15 @@ augmentation:
   # Erasing / channel
   erasing: 0.4                   # Random erasing probability [0.0, 0.9]
   bgr: 0.0                       # BGR channel flip probability
+
+# --- Post-Training Export / Quantization ---
+# Exports optimized model formats after training completes.
+# INT8 uses the training dataset for TensorRT calibration.
+# ONNX + INT8 is not supported (use TensorRT for INT8).
+export:
+  enabled: false                    # Set true to export optimized models after training
+  formats: ["engine"]               # "engine" (TensorRT) and/or "onnx"
+  precisions: ["fp16"]              # "fp16" and/or "int8"
 
 # --- Model Registration ---
 registration:

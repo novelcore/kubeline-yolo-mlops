@@ -13,7 +13,10 @@ Responsibilities
    logging, console output, and periodic S3 checkpoint uploads.
 8. Call model.train() with the full hyperparameter set.
 9. Upload best.pt and last.pt to the S3 checkpoint path.
-10. Clean up temp dirs.
+10. Evaluate best.pt and last.pt on the test split (reporting only) and
+    log metrics + plots to the current MLflow run.  Skipped with a warning
+    when the test split is not available.
+11. Clean up temp dirs.
 """
 
 import json
@@ -123,6 +126,12 @@ class TrainingService:
         # Configure Ultralytics' built-in MLflow callback via env vars
         os.environ["MLFLOW_TRACKING_URI"] = self._mlflow_tracking_uri
         os.environ["MLFLOW_EXPERIMENT_NAME"] = params.experiment_name
+
+        # Ultralytics reads MLFLOW_RUN (not MLFLOW_RUN_NAME) for the run name.
+        # Bridge the Kubeline workflow name so each run gets a unique name.
+        workflow_name = os.environ.get("KUBECORE_WORKFLOW_NAME", "")
+        if workflow_name:
+            os.environ["MLFLOW_RUN"] = workflow_name
 
         try:
             result = self._run_training(params, YOLO)
@@ -298,8 +307,30 @@ class TrainingService:
             # 7. Upload final weights to S3
             best_s3_uri = self._upload_final_weights(params, save_dir)
 
+            # 8. Export quantized / optimized models
+            exported_s3_uris: dict[str, str] = {}
+            if params.export.enabled:
+                exported_s3_uris = self._export_models(
+                    model=model,
+                    params=params,
+                    save_dir=save_dir,
+                    data_yaml_path=str(data_yaml_path),
+                )
+
+            # 9. Post-training evaluation on the test split (reporting only)
+            self._evaluate_on_test_set(
+                yolo_cls=yolo_cls,
+                params=params,
+                save_dir=save_dir,
+                data_yaml_path=str(data_yaml_path),
+                tmp_path=tmp_path,
+            )
+
         # Build result — get MLflow run_id from Ultralytics' run
         mlflow_run_id = self._get_mlflow_run_id()
+
+        # Tag the completed MLflow run with Kubeline platform metadata
+        self._tag_kubecore_metadata()
 
         final_map50 = float(epoch_metrics.get("val/mAP50", 0.0))
         final_map50_95 = float(epoch_metrics.get("val/mAP50_95", 0.0))
@@ -316,6 +347,7 @@ class TrainingService:
             epochs_completed=epochs_completed,
             final_map50=final_map50,
             final_map50_95=final_map50_95,
+            exported_models=exported_s3_uris,
         )
 
     # ------------------------------------------------------------------
@@ -399,7 +431,7 @@ class TrainingService:
         self,
         params: TrainingParams,
     ) -> Callable[[Any], None]:
-        """Return a callback that uploads a checkpoint to S3 every N epochs."""
+        """Return a callback that uploads a checkpoint to S3 and logs it to MLflow every N epochs."""
 
         def on_train_epoch_end(trainer: Any) -> None:
             try:
@@ -409,6 +441,8 @@ class TrainingService:
                 last_pt = Path(trainer.last)
                 if not last_pt.exists():
                     return
+
+                # Upload to S3
                 s3_key = (
                     f"{params.checkpoint_prefix}/{params.experiment_name}/"
                     f"epoch_{epoch:04d}.pt"
@@ -423,6 +457,24 @@ class TrainingService:
                     params.checkpoint_bucket,
                     s3_key,
                 )
+
+                # Log checkpoint as MLflow artifact
+                try:
+                    import mlflow  # noqa: PLC0415
+
+                    if mlflow.active_run() is not None:
+                        mlflow.log_artifact(
+                            str(last_pt),
+                            artifact_path=f"checkpoints/epoch_{epoch:04d}",
+                        )
+                        _logger.info(
+                            "Logged epoch %d checkpoint to MLflow artifacts", epoch
+                        )
+                except Exception as mlflow_exc:  # noqa: BLE001
+                    _logger.warning(
+                        "Failed to log checkpoint to MLflow: %s", mlflow_exc
+                    )
+
             except Exception as cb_exc:  # noqa: BLE001
                 _logger.warning("S3 checkpoint upload failed: %s", cb_exc)
 
@@ -468,6 +520,311 @@ class TrainingService:
                 "model_registration will not be able to link this training run."
             )
         return ""
+
+    @staticmethod
+    def _tag_kubecore_metadata() -> None:
+        """Tag the MLflow run with KUBECORE_* environment variables."""
+        try:
+            import mlflow  # noqa: PLC0415
+
+            kubecore_tags = {
+                k.lower().replace("kubecore_", "kubecore."): v
+                for k, v in os.environ.items()
+                if k.startswith("KUBECORE_") and v
+            }
+            if kubecore_tags:
+                mlflow.set_tags(kubecore_tags)
+                _logger.info("Tagged MLflow run with %d kubecore tags", len(kubecore_tags))
+        except Exception:  # noqa: BLE001
+            _logger.warning("Failed to tag MLflow run with kubecore metadata")
+
+    # ------------------------------------------------------------------
+    # Post-training export / quantization
+    # ------------------------------------------------------------------
+
+    def _export_models(
+        self,
+        model: Any,
+        params: "TrainingParams",
+        save_dir: Path,
+        data_yaml_path: str,
+    ) -> dict[str, str]:
+        """Export trained model to requested formats/precisions.
+
+        Uploads each exported file to S3 and logs it as an MLflow artifact.
+        Errors are non-fatal — training has already succeeded.
+
+        Returns
+        -------
+        dict[str, str]
+            Map of ``{format}_{precision}`` labels to S3 URIs.
+        """
+        exported: dict[str, str] = {}
+        base_key = f"{params.checkpoint_prefix}/{params.experiment_name}"
+        mlflow_run_id = self._get_mlflow_run_id()
+
+        for fmt in params.export.formats:
+            for precision in params.export.precisions:
+                label = f"{fmt}_{precision}"
+
+                # ONNX does not support INT8 natively via Ultralytics export
+                if fmt == "onnx" and precision == "int8":
+                    self._logger.warning(
+                        "Skipping %s — ONNX INT8 requires a separate "
+                        "onnxruntime quantization pass, not supported by "
+                        "Ultralytics export. Use TensorRT for INT8.",
+                        label,
+                    )
+                    continue
+
+                self._logger.info(
+                    "Exporting model: format=%s precision=%s", fmt, precision
+                )
+
+                try:
+                    export_kwargs: dict[str, Any] = {
+                        "format": fmt,
+                        "imgsz": params.image_size,
+                    }
+                    if precision == "fp16":
+                        export_kwargs["half"] = True
+                    elif precision == "int8":
+                        export_kwargs["int8"] = True
+                        export_kwargs["data"] = data_yaml_path
+
+                    exported_path = Path(model.export(**export_kwargs))
+
+                    if not exported_path.exists():
+                        self._logger.warning(
+                            "Export produced no file for %s", label
+                        )
+                        continue
+
+                    # Upload to S3
+                    s3_key = f"{base_key}/{exported_path.name}"
+                    self._upload_to_s3(
+                        exported_path, params.checkpoint_bucket, s3_key
+                    )
+                    s3_uri = f"s3://{params.checkpoint_bucket}/{s3_key}"
+                    exported[label] = s3_uri
+                    self._logger.info("Uploaded %s to %s", label, s3_uri)
+
+                    # Log as MLflow artifact (run is closed, use MlflowClient)
+                    self._log_mlflow_artifact(
+                        exported_path,
+                        run_id=mlflow_run_id,
+                        artifact_path="exports",
+                    )
+
+                except Exception as exc:  # noqa: BLE001
+                    self._logger.error(
+                        "Export failed for %s: %s", label, exc
+                    )
+
+        return exported
+
+    @staticmethod
+    def _log_mlflow_artifact(
+        local_path: Path, run_id: str, artifact_path: str
+    ) -> None:
+        """Log a file as an MLflow artifact via MlflowClient (works on ended runs)."""
+        if not run_id:
+            return
+        try:
+            from mlflow.tracking import MlflowClient  # noqa: PLC0415
+
+            MlflowClient().log_artifact(
+                run_id, str(local_path), artifact_path=artifact_path
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("Failed to log artifact to MLflow: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Post-training test-set evaluation
+    # ------------------------------------------------------------------
+
+    def _evaluate_on_test_set(
+        self,
+        yolo_cls: Any,
+        params: TrainingParams,
+        save_dir: Path,
+        data_yaml_path: str,
+        tmp_path: Path,
+    ) -> None:
+        """Evaluate best.pt and last.pt on the test split and log to MLflow.
+
+        Reporting only — never fails the run.  Skipped with a warning if
+        the test split is not available for the current dataset source
+        mode (local: ``images/test/`` absent or empty; S3 streaming: no
+        ``test`` key in ``dataset_manifest.json``).
+
+        In S3 streaming modes the evaluation uses a configured
+        :class:`S3PoseValidator` so images (and optionally labels) are
+        streamed from S3 exactly as they are during training.
+        """
+        if not self._is_test_split_available(params):
+            self._logger.warning(
+                "Test split not available in source=%s mode; "
+                "skipping post-training evaluation.",
+                params.source,
+            )
+            return
+
+        mlflow_run_id = self._get_mlflow_run_id()
+
+        s3_validator_cls: Any = None
+        if params.source == "s3":
+            from app.services.s3_pose_validator import (  # noqa: PLC0415
+                make_s3_pose_validator,
+            )
+
+            cache_dir = str(tmp_path / "s3_val_cache")
+            labels_root = str(Path(params.dataset_dir).resolve() / "labels")
+            s3_labels_prefix = params.s3_prefix if params.s3_stream_labels else None
+            s3_validator_cls = make_s3_pose_validator(
+                s3_client=self._s3,
+                s3_bucket=params.s3_bucket,  # type: ignore[arg-type]
+                s3_prefix=params.s3_prefix,  # type: ignore[arg-type]
+                local_labels_root=labels_root,
+                s3_labels_prefix=s3_labels_prefix,
+                cache_dir=cache_dir,
+                cache_max_bytes=params.disk_cache_bytes,
+            )
+            self._logger.info(
+                "Test evaluation will stream from s3://%s/%s",
+                params.s3_bucket,
+                params.s3_prefix,
+            )
+
+        weights_dir = save_dir / "weights"
+        checkpoints: list[tuple[str, Path]] = [
+            ("best", weights_dir / "best.pt"),
+            ("last", weights_dir / "last.pt"),
+        ]
+
+        for label, ckpt_path in checkpoints:
+            if not ckpt_path.exists():
+                self._logger.warning(
+                    "Checkpoint %s not found; skipping test evaluation for '%s'.",
+                    ckpt_path,
+                    label,
+                )
+                continue
+
+            try:
+                self._logger.info(
+                    "Evaluating %s on test split (checkpoint=%s)", label, ckpt_path
+                )
+                eval_model = yolo_cls(str(ckpt_path))
+                val_kwargs: dict[str, Any] = {
+                    "data": data_yaml_path,
+                    "split": "test",
+                    "imgsz": params.image_size,
+                    "batch": params.batch_size,
+                    "device": params.device,
+                    "project": str(tmp_path / "test_eval"),
+                    "name": label,
+                    "plots": True,
+                    "save_json": False,
+                }
+                if s3_validator_cls is not None:
+                    val_kwargs["validator"] = s3_validator_cls
+                results = eval_model.val(**val_kwargs)
+
+                self._log_test_eval_results(
+                    label=label,
+                    results=results,
+                    run_id=mlflow_run_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning(
+                    "Test evaluation for '%s' failed (non-fatal): %s",
+                    label,
+                    exc,
+                )
+
+    def _is_test_split_available(self, params: TrainingParams) -> bool:
+        """Return True iff a test split is reachable under the current mode."""
+        if params.source == "local":
+            test_dir = Path(params.dataset_dir) / "images" / "test"
+            if not test_dir.is_dir():
+                return False
+            return any(
+                f.suffix.lower() in _IMAGE_EXTENSIONS for f in test_dir.iterdir()
+            )
+
+        # S3 streaming — consult dataset_manifest.json
+        manifest_path = Path(params.dataset_dir) / _MANIFEST_FILENAME
+        if not manifest_path.exists():
+            return False
+        try:
+            with manifest_path.open() as fh:
+                raw = json.load(fh)
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(raw.get("splits", {}).get("test"))
+
+    def _log_test_eval_results(
+        self,
+        label: str,
+        results: Any,
+        run_id: str,
+    ) -> None:
+        """Log test-eval metrics and plot artifacts to the MLflow run."""
+        if not run_id:
+            self._logger.warning(
+                "No MLflow run_id available; skipping test metric logging for '%s'.",
+                label,
+            )
+            return
+
+        results_dict = getattr(results, "results_dict", None) or {}
+        metric_map = {
+            _METRIC_PRECISION: f"test/{label}/precision",
+            _METRIC_RECALL: f"test/{label}/recall",
+            _METRIC_MAP50: f"test/{label}/mAP50",
+            _METRIC_MAP50_95: f"test/{label}/mAP50_95",
+        }
+
+        try:
+            from mlflow.tracking import MlflowClient  # noqa: PLC0415
+
+            client = MlflowClient()
+            for src_key, mlflow_key in metric_map.items():
+                val = results_dict.get(src_key)
+                if val is None:
+                    continue
+                try:
+                    client.log_metric(run_id, mlflow_key, float(val))
+                except Exception as exc:  # noqa: BLE001
+                    self._logger.warning(
+                        "Failed to log metric %s: %s", mlflow_key, exc
+                    )
+
+            save_dir = getattr(results, "save_dir", None)
+            if save_dir is not None:
+                save_dir_path = Path(save_dir)
+                if save_dir_path.is_dir():
+                    artifact_path = f"eval/test/{label}"
+                    try:
+                        client.log_artifacts(
+                            run_id, str(save_dir_path), artifact_path=artifact_path
+                        )
+                        self._logger.info(
+                            "Logged test/%s metrics and %s artifacts to MLflow",
+                            label,
+                            artifact_path,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        self._logger.warning(
+                            "Failed to log test eval artifacts for '%s': %s",
+                            label,
+                            exc,
+                        )
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning(
+                "Failed to log test eval results for '%s': %s", label, exc
+            )
 
     # ------------------------------------------------------------------
     # GPU index parsing

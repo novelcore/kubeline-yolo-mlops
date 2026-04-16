@@ -1,8 +1,8 @@
 """Domain models for the YOLO model training step."""
 
-from typing import Optional
+from typing import ClassVar, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class AugmentationParams(BaseModel):
@@ -23,6 +23,43 @@ class AugmentationParams(BaseModel):
     copy_paste: float = Field(default=0.0, ge=0.0, le=1.0)
     erasing: float = Field(default=0.4, ge=0.0, le=0.9)
     bgr: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class ExportConfig(BaseModel):
+    """Post-training export and quantization configuration."""
+
+    enabled: bool = Field(default=False, description="Enable model export after training.")
+    formats: list[str] = Field(
+        default_factory=list,
+        description="Export formats: 'engine' (TensorRT), 'onnx'.",
+    )
+    precisions: list[str] = Field(
+        default_factory=list,
+        description="Precision levels: 'fp16', 'int8'.",
+    )
+
+    _VALID_FORMATS: ClassVar[set[str]] = {"engine", "onnx"}
+    _VALID_PRECISIONS: ClassVar[set[str]] = {"fp16", "int8"}
+
+    @field_validator("formats")
+    @classmethod
+    def formats_must_be_valid(cls, v: list[str]) -> list[str]:
+        invalid = set(v) - cls._VALID_FORMATS
+        if invalid:
+            raise ValueError(
+                f"Invalid export format(s): {invalid}. Valid: {cls._VALID_FORMATS}"
+            )
+        return v
+
+    @field_validator("precisions")
+    @classmethod
+    def precisions_must_be_valid(cls, v: list[str]) -> list[str]:
+        invalid = set(v) - cls._VALID_PRECISIONS
+        if invalid:
+            raise ValueError(
+                f"Invalid precision(s): {invalid}. Valid: {cls._VALID_PRECISIONS}"
+            )
+        return v
 
 
 class TrainingParams(BaseModel):
@@ -153,6 +190,9 @@ class TrainingParams(BaseModel):
     # ---- Augmentation ----
     augmentation: AugmentationParams = Field(default_factory=AugmentationParams)
 
+    # ---- Export / Quantization ----
+    export: ExportConfig = Field(default_factory=ExportConfig)
+
 
 class TrainingResult(BaseModel):
     """Outcome of a completed training run."""
@@ -165,3 +205,10 @@ class TrainingResult(BaseModel):
     epochs_completed: int
     final_map50: float
     final_map50_95: float
+    exported_models: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Map of export label to S3 URI, e.g. {'engine_fp16': 's3://...'}. "
+            "Empty when export is disabled."
+        ),
+    )

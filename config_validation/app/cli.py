@@ -28,6 +28,8 @@ def main() -> None:
         dataset_path_override: Optional[str] = typer.Option(default=None, help="Optional S3/LakeFS path override for the dataset."),
         dataset_sample_size: Optional[int] = typer.Option(default=None, help="Optional sample size (must be > 0)."),
         dataset_seed: int = typer.Option(default=42, help="Random seed for dataset splitting."),
+        dataset_labels_only: bool = typer.Option(default=False, help="Labels-only streaming: download labels + data.yaml; stream images from S3."),
+        dataset_manifest_only: bool = typer.Option(default=False, help="Manifest-only streaming: download only data.yaml; stream images and labels from S3."),
         # Model
         model_variant: str = typer.Option(..., help="YOLO Pose model variant (e.g. yolov8n-pose.pt)."),
         model_pretrained_weights: Optional[str] = typer.Option(default=None, help="Optional S3 path to pretrained weights."),
@@ -107,6 +109,8 @@ def main() -> None:
                     "path_override": dataset_path_override,
                     "sample_size": dataset_sample_size,
                     "seed": dataset_seed,
+                    "labels_only": dataset_labels_only,
+                    "manifest_only": dataset_manifest_only,
                 },
                 "model": {
                     "variant": model_variant,

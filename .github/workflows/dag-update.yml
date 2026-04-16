@@ -119,6 +119,8 @@ jobs:
               args += bool_flag('--training-cos-lr', tr.get('cos_lr', True))
               args += bool_flag('--training-amp', tr.get('amp', True))
               args += bool_flag('--training-deterministic', tr.get('deterministic', True))
+              args += bool_flag('--dataset-labels-only', ds.get('labels_only', False))
+              args += bool_flag('--dataset-manifest-only', ds.get('manifest_only', False))
               args += optional('--experiment-description', exp.get('description'))
               args += optional('--dataset-lakefs-repo', ds.get('lakefs_repo'))
               args += optional('--dataset-lakefs-branch', ds.get('lakefs_branch'))
@@ -141,6 +143,8 @@ jobs:
               args += optional('--lakefs-branch', ds.get('lakefs_branch'))
               args += optional('--path-override', ds.get('path_override'))
               args += optional('--sample-size', ds.get('sample_size'))
+              args += bool_flag('--labels-only', ds.get('labels_only', False))
+              args += bool_flag('--manifest-only', ds.get('manifest_only', False))
               return args
 
           def build_model_training_args(cfg):
@@ -200,6 +204,17 @@ jobs:
                   '--erasing', str(aug.get('erasing', 0.4)),
                   '--bgr', str(aug.get('bgr', 0.0)),
               ]
+              exp_cfg = cfg.get('export', {})
+              if exp_cfg.get('enabled', False):
+                  args += ['--export']
+                  fmts = exp_cfg.get('formats', [])
+                  if fmts:
+                      args += ['--export-formats', ','.join(str(f) for f in fmts)]
+                  precs = exp_cfg.get('precisions', [])
+                  if precs:
+                      args += ['--export-precisions', ','.join(str(p) for p in precs)]
+              else:
+                  args += ['--no-export']
               args += bool_flag('--cos-lr', tr.get('cos_lr', True))
               args += bool_flag('--amp', tr.get('amp', True))
               args += bool_flag('--deterministic', tr.get('deterministic', True))

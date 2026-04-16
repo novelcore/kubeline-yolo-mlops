@@ -163,6 +163,9 @@ class ModelRegistrationService:
             tags["model_variant"] = params.model_variant
         if params.best_map50 is not None:
             tags["best_mAP50"] = str(params.best_map50)
+        if params.exported_models:
+            for label, uri in params.exported_models.items():
+                tags[f"export_{label}"] = uri
 
         version_str = str(version)
         for key, value in tags.items():

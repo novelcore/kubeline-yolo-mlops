@@ -1,5 +1,5 @@
 import re
-from typing import Optional
+from typing import ClassVar, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -34,6 +34,13 @@ class DatasetConfig(BaseModel):
     lakefs_branch: Optional[str] = None
     sample_size: Optional[int] = None
     seed: int = 42
+    # ---- Streaming modes (mutually exclusive) ----
+    # When labels_only=true the dataset_loading step downloads labels + data.yaml
+    # and writes a dataset_manifest.json; images are streamed from S3 at train time.
+    # When manifest_only=true only data.yaml is downloaded; both images and labels
+    # are streamed from S3 at train time.
+    labels_only: bool = False
+    manifest_only: bool = False
 
     @field_validator("version", mode="after")
     @classmethod
@@ -85,6 +92,15 @@ class DatasetConfig(BaseModel):
                 raise ValueError(
                     "dataset.lakefs_branch is required when source='lakefs' and no path_override is set"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def streaming_modes_mutually_exclusive(self) -> "DatasetConfig":
+        if self.labels_only and self.manifest_only:
+            raise ValueError(
+                "dataset.labels_only and dataset.manifest_only are mutually exclusive; "
+                "set at most one of them to true."
+            )
         return self
 
 
@@ -276,6 +292,39 @@ class AugmentationConfig(BaseModel):
     bgr: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
+class ExportConfig(BaseModel):
+    """Post-training export and quantization configuration."""
+
+    enabled: bool = False
+    formats: list[str] = Field(default_factory=list)
+    precisions: list[str] = Field(default_factory=list)
+
+    _VALID_FORMATS: ClassVar[set[str]] = {"engine", "onnx"}
+    _VALID_PRECISIONS: ClassVar[set[str]] = {"fp16", "int8"}
+
+    @field_validator("formats")
+    @classmethod
+    def formats_must_be_valid(cls, v: list[str]) -> list[str]:
+        invalid = set(v) - cls._VALID_FORMATS
+        if invalid:
+            raise ValueError(
+                f"export.formats contains invalid format(s): {invalid}. "
+                f"Valid: {cls._VALID_FORMATS}"
+            )
+        return v
+
+    @field_validator("precisions")
+    @classmethod
+    def precisions_must_be_valid(cls, v: list[str]) -> list[str]:
+        invalid = set(v) - cls._VALID_PRECISIONS
+        if invalid:
+            raise ValueError(
+                f"export.precisions contains invalid precision(s): {invalid}. "
+                f"Valid: {cls._VALID_PRECISIONS}"
+            )
+        return v
+
+
 class PipelineConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")  # silently drops resources section
 
@@ -286,3 +335,4 @@ class PipelineConfig(BaseModel):
     checkpointing: CheckpointingConfig
     early_stopping: EarlyStoppingConfig
     augmentation: AugmentationConfig = Field(default_factory=AugmentationConfig)
+    export: ExportConfig = Field(default_factory=ExportConfig)

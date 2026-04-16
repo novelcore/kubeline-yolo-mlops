@@ -13,7 +13,12 @@ from botocore.config import Config as BotoConfig
 
 from app.logger import setup_logging
 from app.models.config import Config
-from app.models.training import AugmentationParams, TrainingParams, TrainingResult
+from app.models.training import (
+    AugmentationParams,
+    ExportConfig,
+    TrainingParams,
+    TrainingResult,
+)
 from app.services.model_training import TrainingService
 
 
@@ -144,6 +149,10 @@ class Manager:
         copy_paste: float,
         erasing: float,
         bgr: float,
+        # Export / Quantization
+        export_enabled: bool = False,
+        export_formats: Optional[str] = None,
+        export_precisions: Optional[str] = None,
     ) -> TrainingResult:
         """Execute the model training step end-to-end.
 
@@ -215,16 +224,22 @@ class Manager:
                 erasing=erasing,
                 bgr=bgr,
             ),
+            export=ExportConfig(
+                enabled=export_enabled,
+                formats=export_formats.split(",") if export_formats else [],
+                precisions=export_precisions.split(",") if export_precisions else [],
+            ),
         )
 
         result = self._service.run(params=params)
 
         self._logger.info(
-            "Training finished | run_id=%s mAP50=%.4f mAP50-95=%.4f best=%s",
+            "Training finished | run_id=%s mAP50=%.4f mAP50-95=%.4f best=%s exports=%d",
             result.mlflow_run_id,
             result.final_map50,
             result.final_map50_95,
             result.best_checkpoint_s3,
+            len(result.exported_models),
         )
 
         return result
