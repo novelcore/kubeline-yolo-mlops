@@ -180,6 +180,20 @@ def main() -> None:
             0.4, help="Random erasing probability [0.0, 0.9]."
         ),
         bgr: float = typer.Option(0.0, help="BGR channel flip probability."),
+        # ---- Export / Quantization ----
+        export: bool = typer.Option(
+            False,
+            "--export/--no-export",
+            help="Enable post-training model export (TensorRT/ONNX).",
+        ),
+        export_formats: Optional[str] = typer.Option(
+            None,
+            help="Comma-separated export formats: 'engine' (TensorRT), 'onnx'. Requires --export.",
+        ),
+        export_precisions: Optional[str] = typer.Option(
+            None,
+            help="Comma-separated precisions: 'fp16', 'int8'. Requires --export.",
+        ),
     ) -> None:
         try:
             manager = Manager()
@@ -238,6 +252,9 @@ def main() -> None:
                 copy_paste=copy_paste,
                 erasing=erasing,
                 bgr=bgr,
+                export_enabled=export,
+                export_formats=export_formats,
+                export_precisions=export_precisions,
             )
             result_path = os.path.join(output_dir, "training_result.json")
             with open(result_path, "w") as f:

@@ -43,6 +43,7 @@ class Manager:
         git_commit: Optional[str] = None,
         model_variant: Optional[str] = None,
         best_map50: Optional[float] = None,
+        exported_models: Optional[dict[str, str]] = None,
     ) -> RegistrationResult:
         """Execute the model registration step."""
         self._logger.info(
@@ -65,6 +66,7 @@ class Manager:
             git_commit=git_commit,
             model_variant=model_variant,
             best_map50=best_map50,
+            exported_models=exported_models,
         )
 
         try:

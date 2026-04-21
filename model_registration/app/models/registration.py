@@ -39,6 +39,13 @@ class RegistrationParams(BaseModel):
     best_map50: Optional[float] = Field(
         default=None, description="Best validation mAP50 from training"
     )
+    exported_models: Optional[dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Map of export labels to S3 URIs from the training step, "
+            "e.g. {'engine_fp16': 's3://...', 'onnx_fp16': 's3://...'}."
+        ),
+    )
 
 
 class RegistrationResult(BaseModel):
