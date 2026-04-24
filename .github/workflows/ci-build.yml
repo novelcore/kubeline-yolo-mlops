@@ -53,7 +53,7 @@ jobs:
   build-and-push:
     needs: detect-changes
     if: needs.detect-changes.outputs.has_changes == 'true'
-    runs-on: [self-hosted, Linux, X64, novecore-1]
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         step: ${{ fromJson(needs.detect-changes.outputs.changed_steps) }}
