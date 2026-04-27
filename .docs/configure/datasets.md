@@ -81,6 +81,8 @@ When submitting a workflow, set these parameters:
 
 The lakeFS repository and branch are pre-filled by the platform. The pipeline constructs the S3 path automatically from the version you provide.
 
+See [Uploading Data to LakeFS](upload-to-lakefs.md) for a step-by-step guide to getting your dataset into a LakeFS branch.
+
 ### Option 2: Direct S3
 
 Point directly to an S3 path using the `dataset-path-override` parameter:

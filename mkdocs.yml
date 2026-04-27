@@ -118,6 +118,7 @@ nav:
       - Overview: configure/index.md
       - Parameter Reference: configure/pipeline-config.md
       - Datasets: configure/datasets.md
+      - Uploading Data to LakeFS: configure/upload-to-lakefs.md
   - Run a Pipeline:
       - Argo Workflows UI: run/argo-ui.md
       - GitHub PR: run/github-pr.md
