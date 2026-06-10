@@ -17,3 +17,5 @@ dist/
 htmlcov/
 
 artifacts/
+# Local MLflow tracking DB — never commit (contains run/experiment metadata)
+mlflow.db
