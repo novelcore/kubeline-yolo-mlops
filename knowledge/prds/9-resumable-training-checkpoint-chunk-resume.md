@@ -12,7 +12,7 @@ topics:
   - dataset-chunking
   - fault-tolerance
 phase: "Phase 1 — Pipeline Resilience"
-business_gate: "Infinite Orbits training pipeline hardening"
+business_gate: "KAOS YOLO training pipeline hardening"
 owner: "meter-peter"
 github_issue: 9
 last_updated: 2026-06-10
@@ -28,7 +28,7 @@ extracted_chunks:
 
 ## 1. Business Context
 
-YOLO pose training for the Infinite Orbits project runs as a four-step Argo Workflow (`config_validation` → `dataset_loading` → `model_training` → `model_registration`) on GPU nodes. A full schedule is 100 epochs on A100-class hardware, taking many hours. When a training pod dies — node preemption, OOM kill, network fault, image-pull failure — the workflow fails terminally. The only recovery path today is a manual resubmission, which by default restarts at epoch zero and re-downloads the entire dataset. Periodic checkpoints are already uploaded to S3 every N epochs, but no platform component consumes them automatically: the existing `checkpointing.resume_from` knob requires an engineer to hand-edit the pipeline YAML and resubmit. Every restart-from-zero is directly visible as duplicated GPU spend, and the risk grows linearly with schedule length, blocking the move to larger datasets and preemptible (spot) GPU node groups. This PRD makes resume a first-class workflow capability: automatic on pod failure, and explicitly requestable at submission time.
+YOLO pose training for the KAOS YOLO project runs as a four-step Argo Workflow (`config_validation` → `dataset_loading` → `model_training` → `model_registration`) on GPU nodes. A full schedule is 100 epochs on A100-class hardware, taking many hours. When a training pod dies — node preemption, OOM kill, network fault, image-pull failure — the workflow fails terminally. The only recovery path today is a manual resubmission, which by default restarts at epoch zero and re-downloads the entire dataset. Periodic checkpoints are already uploaded to S3 every N epochs, but no platform component consumes them automatically: the existing `checkpointing.resume_from` knob requires an engineer to hand-edit the pipeline YAML and resubmit. Every restart-from-zero is directly visible as duplicated GPU spend, and the risk grows linearly with schedule length, blocking the move to larger datasets and preemptible (spot) GPU node groups. This PRD makes resume a first-class workflow capability: automatic on pod failure, and explicitly requestable at submission time.
 
 ## 2. Problem Statement
 
