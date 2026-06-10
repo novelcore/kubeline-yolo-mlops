@@ -117,7 +117,7 @@ mlflow.set_tags({
     "dataset.yaml": dataset_yaml,
     "training.device": config.device,
     "pipeline.step": "model_training",
-    "project": "infinite-orbits",
+    "project": "kaos-yolo",
 })
 ```
 

@@ -59,7 +59,7 @@ Both error codes are required in the inline comment when torch is not installed 
 
 ## Config env vars (required)
 - `MLFLOW_TRACKING_URI` — required, no default
-- `MLFLOW_EXPERIMENT_NAME` — default `"infinite-orbits"`
+- `MLFLOW_EXPERIMENT_NAME` — default `"kaos-yolo"`
 - `REGISTERED_MODEL_NAME` — default `"spacecraft-pose-yolo"`
 
 ## MLflow model name convention

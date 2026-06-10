@@ -3,7 +3,7 @@
 
 | | |
 |---|---|
-| **Client** | Infinite Orbits |
+| **Client** | Novelcore |
 | **Vendor** | Novelcore (Platform Team + ML Team) |
 | **Document Type** | Technical Architecture — Phase 1 |
 | **Parent Document** | MLOps Training Pipeline — Phase 1 PRD |
@@ -416,7 +416,7 @@ experiment:
   name: "spacecraft-pose-v1-yolov8n"          # Required. Used as MLflow experiment name
   description: "Baseline YOLOv8n-pose on SPEED+ synthetic full dataset"
   tags:                                        # Optional. Logged to MLflow
-    project: "infinite-orbits"
+    project: "kaos-yolo"
     phase: "1"
     
 # --- Dataset Configuration ---

@@ -1,4 +1,4 @@
-# Infinite Orbits MLOps Pipeline
+# KAOS YOLO MLOps Pipeline
 
 An Argo Workflows-based MLOps pipeline for training YOLO pose-estimation models for spacecraft detection. Built with the **Kubestep Python Template** pattern — four independent, containerized Python steps running sequentially.
 
