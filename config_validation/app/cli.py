@@ -11,7 +11,7 @@ def main() -> None:
     """Main CLI entry point for the Config Validation step."""
     app = typer.Typer(
         name="config-validation",
-        help="Validate the Infinite Orbits MLOps pipeline configuration.",
+        help="Validate the KAOS YOLO MLOps pipeline configuration.",
         no_args_is_help=True,
     )
 

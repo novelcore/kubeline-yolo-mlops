@@ -8,7 +8,7 @@ VALID_CONFIG: dict = {
     "experiment": {
         "name": "spacecraft-pose-v1-yolov8n",
         "description": "Baseline run",
-        "tags": {"project": "infinite-orbits", "phase": "1"},
+        "tags": {"project": "kaos-yolo", "phase": "1"},
     },
     "dataset": {
         "version": "v1",

@@ -10,7 +10,7 @@ sidecar behind oauth2-proxy injects Basic auth to LakeFS on every request.
 Env vars:
     LAKEFS_URL        e.g. https://lakefs-sso-test.ml-training.kaos.io.kubecore.eu
     LAKEFS_COOKIE     the raw value of the _lakefs_oauth2 cookie from the browser
-    LAKEFS_REPO       e.g. infinite-orbits-yolo
+    LAKEFS_REPO       e.g. kaos-yolo
     LAKEFS_BRANCH     e.g. main
     LOCAL_DIR         absolute path to the local tree to upload
     UPLOAD_PREFIX     optional prefix in the repo (default: dataset)

@@ -3,7 +3,7 @@ experiment:
   name: "spacecraft-pose-toy-1k"
   description: "Toy run with 1000 samples for pipeline smoke-test"
   tags:
-    project: "infinite-orbits"
+    project: "kaos-yolo"
     phase: "toy"
 
 dataset:

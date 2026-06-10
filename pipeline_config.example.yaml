@@ -3,7 +3,7 @@ experiment:
   name: "spacecraft-pose-v1-yolov8n"
   description: "Baseline YOLOv8n-pose on SPEED+ synthetic full dataset"
   tags:
-    project: "infinite-orbits"
+    project: "kaos-yolo"
     phase: "1"
 
 # --- Dataset Configuration ---
