@@ -72,8 +72,8 @@ If `_DOWNLOAD_WORKERS >= 14`, ALL files submit simultaneously and the test asser
 
 ## Dataset Constants
 - Default bucket: `temp-mlops`
-- Default prefix: `datasets/speedplus_yolo/{version}/`
-- kpt_shape: `[11, 3]` (11 spacecraft keypoints, 3D with visibility)
+- Default prefix: `datasets/sample_pose_yolo/{version}/`
+- kpt_shape: `[11, 3]` (11 object keypoints, 3D with visibility)
 - Expected tokens per label line: 38 (1 class + 4 bbox + 11*3 keypoints)
 - Required splits: `train`, `val` — `test` is optional per Ultralytics
 

@@ -105,7 +105,7 @@ def dataset_dir(tmp_path: Path) -> str:
     d.mkdir()
     (d / "data.yaml").write_text(
         "path: /tmp/dataset\ntrain: images/train\nval: images/val\n"
-        "test: images/test\nkpt_shape: [11, 3]\nnames: {0: spacecraft}\n"
+        "test: images/test\nkpt_shape: [11, 3]\nnames: {0: object}\n"
     )
     # Create image directories with at least one file so local validation passes
     for split in ("train", "val"):
@@ -500,7 +500,7 @@ class TestWriteDataYaml:
 
         assert content["path"] == str(dataset_no_yaml.resolve())
         assert "kpt_shape" in content
-        assert content["names"] == {0: "spacecraft"}
+        assert content["names"] == {0: "object"}
 
 
 # ---------------------------------------------------------------------------

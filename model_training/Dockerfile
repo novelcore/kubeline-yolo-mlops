@@ -26,7 +26,7 @@ RUN poetry config virtualenvs.create false \
 # Usage:
 #   docker run io-model-training run \
 #     --model-variant yolov8n-pose.pt \
-#     --experiment-name spacecraft-pose-v1-yolov8n \
+#     --experiment-name object-pose-v1-yolov8n \
 #     --dataset-dir /data/dataset \
 #     --output-dir /artifacts/runs \
 #     --source local

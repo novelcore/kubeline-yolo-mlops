@@ -1,6 +1,6 @@
 # KAOS YOLO MLOps Pipeline Template
 
-An Argo Workflows-based MLOps pipeline for the Infinite Orbits project, built with the Kubestep Python Template pattern.
+An Argo Workflows-based MLOps pipeline for the Example Org project, built with the Kubestep Python Template pattern.
 
 ## Pipeline Steps
 
@@ -14,7 +14,7 @@ The pipeline consists of four sequential steps, each packaged as an independent 
 ## Project Structure
 
 ```
-infinite-orbits-mlops/
+example-project-mlops/
 ├── config_validation/      # Step 1: Validate pipeline config
 │   ├── app/
 │   ├── tests/

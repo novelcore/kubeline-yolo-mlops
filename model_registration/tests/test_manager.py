@@ -14,10 +14,10 @@ from app.models.config import Config
 from app.models.registration import RegistrationResult
 
 TRACKING_URI = "http://mlflow.test.local:5000"
-MODEL_NAME = "spacecraft-pose-yolo"
+MODEL_NAME = "object-pose-yolo"
 RUN_ID = "run123"
-BEST_S3 = "s3://io-mlops/checkpoints/exp/best.pt"
-LAST_S3 = "s3://io-mlops/checkpoints/exp/last.pt"
+BEST_S3 = "s3://mlops-artifacts/checkpoints/exp/best.pt"
+LAST_S3 = "s3://mlops-artifacts/checkpoints/exp/last.pt"
 
 
 @pytest.fixture

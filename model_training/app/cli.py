@@ -33,7 +33,7 @@ def main() -> None:
             ...,
             help=(
                 "MLflow experiment name and S3 checkpoint path prefix "
-                "(e.g. 'spacecraft-pose-v1-yolov8n')."
+                "(e.g. 'object-pose-v1-yolov8n')."
             ),
         ),
         dataset_dir: str = typer.Option(

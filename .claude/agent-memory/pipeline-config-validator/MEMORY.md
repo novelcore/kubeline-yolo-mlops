@@ -51,8 +51,8 @@ See `patterns.md` for full exclusion rationale. Key exclusions:
 - `auto_augment` — conflicts with individual augmentation parameter tuning
 - `crop_fraction` — classification-only
 
-## Spacecraft-Specific Defaults
-- `fliplr: 0.0` — satellites have no left-right symmetry in canonical pose
+## Object-Specific Defaults
+- `fliplr: 0.0` — objects have no left-right symmetry in canonical pose
 - `flipud: 0.0` — orbital geometry has a defined "up"
 - `degrees: 0.0` — pose labels are rotation-sensitive
 - `perspective: 0.0` — keep near 0; >0.001 invalidates keypoint geometry

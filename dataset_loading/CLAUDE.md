@@ -52,7 +52,7 @@ The Manager selects credentials based on what's configured:
 ### Source resolution
 
 - If `--path-override` is provided, parses it as `s3://bucket/prefix/`
-- Otherwise uses default bucket `temp-mlops` with prefix `datasets/speedplus_yolo/{version}/`
+- Otherwise uses default bucket `temp-mlops` with prefix `datasets/sample_pose_yolo/{version}/`
 
 ### Validation rules
 
@@ -66,7 +66,7 @@ The Manager selects credentials based on what's configured:
 
 - `SPLITS = ("train", "val", "test")`
 - `SUPPORTED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}`
-- `_EXPECTED_TOKENS_PER_LINE = 38` — YOLO pose format for spacecraft (11 keypoints)
+- `_EXPECTED_TOKENS_PER_LINE = 38` — YOLO pose format for object (11 keypoints)
 - `_DEFAULT_BUCKET = "temp-mlops"`
 
 ## Testing Patterns

@@ -10,7 +10,7 @@ sidecar behind oauth2-proxy injects Basic auth to LakeFS on every request.
 Env vars:
     LAKEFS_URL        e.g. https://lakefs-sso-test.ml-training.kaos.io.kubecore.eu
     LAKEFS_COOKIE     the raw value of the _lakefs_oauth2 cookie from the browser
-    LAKEFS_REPO       e.g. infinite-orbits-yolo
+    LAKEFS_REPO       e.g. example-project-yolo
     LAKEFS_BRANCH     e.g. main
     LOCAL_DIR         absolute path to the local tree to upload
     UPLOAD_PREFIX     optional prefix in the repo (default: dataset)
@@ -167,7 +167,7 @@ def main() -> None:
     print("Committing...")
     r = session.post(
         f"{LAKEFS_URL}/api/v1/repositories/{LAKEFS_REPO}/branches/{LAKEFS_BRANCH}/commits",
-        json={"message": f"Add speedplus_yolo dataset ({total} files)"},
+        json={"message": f"Add sample_pose_yolo dataset ({total} files)"},
         timeout=600,
         allow_redirects=False,
     )

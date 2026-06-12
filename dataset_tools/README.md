@@ -344,7 +344,7 @@ different one:
 print("Committing...")
 r = session.post(
     f"{LAKEFS_URL}/api/v1/repositories/{LAKEFS_REPO}/branches/{LAKEFS_BRANCH}/commits",
-    json={"message": f"Add speedplus_yolo dataset ({total} files)"},
+    json={"message": f"Add sample_pose_yolo dataset ({total} files)"},
     timeout=600,
     allow_redirects=False,
 )
@@ -393,7 +393,7 @@ Committed. id=e9f56e7d6bcac9cbdcded22a503eeafcb5fe10ccfacefee76d9bd5500585b0d0
   same path, so this is safe but wasteful for large datasets).
 - **All-or-nothing commit.** Any single upload failure aborts the commit step;
   partially-uploaded objects remain on the branch as uncommitted changes.
-- **Hardcoded commit message.** Currently `"Add speedplus_yolo dataset (N files)"`.
+- **Hardcoded commit message.** Currently `"Add sample_pose_yolo dataset (N files)"`.
   Edit the script source if you need a different message.
 - **Cookie-based auth.** Convenient for one-off interactive runs; not suitable
   for unattended automation. For scheduled jobs, use LakeFS access keys against

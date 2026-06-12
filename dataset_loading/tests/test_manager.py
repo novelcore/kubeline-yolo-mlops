@@ -44,7 +44,7 @@ def _build_minimal_yolo_tree(root: Path, n: int = 2) -> None:
         "test": "images/test",
         "kpt_shape": [11, 3],
         "flip_idx": [],
-        "names": {0: "spacecraft"},
+        "names": {0: "object"},
     }
     (root / "data.yaml").write_text(yaml.dump(data))
 

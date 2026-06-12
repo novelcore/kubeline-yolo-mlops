@@ -10,7 +10,7 @@ from app.models.pipeline_config import PipelineConfig
 
 VALID_CONFIG: dict = {
     "experiment": {
-        "name": "spacecraft-pose-v1-yolov8n",
+        "name": "object-pose-v1-yolov8n",
         "description": "Baseline run",
     },
     "dataset": {
@@ -32,7 +32,7 @@ VALID_CONFIG: dict = {
     },
     "checkpointing": {
         "interval_epochs": 10,
-        "storage_path": "s3://io-mlops/checkpoints",
+        "storage_path": "s3://mlops-artifacts/checkpoints",
         "resume_from": None,
     },
     "early_stopping": {
@@ -75,7 +75,7 @@ def service_with_liveness(mock_s3) -> ConfigValidationService:
 def test_valid_config_returns_pipeline_config(service_no_liveness):
     result = service_no_liveness.run(VALID_CONFIG)
     assert isinstance(result, PipelineConfig)
-    assert result.experiment.name == "spacecraft-pose-v1-yolov8n"
+    assert result.experiment.name == "object-pose-v1-yolov8n"
 
 
 def test_valid_config_prints_success(service_no_liveness, capfd):
@@ -95,7 +95,7 @@ def test_output_written_to_file(service_no_liveness, tmp_path):
     service_no_liveness.run(VALID_CONFIG, output_path=str(out))
     assert out.exists()
     data = json.loads(out.read_text())
-    assert data["experiment"]["name"] == "spacecraft-pose-v1-yolov8n"
+    assert data["experiment"]["name"] == "object-pose-v1-yolov8n"
 
 
 def test_output_path_parent_dirs_created(service_no_liveness, tmp_path):
@@ -128,7 +128,7 @@ def test_dataset_path_check_calls_list_objects(service_with_liveness, mock_s3, m
 
     calls = mock_s3.list_objects_v2.call_args_list
     assert any(
-        "io-mlops" in str(call) and "dataset" in str(call)
+        "mlops-artifacts" in str(call) and "dataset" in str(call)
         for call in calls
     )
 
@@ -191,7 +191,7 @@ def test_resume_from_auto_found_passes(mocker):
     mock_s3.list_objects_v2.return_value = {
         "KeyCount": 1,
         "Contents": [
-            {"Key": "spacecraft-pose-v1-yolov8n/last.pt", "LastModified": datetime.now(timezone.utc)}
+            {"Key": "object-pose-v1-yolov8n/last.pt", "LastModified": datetime.now(timezone.utc)}
         ],
     }
     mocker.patch("app.services.config_validation.httpx.get").return_value = MagicMock(is_success=True)
@@ -227,7 +227,7 @@ def test_resume_from_specific_path_found_passes(mocker):
     config = dict(VALID_CONFIG)
     config["checkpointing"] = {
         **VALID_CONFIG["checkpointing"],
-        "resume_from": "s3://io-mlops/checkpoints/exp/last.pt",
+        "resume_from": "s3://mlops-artifacts/checkpoints/exp/last.pt",
     }
 
     mock_s3 = MagicMock()
@@ -248,7 +248,7 @@ def test_resume_from_specific_path_not_found_raises_error(mocker):
     config = dict(VALID_CONFIG)
     config["checkpointing"] = {
         **VALID_CONFIG["checkpointing"],
-        "resume_from": "s3://io-mlops/checkpoints/exp/last.pt",
+        "resume_from": "s3://mlops-artifacts/checkpoints/exp/last.pt",
     }
 
     mock_s3 = MagicMock()
@@ -279,7 +279,7 @@ def test_pretrained_weights_none_skips_s3_check(service_with_liveness, mock_s3, 
 
 def test_pretrained_weights_s3_path_checked(mocker):
     config = dict(VALID_CONFIG)
-    config["model"] = {**VALID_CONFIG["model"], "pretrained_weights": "s3://io-mlops/weights/custom.pt"}
+    config["model"] = {**VALID_CONFIG["model"], "pretrained_weights": "s3://mlops-artifacts/weights/custom.pt"}
 
     mock_s3 = MagicMock()
     mock_s3.list_objects_v2.return_value = {"KeyCount": 1}
@@ -292,4 +292,4 @@ def test_pretrained_weights_s3_path_checked(mocker):
     )
     svc.run(config)
 
-    mock_s3.head_object.assert_called_once_with(Bucket="io-mlops", Key="weights/custom.pt")
+    mock_s3.head_object.assert_called_once_with(Bucket="mlops-artifacts", Key="weights/custom.pt")
