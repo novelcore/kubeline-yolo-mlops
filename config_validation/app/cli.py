@@ -89,6 +89,15 @@ def main() -> None:
         aug_copy_paste: float = typer.Option(default=0.0, help="Segment copy-paste probability."),
         aug_erasing: float = typer.Option(default=0.4, help="Random erasing probability [0.0, 0.9]."),
         aug_bgr: float = typer.Option(default=0.0, help="BGR channel flip probability."),
+        # Registration
+        registration_registered_model_name: Optional[str] = typer.Option(
+            default=None,
+            help="MLflow registered model name (alphanumeric, hyphens, underscores, dots).",
+        ),
+        registration_promote_to: Optional[str] = typer.Option(
+            default=None,
+            help="MLflow alias to assign after registration: 'champion' or 'challenger'.",
+        ),
         # Output
         output_path: Optional[str] = typer.Option(
             default=None,
@@ -166,6 +175,11 @@ def main() -> None:
                     "copy_paste": aug_copy_paste,
                     "erasing": aug_erasing,
                     "bgr": aug_bgr,
+                },
+                # Coerce shell-serialised "null" → Python None (T-01 mitigation)
+                "registration": {
+                    "registered_model_name": registration_registered_model_name if registration_registered_model_name != "null" else None,
+                    "promote_to": registration_promote_to if registration_promote_to != "null" else None,
                 },
             }
 

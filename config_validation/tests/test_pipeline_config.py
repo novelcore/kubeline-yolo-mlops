@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.models.pipeline_config import PipelineConfig
+from app.models.pipeline_config import PipelineConfig, RegistrationConfig
 
 
 VALID_CONFIG: dict = {
@@ -274,3 +274,59 @@ def test_missing_dataset_version_fails():
     data["dataset"] = {k: v for k, v in VALID_CONFIG["dataset"].items() if k != "version"}
     with pytest.raises(ValidationError):
         PipelineConfig(**data)
+
+
+# ---------------------------------------------------------------------------
+# RegistrationConfig — model-level validation (F-01, F-02, F-03)
+# ---------------------------------------------------------------------------
+
+class TestRegistrationConfig:
+    """Validation rules for RegistrationConfig and its integration with PipelineConfig."""
+
+    def test_defaults_are_none(self) -> None:
+        """Both fields default to None — no required fields (CON-02)."""
+        r = RegistrationConfig()
+        assert r.registered_model_name is None
+        assert r.promote_to is None
+
+    def test_promote_to_champion_is_valid(self) -> None:
+        r = RegistrationConfig(promote_to="champion")
+        assert r.promote_to == "champion"
+
+    def test_promote_to_challenger_is_valid(self) -> None:
+        r = RegistrationConfig(promote_to="challenger")
+        assert r.promote_to == "challenger"
+
+    def test_promote_to_invalid_value_fails(self) -> None:
+        """AC-01: any value outside champion/challenger is rejected at parse time."""
+        with pytest.raises(ValidationError, match="champion"):
+            RegistrationConfig(promote_to="invalid-value")
+
+    def test_registered_model_name_valid_characters(self) -> None:
+        r = RegistrationConfig(registered_model_name="my-yolo-model_v1.0")
+        assert r.registered_model_name == "my-yolo-model_v1.0"
+
+    def test_registered_model_name_with_slash_fails(self) -> None:
+        """AC-07: slash is not an MLflow-safe character."""
+        with pytest.raises(ValidationError, match="invalid characters"):
+            RegistrationConfig(registered_model_name="bad/name")
+
+    def test_extra_key_is_rejected(self) -> None:
+        """extra='forbid' catches typos like 'promoteto' (OQ-02 / T-03 mitigation)."""
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            RegistrationConfig(promoteto="champion")
+
+    def test_pipeline_config_without_registration_section_uses_defaults(self) -> None:
+        """AC-02: omitting registration: entirely is backward-compatible (CON-02)."""
+        config = PipelineConfig(**VALID_CONFIG)
+        assert config.registration.registered_model_name is None
+        assert config.registration.promote_to is None
+
+    def test_pipeline_config_with_full_registration_section(self) -> None:
+        data = {**VALID_CONFIG, "registration": {
+            "registered_model_name": "my-yolo-model",
+            "promote_to": "champion",
+        }}
+        config = PipelineConfig(**data)
+        assert config.registration.registered_model_name == "my-yolo-model"
+        assert config.registration.promote_to == "champion"
