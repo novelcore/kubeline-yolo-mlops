@@ -199,8 +199,8 @@ pipeline:
       description: "Upload an intermediate checkpoint to S3 every N epochs."
 
     - name: checkpointing-storage-path
-      default: "s3://io-audio-text-data/upload-initial/checkpoints"
-      description: "S3 URI for checkpoint storage. Format: s3://<bucket>/<prefix>."
+      default: ""
+      description: "Override checkpoint location (s3://bucket/prefix). Empty = platform-derived (project lakeFS repository, main/checkpoints)."
 
     - name: checkpoint-resume-from
       default: ""
@@ -420,6 +420,27 @@ steps:
         early_stopping = cfg.get("early_stopping") or {}
         augmentation = cfg.get("augmentation") or {}
 
+        # Precedence: explicit param wins; empty param falls back to platform env.
+        # CHECKPOINT_BUCKET/CHECKPOINT_PREFIX are injected by render-wft from the
+        # k8smlapp pipeline-context (checkpoints.bucket = lakeFS repo, prefix =
+        # main/checkpoints). When both are absent the platform didn't inject them
+        # (legacy deployment or misconfiguration) and we fail loudly.
+        storage_path = str(checkpointing.get("storage_path", "") or "").strip()
+        if not storage_path:
+            ckpt_bucket = os.environ.get("CHECKPOINT_BUCKET", "").strip()
+            ckpt_prefix = os.environ.get("CHECKPOINT_PREFIX", "").strip()
+            if not ckpt_bucket:
+                print(
+                    "ERROR: checkpointing-storage-path is empty and CHECKPOINT_BUCKET env "
+                    "is not set. The platform should inject CHECKPOINT_BUCKET/CHECKPOINT_PREFIX "
+                    "from the project lakeFS repository via render-wft. Either set "
+                    "checkpointing-storage-path explicitly or ensure the k8smlapp composition "
+                    "version includes the checkpoints block in pipeline-context.yaml.",
+                    flush=True,
+                )
+                sys.exit(1)
+            storage_path = f"s3://{ckpt_bucket}/{ckpt_prefix}" if ckpt_prefix else f"s3://{ckpt_bucket}/main/checkpoints"
+
         flags = [
             "run",
             "--experiment-name", str(exp["name"]),
@@ -432,7 +453,7 @@ steps:
             "--training-learning-rate", str(training["learning_rate"]),
             "--training-optimizer", str(training["optimizer"]),
             "--checkpointing-interval-epochs", str(checkpointing["interval_epochs"]),
-            "--checkpointing-storage-path", str(checkpointing["storage_path"]),
+            "--checkpointing-storage-path", storage_path,
             "--early-stopping-patience", str(early_stopping["patience"]),
         ]
 
@@ -750,15 +771,30 @@ steps:
         augmentation = cfg.get("augmentation") or {}
         export_cfg = cfg.get("export") or {}
 
-        # Parse checkpoint bucket/prefix from checkpointing.storage_path
-        # Format: s3://<bucket>/<prefix>
-        storage_path = str(checkpointing.get("storage_path", ""))
-        checkpoint_bucket = "temp-mlops"
-        checkpoint_prefix = "checkpoints"
+        # Precedence: explicit param wins; empty param falls back to platform env.
+        # CHECKPOINT_BUCKET/CHECKPOINT_PREFIX are injected by render-wft from the
+        # k8smlapp pipeline-context. model-training takes --checkpoint-bucket and
+        # --checkpoint-prefix directly so no s3:// parsing is needed in that path.
+        storage_path = str(checkpointing.get("storage_path", "") or "").strip()
         if storage_path.startswith("s3://"):
+            # Explicit override: parse bucket/prefix from the s3:// URI.
             parts = storage_path[5:].split("/", 1)
             checkpoint_bucket = parts[0]
-            checkpoint_prefix = parts[1].rstrip("/") if len(parts) > 1 else "checkpoints"
+            checkpoint_prefix = parts[1].rstrip("/") if len(parts) > 1 else "main/checkpoints"
+        else:
+            # Platform-derived: use env vars injected by render-wft.
+            checkpoint_bucket = os.environ.get("CHECKPOINT_BUCKET", "").strip()
+            checkpoint_prefix = os.environ.get("CHECKPOINT_PREFIX", "main/checkpoints").strip()
+            if not checkpoint_bucket:
+                print(
+                    "ERROR: checkpointing-storage-path is empty and CHECKPOINT_BUCKET env "
+                    "is not set. The platform should inject CHECKPOINT_BUCKET/CHECKPOINT_PREFIX "
+                    "from the project lakeFS repository via render-wft. Either set "
+                    "checkpointing-storage-path explicitly or ensure the k8smlapp composition "
+                    "version includes the checkpoints block in pipeline-context.yaml.",
+                    flush=True,
+                )
+                sys.exit(1)
 
         flags = [
             "run",
