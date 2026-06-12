@@ -1,12 +1,294 @@
 version: 2
 
-# Pipeline parameters — injected by the platform into every step's env as
-# PIPELINE_CONFIG (raw YAML string). Steps parse this at runtime via pyyaml.
+# Pipeline parameters — exposed as individual fields in the Argo UI submission form.
+#
+# Precedence rule: if `config` (the advanced override) is non-empty, it is
+# parsed as a full pipeline_config YAML and ALL individual parameters below
+# are ignored. When `config` is empty (the default), each step's PARAMS_YAML
+# env variable is assembled from the individual parameters and used as the
+# config source.
+#
+# NOTE: cpu-class, gpu-class, image-*, and platform endpoint parameters are
+# injected by the KubeLine generator and MUST NOT be defined here.
 pipeline:
   parameters:
+    # ── Advanced override (non-empty OVERRIDES all individual params) ─────────
     - name: config
       default: ""
-      description: "Pipeline config YAML (schema: pipeline_config.example.yaml)"
+      description: "ADVANCED: full pipeline config YAML (schema pipeline_config.example.yaml). When non-empty it OVERRIDES all individual parameters above — intended for scripted submissions (argo submit -p config=...)."
+
+    # ── Experiment ────────────────────────────────────────────────────────────
+    - name: experiment-name
+      default: "spacecraft-pose-v1-yolov8n"
+      description: "MLflow experiment name and S3 checkpoint path prefix."
+
+    - name: experiment-description
+      default: ""
+      description: "Optional free-text description stored in the MLflow run."
+
+    # ── Dataset ───────────────────────────────────────────────────────────────
+    - name: dataset-version
+      default: "upload-initial"
+      description: "Dataset version tag (e.g. 'v1' or 'upload-initial')."
+
+    - name: dataset-source
+      default: "lakefs"
+      enum: ["lakefs", "s3"]
+      description: "Storage backend for the dataset: 'lakefs' or 's3'."
+
+    - name: dataset-path-override
+      default: ""
+      description: "Full S3/LakeFS URI override. Empty = auto-construct from repo/branch/version."
+
+    - name: dataset-sample-size
+      default: ""
+      description: "Integer sample size for reproducible subsets. Empty = full dataset."
+
+    - name: dataset-seed
+      default: "42"
+      description: "Random seed for reproducible dataset sampling."
+
+    # ── Model ─────────────────────────────────────────────────────────────────
+    - name: model-variant
+      default: "yolov8n-pose.pt"
+      enum:
+        - "yolov8n-pose.pt"
+        - "yolov8s-pose.pt"
+        - "yolov8m-pose.pt"
+        - "yolov8l-pose.pt"
+        - "yolov8x-pose.pt"
+        - "yolov9n-pose.pt"
+        - "yolov9s-pose.pt"
+        - "yolov9m-pose.pt"
+        - "yolov9l-pose.pt"
+        - "yolov9x-pose.pt"
+        - "yolov10n-pose.pt"
+        - "yolov10s-pose.pt"
+        - "yolov10m-pose.pt"
+        - "yolov10l-pose.pt"
+        - "yolov10x-pose.pt"
+        - "yolov11n-pose.pt"
+        - "yolov11s-pose.pt"
+        - "yolov11m-pose.pt"
+        - "yolov11l-pose.pt"
+        - "yolov11x-pose.pt"
+      description: "YOLO pose model variant file. Determines architecture and parameter count."
+
+    - name: pretrained-weights
+      default: ""
+      description: "S3 URI to custom .pt weights for weight-only init. Empty = use model-variant's bundled weights."
+
+    # ── Core training schedule ────────────────────────────────────────────────
+    - name: epochs
+      default: "100"
+      description: "Total training epochs."
+
+    - name: batch-size
+      default: "16"
+      description: "Training batch size. Use -1 for Ultralytics auto-batch."
+
+    - name: image-size
+      default: "640"
+      description: "Input image resolution in pixels (must be a multiple of 32)."
+
+    # ── Learning rate ─────────────────────────────────────────────────────────
+    - name: learning-rate
+      default: "0.01"
+      description: "Initial learning rate (Ultralytics lr0)."
+
+    - name: cos-lr
+      default: "true"
+      enum: ["false", "true"]
+      description: "Use cosine learning rate schedule."
+
+    - name: lrf
+      default: "0.01"
+      description: "Final LR ratio: final_lr = learning_rate * lrf. Must be in (0, 1]."
+
+    # ── Optimizer ─────────────────────────────────────────────────────────────
+    - name: optimizer
+      default: "SGD"
+      enum: ["SGD", "Adam", "AdamW"]
+      description: "Gradient optimizer. SGD is the Ultralytics default for YOLO."
+
+    - name: momentum
+      default: "0.937"
+      description: "SGD momentum or Adam beta1."
+
+    - name: weight-decay
+      default: "0.0005"
+      description: "Optimizer weight decay (L2 regularization coefficient)."
+
+    # ── Warmup ────────────────────────────────────────────────────────────────
+    - name: warmup-epochs
+      default: "3.0"
+      description: "Number of LR warmup epochs."
+
+    - name: warmup-momentum
+      default: "0.8"
+      description: "Initial momentum during warmup (rises to `momentum` by end of warmup)."
+
+    # ── Regularization ────────────────────────────────────────────────────────
+    - name: dropout
+      default: "0.0"
+      description: "Dropout rate applied in the classifier head [0.0, 1.0)."
+
+    - name: label-smoothing
+      default: "0.0"
+      description: "Label smoothing epsilon [0.0, 1.0). Reduces overconfidence."
+
+    # ── Gradient accumulation ─────────────────────────────────────────────────
+    - name: nbs
+      default: "64"
+      description: "Nominal batch size. Ultralytics scales gradients so effective LR matches this batch size."
+
+    # ── Fine-tuning control ───────────────────────────────────────────────────
+    - name: freeze
+      default: ""
+      description: "Freeze the first N backbone layers. Empty = train all layers."
+
+    # ── Training efficiency ───────────────────────────────────────────────────
+    - name: amp
+      default: "true"
+      enum: ["false", "true"]
+      description: "Enable Automatic Mixed Precision (FP16). Halves GPU memory use."
+
+    - name: close-mosaic
+      default: "10"
+      description: "Disable mosaic augmentation for the last N epochs (0 = never disable)."
+
+    # ── Reproducibility ───────────────────────────────────────────────────────
+    - name: training-seed
+      default: "0"
+      description: "Global training RNG seed (separate from dataset-seed)."
+
+    - name: deterministic
+      default: "true"
+      enum: ["false", "true"]
+      description: "Enable cuDNN deterministic mode. Slight speed penalty; ensures reproducibility."
+
+    # ── Pose-estimation loss gains ────────────────────────────────────────────
+    - name: pose
+      default: "12.0"
+      description: "Keypoint regression loss gain. Primary lever for spacecraft keypoint accuracy."
+
+    - name: kobj
+      default: "2.0"
+      description: "Keypoint objectness loss gain."
+
+    - name: box
+      default: "7.5"
+      description: "Bounding-box regression loss gain."
+
+    - name: cls
+      default: "0.5"
+      description: "Classification loss gain."
+
+    - name: dfl
+      default: "1.5"
+      description: "Distribution Focal Loss gain."
+
+    # ── Early stopping ────────────────────────────────────────────────────────
+    - name: early-stopping-patience
+      default: "50"
+      description: "Epochs without improvement before early stopping triggers."
+
+    # ── Checkpointing ─────────────────────────────────────────────────────────
+    - name: checkpointing-interval-epochs
+      default: "10"
+      description: "Upload an intermediate checkpoint to S3 every N epochs."
+
+    - name: checkpointing-storage-path
+      default: "s3://io-audio-text-data/upload-initial/checkpoints"
+      description: "S3 URI for checkpoint storage. Format: s3://<bucket>/<prefix>."
+
+    - name: checkpoint-resume-from
+      default: ""
+      description: "Checkpoint to resume from: empty = start fresh, 'auto' = latest, or a full S3 path."
+
+    # ── Augmentation ──────────────────────────────────────────────────────────
+    - name: aug-hsv-h
+      default: "0.015"
+      description: "HSV hue augmentation range [0.0, 1.0]."
+
+    - name: aug-hsv-s
+      default: "0.7"
+      description: "HSV saturation augmentation range [0.0, 1.0]."
+
+    - name: aug-hsv-v
+      default: "0.4"
+      description: "HSV value augmentation range [0.0, 1.0]."
+
+    - name: aug-degrees
+      default: "0.0"
+      description: "Random rotation range in degrees. Keep 0.0 for pose (keypoints are rotation-sensitive)."
+
+    - name: aug-translate
+      default: "0.1"
+      description: "Random translation fraction of image size."
+
+    - name: aug-scale
+      default: "0.5"
+      description: "Random scale gain (multiplicative)."
+
+    - name: aug-shear
+      default: "0.0"
+      description: "Random shear range in degrees."
+
+    - name: aug-perspective
+      default: "0.0"
+      description: "Random perspective warp [0.0, 0.001]. Values > 0.001 cause severe keypoint displacement."
+
+    - name: aug-flipud
+      default: "0.0"
+      description: "Vertical flip probability. Keep 0.0 for spacecraft (orbital geometry has defined 'up')."
+
+    - name: aug-fliplr
+      default: "0.0"
+      description: "Horizontal flip probability. Keep 0.0 for spacecraft (no left-right symmetry in canonical pose)."
+
+    - name: aug-mosaic
+      default: "1.0"
+      description: "Mosaic augmentation probability [0.0, 1.0]. Disabled for last `close-mosaic` epochs."
+
+    - name: aug-mixup
+      default: "0.0"
+      description: "MixUp augmentation probability [0.0, 1.0]."
+
+    - name: aug-copy-paste
+      default: "0.0"
+      description: "Segment copy-paste augmentation probability [0.0, 1.0]."
+
+    - name: aug-erasing
+      default: "0.4"
+      description: "Random erasing probability [0.0, 0.9]."
+
+    - name: aug-bgr
+      default: "0.0"
+      description: "BGR channel flip probability [0.0, 1.0]."
+
+    # ── Post-training export ───────────────────────────────────────────────────
+    - name: export-enabled
+      default: "false"
+      enum: ["false", "true"]
+      description: "Enable post-training model export (TensorRT/ONNX)."
+
+    - name: export-formats
+      default: "engine"
+      description: "Comma-separated export formats: 'engine' (TensorRT) and/or 'onnx'. Only used when export-enabled=true."
+
+    - name: export-precisions
+      default: "fp16"
+      description: "Comma-separated precisions: 'fp16' and/or 'int8'. Only used when export-enabled=true."
+
+    # ── Model registration ─────────────────────────────────────────────────────
+    - name: registered-model-name
+      default: ""
+      description: "MLflow registered model name. Empty = use REGISTERED_MODEL_NAME env var (default: spacecraft-pose-yolo)."
+
+    - name: promote-to
+      default: ""
+      description: "Transition the registered model version to this stage: empty = no promotion, 'Staging', or 'Production'."
 
 steps:
   # ──────────────────────────────────────────────────────────────────────────
@@ -20,27 +302,101 @@ steps:
     path: config_validation
     compute: cpu
     dependencies: []
+    env:
+      - name: PARAMS_YAML
+        value: |
+          experiment:
+            name: "{{workflow.parameters.experiment-name}}"
+            description: "{{workflow.parameters.experiment-description}}"
+          dataset:
+            version: "{{workflow.parameters.dataset-version}}"
+            source: "{{workflow.parameters.dataset-source}}"
+            path_override: "{{workflow.parameters.dataset-path-override}}"
+            sample_size: {{workflow.parameters.dataset-sample-size}}
+            seed: {{workflow.parameters.dataset-seed}}
+            manifest_only: true
+          model:
+            variant: "{{workflow.parameters.model-variant}}"
+            pretrained_weights: "{{workflow.parameters.pretrained-weights}}"
+          training:
+            epochs: {{workflow.parameters.epochs}}
+            batch_size: {{workflow.parameters.batch-size}}
+            image_size: {{workflow.parameters.image-size}}
+            learning_rate: {{workflow.parameters.learning-rate}}
+            cos_lr: {{workflow.parameters.cos-lr}}
+            lrf: {{workflow.parameters.lrf}}
+            optimizer: "{{workflow.parameters.optimizer}}"
+            momentum: {{workflow.parameters.momentum}}
+            weight_decay: {{workflow.parameters.weight-decay}}
+            warmup_epochs: {{workflow.parameters.warmup-epochs}}
+            warmup_momentum: {{workflow.parameters.warmup-momentum}}
+            dropout: {{workflow.parameters.dropout}}
+            label_smoothing: {{workflow.parameters.label-smoothing}}
+            nbs: {{workflow.parameters.nbs}}
+            freeze: {{workflow.parameters.freeze}}
+            amp: {{workflow.parameters.amp}}
+            close_mosaic: {{workflow.parameters.close-mosaic}}
+            seed: {{workflow.parameters.training-seed}}
+            deterministic: {{workflow.parameters.deterministic}}
+            pose: {{workflow.parameters.pose}}
+            kobj: {{workflow.parameters.kobj}}
+            box: {{workflow.parameters.box}}
+            cls: {{workflow.parameters.cls}}
+            dfl: {{workflow.parameters.dfl}}
+          checkpointing:
+            interval_epochs: {{workflow.parameters.checkpointing-interval-epochs}}
+            storage_path: "{{workflow.parameters.checkpointing-storage-path}}"
+            resume_from: "{{workflow.parameters.checkpoint-resume-from}}"
+          early_stopping:
+            patience: {{workflow.parameters.early-stopping-patience}}
+          augmentation:
+            hsv_h: {{workflow.parameters.aug-hsv-h}}
+            hsv_s: {{workflow.parameters.aug-hsv-s}}
+            hsv_v: {{workflow.parameters.aug-hsv-v}}
+            degrees: {{workflow.parameters.aug-degrees}}
+            translate: {{workflow.parameters.aug-translate}}
+            scale: {{workflow.parameters.aug-scale}}
+            shear: {{workflow.parameters.aug-shear}}
+            perspective: {{workflow.parameters.aug-perspective}}
+            flipud: {{workflow.parameters.aug-flipud}}
+            fliplr: {{workflow.parameters.aug-fliplr}}
+            mosaic: {{workflow.parameters.aug-mosaic}}
+            mixup: {{workflow.parameters.aug-mixup}}
+            copy_paste: {{workflow.parameters.aug-copy-paste}}
+            erasing: {{workflow.parameters.aug-erasing}}
+            bgr: {{workflow.parameters.aug-bgr}}
+          export:
+            enabled: {{workflow.parameters.export-enabled}}
+            formats: ["{{workflow.parameters.export-formats}}"]
+            precisions: ["{{workflow.parameters.export-precisions}}"]
     command: ["python", "-c"]
     args:
       - |
         import os, sys, subprocess, yaml
 
-        raw = os.environ.get("PIPELINE_CONFIG", "")
+        # Config resolution: if PIPELINE_CONFIG (injected by platform generator)
+        # is non-empty, it OVERRIDES all individual parameters. Otherwise,
+        # PARAMS_YAML (assembled from individual Argo parameters) is used.
+        pipeline_config = os.environ.get("PIPELINE_CONFIG", "")
+        params_yaml = os.environ.get("PARAMS_YAML", "")
+        raw = pipeline_config.strip() if pipeline_config.strip() else params_yaml
+
         if not raw.strip():
-            print("ERROR: PIPELINE_CONFIG is empty — platform did not inject the pipeline config.", flush=True)
+            print("ERROR: Neither PIPELINE_CONFIG nor PARAMS_YAML is set.", flush=True)
             sys.exit(1)
         try:
             cfg = yaml.safe_load(raw)
         except yaml.YAMLError as e:
-            print(f"ERROR: PIPELINE_CONFIG is not valid YAML: {e}", flush=True)
+            print(f"ERROR: Config is not valid YAML: {e}", flush=True)
             sys.exit(1)
         if not isinstance(cfg, dict):
-            print("ERROR: PIPELINE_CONFIG parsed to a non-dict value.", flush=True)
+            print("ERROR: Config parsed to a non-dict value.", flush=True)
             sys.exit(1)
 
         # Enforce manifest-only: full-download and labels-only are not
         # supported in the cluster because steps run in separate pods and
-        # there is no shared volume between them.
+        # there is no shared volume between them. In param mode, PARAMS_YAML
+        # always sets manifest_only=true; in config mode we verify it.
         dataset = cfg.get("dataset") or {}
         manifest_only = dataset.get("manifest_only", False)
         labels_only = dataset.get("labels_only", False)
@@ -178,20 +534,33 @@ steps:
     compute: cpu
     dependencies:
       - config-validation
+    env:
+      - name: PARAMS_YAML
+        value: |
+          dataset:
+            version: "{{workflow.parameters.dataset-version}}"
+            source: "{{workflow.parameters.dataset-source}}"
+            path_override: "{{workflow.parameters.dataset-path-override}}"
+            sample_size: {{workflow.parameters.dataset-sample-size}}
+            seed: {{workflow.parameters.dataset-seed}}
     command: ["sh", "-c"]
     args:
       - |
         python3 - <<'PYEOF'
         import os, sys, subprocess, json, yaml
 
-        raw = os.environ.get("PIPELINE_CONFIG", "")
+        # Config resolution: PIPELINE_CONFIG (platform-injected) overrides PARAMS_YAML.
+        pipeline_config = os.environ.get("PIPELINE_CONFIG", "")
+        params_yaml = os.environ.get("PARAMS_YAML", "")
+        raw = pipeline_config.strip() if pipeline_config.strip() else params_yaml
+
         if not raw.strip():
-            print("ERROR: PIPELINE_CONFIG is empty.", flush=True)
+            print("ERROR: Neither PIPELINE_CONFIG nor PARAMS_YAML is set.", flush=True)
             sys.exit(1)
         try:
             cfg = yaml.safe_load(raw)
         except yaml.YAMLError as e:
-            print(f"ERROR: PIPELINE_CONFIG is not valid YAML: {e}", flush=True)
+            print(f"ERROR: Config is not valid YAML: {e}", flush=True)
             sys.exit(1)
 
         dataset = cfg.get("dataset") or {}
@@ -271,6 +640,64 @@ steps:
         value: "{{inputs.parameters.data-yaml}}"
       - name: MANIFEST_SUMMARY
         value: "{{inputs.parameters.manifest-summary}}"
+      - name: PARAMS_YAML
+        value: |
+          experiment:
+            name: "{{workflow.parameters.experiment-name}}"
+          model:
+            variant: "{{workflow.parameters.model-variant}}"
+            pretrained_weights: "{{workflow.parameters.pretrained-weights}}"
+          training:
+            epochs: {{workflow.parameters.epochs}}
+            batch_size: {{workflow.parameters.batch-size}}
+            image_size: {{workflow.parameters.image-size}}
+            learning_rate: {{workflow.parameters.learning-rate}}
+            cos_lr: {{workflow.parameters.cos-lr}}
+            lrf: {{workflow.parameters.lrf}}
+            optimizer: "{{workflow.parameters.optimizer}}"
+            momentum: {{workflow.parameters.momentum}}
+            weight_decay: {{workflow.parameters.weight-decay}}
+            warmup_epochs: {{workflow.parameters.warmup-epochs}}
+            warmup_momentum: {{workflow.parameters.warmup-momentum}}
+            dropout: {{workflow.parameters.dropout}}
+            label_smoothing: {{workflow.parameters.label-smoothing}}
+            nbs: {{workflow.parameters.nbs}}
+            freeze: {{workflow.parameters.freeze}}
+            amp: {{workflow.parameters.amp}}
+            close_mosaic: {{workflow.parameters.close-mosaic}}
+            seed: {{workflow.parameters.training-seed}}
+            deterministic: {{workflow.parameters.deterministic}}
+            pose: {{workflow.parameters.pose}}
+            kobj: {{workflow.parameters.kobj}}
+            box: {{workflow.parameters.box}}
+            cls: {{workflow.parameters.cls}}
+            dfl: {{workflow.parameters.dfl}}
+          checkpointing:
+            interval_epochs: {{workflow.parameters.checkpointing-interval-epochs}}
+            storage_path: "{{workflow.parameters.checkpointing-storage-path}}"
+            resume_from: "{{workflow.parameters.checkpoint-resume-from}}"
+          early_stopping:
+            patience: {{workflow.parameters.early-stopping-patience}}
+          augmentation:
+            hsv_h: {{workflow.parameters.aug-hsv-h}}
+            hsv_s: {{workflow.parameters.aug-hsv-s}}
+            hsv_v: {{workflow.parameters.aug-hsv-v}}
+            degrees: {{workflow.parameters.aug-degrees}}
+            translate: {{workflow.parameters.aug-translate}}
+            scale: {{workflow.parameters.aug-scale}}
+            shear: {{workflow.parameters.aug-shear}}
+            perspective: {{workflow.parameters.aug-perspective}}
+            flipud: {{workflow.parameters.aug-flipud}}
+            fliplr: {{workflow.parameters.aug-fliplr}}
+            mosaic: {{workflow.parameters.aug-mosaic}}
+            mixup: {{workflow.parameters.aug-mixup}}
+            copy_paste: {{workflow.parameters.aug-copy-paste}}
+            erasing: {{workflow.parameters.aug-erasing}}
+            bgr: {{workflow.parameters.aug-bgr}}
+          export:
+            enabled: {{workflow.parameters.export-enabled}}
+            formats: ["{{workflow.parameters.export-formats}}"]
+            precisions: ["{{workflow.parameters.export-precisions}}"]
     inputs:
       parameters:
         - name: data-yaml
@@ -282,14 +709,18 @@ steps:
       - |
         import os, sys, subprocess, json, yaml
 
-        raw = os.environ.get("PIPELINE_CONFIG", "")
+        # Config resolution: PIPELINE_CONFIG (platform-injected) overrides PARAMS_YAML.
+        pipeline_config = os.environ.get("PIPELINE_CONFIG", "")
+        params_yaml = os.environ.get("PARAMS_YAML", "")
+        raw = pipeline_config.strip() if pipeline_config.strip() else params_yaml
+
         if not raw.strip():
-            print("ERROR: PIPELINE_CONFIG is empty.", flush=True)
+            print("ERROR: Neither PIPELINE_CONFIG nor PARAMS_YAML is set.", flush=True)
             sys.exit(1)
         try:
             cfg = yaml.safe_load(raw)
         except yaml.YAMLError as e:
-            print(f"ERROR: PIPELINE_CONFIG is not valid YAML: {e}", flush=True)
+            print(f"ERROR: Config is not valid YAML: {e}", flush=True)
             sys.exit(1)
 
         # Reconstruct /work/dataset from input parameters
@@ -451,6 +882,16 @@ steps:
     env:
       - name: TRAINING_RESULT
         value: "{{inputs.parameters.training-result}}"
+      - name: PARAMS_YAML
+        value: |
+          dataset:
+            version: "{{workflow.parameters.dataset-version}}"
+            sample_size: {{workflow.parameters.dataset-sample-size}}
+          model:
+            variant: "{{workflow.parameters.model-variant}}"
+          registration:
+            registered_model_name: "{{workflow.parameters.registered-model-name}}"
+            promote_to: "{{workflow.parameters.promote-to}}"
     inputs:
       parameters:
         - name: training-result
@@ -460,14 +901,18 @@ steps:
       - |
         import os, sys, subprocess, json, yaml
 
-        raw = os.environ.get("PIPELINE_CONFIG", "")
+        # Config resolution: PIPELINE_CONFIG (platform-injected) overrides PARAMS_YAML.
+        pipeline_config = os.environ.get("PIPELINE_CONFIG", "")
+        params_yaml = os.environ.get("PARAMS_YAML", "")
+        raw = pipeline_config.strip() if pipeline_config.strip() else params_yaml
+
         if not raw.strip():
-            print("ERROR: PIPELINE_CONFIG is empty.", flush=True)
+            print("ERROR: Neither PIPELINE_CONFIG nor PARAMS_YAML is set.", flush=True)
             sys.exit(1)
         try:
             cfg = yaml.safe_load(raw)
         except yaml.YAMLError as e:
-            print(f"ERROR: PIPELINE_CONFIG is not valid YAML: {e}", flush=True)
+            print(f"ERROR: Config is not valid YAML: {e}", flush=True)
             sys.exit(1)
 
         tr_raw = os.environ.get("TRAINING_RESULT", "")
