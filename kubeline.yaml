@@ -1,30 +1,525 @@
+version: 2
+
+# Pipeline parameters — injected by the platform into every step's env as
+# PIPELINE_CONFIG (raw YAML string). Steps parse this at runtime via pyyaml.
+pipeline:
+  parameters:
+    - name: config
+      default: ""
+      description: "Pipeline config YAML (schema: pipeline_config.example.yaml)"
+
 steps:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Step 1 — config-validation
+  # Validates all pipeline parameters. HARD-FAILS unless dataset.manifest_only
+  # is true: full-download and labels-only modes assume a shared filesystem
+  # between steps that the cluster cannot provide (each step pod has its own
+  # ephemeral volume; /work/dataset is not shared across pod boundaries).
+  # ──────────────────────────────────────────────────────────────────────────
   - name: config-validation
     path: config_validation
     compute: cpu
     dependencies: []
+    command: ["python", "-c"]
+    args:
+      - |
+        import os, sys, subprocess, yaml
 
+        raw = os.environ.get("PIPELINE_CONFIG", "")
+        if not raw.strip():
+            print("ERROR: PIPELINE_CONFIG is empty — platform did not inject the pipeline config.", flush=True)
+            sys.exit(1)
+        try:
+            cfg = yaml.safe_load(raw)
+        except yaml.YAMLError as e:
+            print(f"ERROR: PIPELINE_CONFIG is not valid YAML: {e}", flush=True)
+            sys.exit(1)
+        if not isinstance(cfg, dict):
+            print("ERROR: PIPELINE_CONFIG parsed to a non-dict value.", flush=True)
+            sys.exit(1)
+
+        # Enforce manifest-only: full-download and labels-only are not
+        # supported in the cluster because steps run in separate pods and
+        # there is no shared volume between them.
+        dataset = cfg.get("dataset") or {}
+        manifest_only = dataset.get("manifest_only", False)
+        labels_only = dataset.get("labels_only", False)
+        if not manifest_only:
+            mode = "labels-only" if labels_only else "full-download"
+            print(
+                f"ERROR: dataset.manifest_only must be true. "
+                f"Current mode is '{mode}'. "
+                f"Full-download and labels-only modes require a shared filesystem "
+                f"between steps, which this cluster does not provide. "
+                f"Set dataset.manifest_only: true in your pipeline config.",
+                flush=True,
+            )
+            sys.exit(1)
+
+        exp = cfg.get("experiment") or {}
+        dataset = cfg.get("dataset") or {}
+        model = cfg.get("model") or {}
+        training = cfg.get("training") or {}
+        checkpointing = cfg.get("checkpointing") or {}
+        early_stopping = cfg.get("early_stopping") or {}
+        augmentation = cfg.get("augmentation") or {}
+
+        flags = [
+            "run",
+            "--experiment-name", str(exp["name"]),
+            "--dataset-version", str(dataset["version"]),
+            "--dataset-source", str(dataset["source"]),
+            "--model-variant", str(model["variant"]),
+            "--training-epochs", str(training["epochs"]),
+            "--training-batch-size", str(training["batch_size"]),
+            "--training-image-size", str(training["image_size"]),
+            "--training-learning-rate", str(training["learning_rate"]),
+            "--training-optimizer", str(training["optimizer"]),
+            "--checkpointing-interval-epochs", str(checkpointing["interval_epochs"]),
+            "--checkpointing-storage-path", str(checkpointing["storage_path"]),
+            "--early-stopping-patience", str(early_stopping["patience"]),
+        ]
+
+        # Optional dataset flags
+        if dataset.get("lakefs_repo"):
+            flags += ["--dataset-lakefs-repo", str(dataset["lakefs_repo"])]
+        if dataset.get("lakefs_branch"):
+            flags += ["--dataset-lakefs-branch", str(dataset["lakefs_branch"])]
+        if dataset.get("path_override"):
+            flags += ["--dataset-path-override", str(dataset["path_override"])]
+        if dataset.get("sample_size") is not None:
+            flags += ["--dataset-sample-size", str(dataset["sample_size"])]
+        if dataset.get("seed") is not None:
+            flags += ["--dataset-seed", str(dataset["seed"])]
+
+        # dataset_manifest_only: always true (enforced above) — pass the flag
+        flags += ["--dataset-manifest-only"]
+
+        # Optional model flags
+        if model.get("pretrained_weights"):
+            flags += ["--model-pretrained-weights", str(model["pretrained_weights"])]
+
+        # Optional training flags (non-default values)
+        if training.get("cos_lr") is not None:
+            flags += ["--training-cos-lr" if training["cos_lr"] else "--no-training-cos-lr"]
+        if training.get("lrf") is not None:
+            flags += ["--training-lrf", str(training["lrf"])]
+        if training.get("momentum") is not None:
+            flags += ["--training-momentum", str(training["momentum"])]
+        if training.get("weight_decay") is not None:
+            flags += ["--training-weight-decay", str(training["weight_decay"])]
+        if training.get("warmup_epochs") is not None:
+            flags += ["--training-warmup-epochs", str(training["warmup_epochs"])]
+        if training.get("warmup_momentum") is not None:
+            flags += ["--training-warmup-momentum", str(training["warmup_momentum"])]
+        if training.get("dropout") is not None:
+            flags += ["--training-dropout", str(training["dropout"])]
+        if training.get("label_smoothing") is not None:
+            flags += ["--training-label-smoothing", str(training["label_smoothing"])]
+        if training.get("nbs") is not None:
+            flags += ["--training-nbs", str(training["nbs"])]
+        if training.get("freeze") is not None:
+            flags += ["--training-freeze", str(training["freeze"])]
+        if training.get("amp") is not None:
+            flags += ["--training-amp" if training["amp"] else "--no-training-amp"]
+        if training.get("close_mosaic") is not None:
+            flags += ["--training-close-mosaic", str(training["close_mosaic"])]
+        if training.get("seed") is not None:
+            flags += ["--training-seed", str(training["seed"])]
+        if training.get("deterministic") is not None:
+            flags += ["--training-deterministic" if training["deterministic"] else "--no-training-deterministic"]
+        if training.get("pose") is not None:
+            flags += ["--training-pose", str(training["pose"])]
+        if training.get("kobj") is not None:
+            flags += ["--training-kobj", str(training["kobj"])]
+        if training.get("box") is not None:
+            flags += ["--training-box", str(training["box"])]
+        if training.get("cls") is not None:
+            flags += ["--training-cls", str(training["cls"])]
+        if training.get("dfl") is not None:
+            flags += ["--training-dfl", str(training["dfl"])]
+
+        # Optional checkpointing flags
+        if checkpointing.get("resume_from"):
+            flags += ["--checkpointing-resume-from", str(checkpointing["resume_from"])]
+
+        # Augmentation flags
+        aug = augmentation
+        for key, flag in [
+            ("hsv_h", "--aug-hsv-h"), ("hsv_s", "--aug-hsv-s"), ("hsv_v", "--aug-hsv-v"),
+            ("degrees", "--aug-degrees"), ("translate", "--aug-translate"),
+            ("scale", "--aug-scale"), ("shear", "--aug-shear"),
+            ("perspective", "--aug-perspective"), ("flipud", "--aug-flipud"),
+            ("fliplr", "--aug-fliplr"), ("mosaic", "--aug-mosaic"),
+            ("mixup", "--aug-mixup"), ("copy_paste", "--aug-copy-paste"),
+            ("erasing", "--aug-erasing"), ("bgr", "--aug-bgr"),
+        ]:
+            if aug.get(key) is not None:
+                flags += [flag, str(aug[key])]
+
+        # Optional experiment description
+        if exp.get("description"):
+            flags += ["--experiment-description", str(exp["description"])]
+
+        print(f"[config-validation] Running: config-validation {' '.join(flags)}", flush=True)
+        result = subprocess.run(["config-validation"] + flags)
+        sys.exit(result.returncode)
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Step 2 — dataset-loading
+  # Downloads data.yaml and builds the S3 manifest. Always runs --manifest-only
+  # (enforced by config-validation above). After the CLI writes
+  # /work/dataset/dataset_manifest.json, the shim extracts only bucket, prefix,
+  # and a label_keys sentinel into /work/dataset/manifest_summary.json — the
+  # full key list is too large to pass as an Argo workflow parameter.
+  # ──────────────────────────────────────────────────────────────────────────
   - name: dataset-loading
     path: dataset_loading
     compute: cpu
     dependencies:
       - config-validation
+    command: ["sh", "-c"]
+    args:
+      - |
+        python3 - <<'PYEOF'
+        import os, sys, subprocess, json, yaml
 
+        raw = os.environ.get("PIPELINE_CONFIG", "")
+        if not raw.strip():
+            print("ERROR: PIPELINE_CONFIG is empty.", flush=True)
+            sys.exit(1)
+        try:
+            cfg = yaml.safe_load(raw)
+        except yaml.YAMLError as e:
+            print(f"ERROR: PIPELINE_CONFIG is not valid YAML: {e}", flush=True)
+            sys.exit(1)
+
+        dataset = cfg.get("dataset") or {}
+
+        flags = [
+            "run",
+            "--version", str(dataset["version"]),
+            "--source", str(dataset["source"]),
+            "--output-dir", "/work/dataset",
+            "--manifest-only",
+        ]
+
+        if dataset.get("lakefs_repo"):
+            flags += ["--lakefs-repo", str(dataset["lakefs_repo"])]
+        if dataset.get("lakefs_branch"):
+            flags += ["--lakefs-branch", str(dataset["lakefs_branch"])]
+        if dataset.get("path_override"):
+            flags += ["--path-override", str(dataset["path_override"])]
+        if dataset.get("sample_size") is not None:
+            flags += ["--sample-size", str(dataset["sample_size"]), "--seed", str(dataset.get("seed", 42))]
+
+        print(f"[dataset-loading] Running: dataset-loading {' '.join(flags)}", flush=True)
+        result = subprocess.run(["dataset-loading"] + flags)
+        if result.returncode != 0:
+            sys.exit(result.returncode)
+
+        # Read the full manifest written by the CLI and extract a compact
+        # summary safe for Argo parameter passing (no key lists).
+        manifest_path = "/work/dataset/dataset_manifest.json"
+        try:
+            with open(manifest_path) as fh:
+                manifest = json.load(fh)
+        except Exception as e:
+            print(f"ERROR: Could not read {manifest_path}: {e}", flush=True)
+            sys.exit(1)
+
+        bucket = manifest.get("bucket")
+        prefix = manifest.get("prefix")
+        if not bucket or not prefix:
+            print(f"ERROR: manifest missing 'bucket' or 'prefix': {manifest}", flush=True)
+            sys.exit(1)
+
+        # label_keys sentinel: non-empty dict signals to model-training that
+        # labels must also be streamed from S3 (manifest-only mode). We do NOT
+        # embed the actual key lists — they are too large for Argo parameters.
+        label_keys_raw = manifest.get("label_keys")
+        label_keys_sentinel = {"_present": True} if label_keys_raw else {}
+
+        summary = {"bucket": bucket, "prefix": prefix, "label_keys": label_keys_sentinel}
+        summary_path = "/work/dataset/manifest_summary.json"
+        with open(summary_path, "w") as fh:
+            json.dump(summary, fh, separators=(",", ":"))
+        print(f"[dataset-loading] Wrote manifest summary to {summary_path}: bucket={bucket} prefix={prefix}", flush=True)
+        PYEOF
+
+    outputs:
+      parameters:
+        - name: data-yaml
+          path: /work/dataset/data.yaml
+        - name: manifest-summary
+          path: /work/dataset/manifest_summary.json
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Step 3 — model-training
+  # Reconstructs /work/dataset from the two input parameters (data.yaml and
+  # manifest_summary.json → dataset_manifest.json), then runs training with
+  # --source s3 so the service detects the manifest and enables S3 streaming.
+  # The training result JSON is emitted as an output parameter for registration.
+  # ──────────────────────────────────────────────────────────────────────────
   - name: model-training
     path: model_training
     compute: gpu
+    dependencies:
+      - dataset-loading
+    env:
+      - name: DATA_YAML
+        value: "{{inputs.parameters.data-yaml}}"
+      - name: MANIFEST_SUMMARY
+        value: "{{inputs.parameters.manifest-summary}}"
+    inputs:
+      parameters:
+        - name: data-yaml
+          from: dataset-loading
+        - name: manifest-summary
+          from: dataset-loading
+    command: ["python", "-c"]
+    args:
+      - |
+        import os, sys, subprocess, json, yaml
+
+        raw = os.environ.get("PIPELINE_CONFIG", "")
+        if not raw.strip():
+            print("ERROR: PIPELINE_CONFIG is empty.", flush=True)
+            sys.exit(1)
+        try:
+            cfg = yaml.safe_load(raw)
+        except yaml.YAMLError as e:
+            print(f"ERROR: PIPELINE_CONFIG is not valid YAML: {e}", flush=True)
+            sys.exit(1)
+
+        # Reconstruct /work/dataset from input parameters
+        os.makedirs("/work/dataset", exist_ok=True)
+
+        data_yaml = os.environ.get("DATA_YAML", "")
+        if not data_yaml.strip():
+            print("ERROR: DATA_YAML input parameter is empty.", flush=True)
+            sys.exit(1)
+        with open("/work/dataset/data.yaml", "w") as fh:
+            fh.write(data_yaml)
+
+        manifest_summary = os.environ.get("MANIFEST_SUMMARY", "")
+        if not manifest_summary.strip():
+            print("ERROR: MANIFEST_SUMMARY input parameter is empty.", flush=True)
+            sys.exit(1)
+        # Write summary as dataset_manifest.json so model_training auto-detects
+        # the S3 source (bucket + prefix) and streaming mode (label_keys presence).
+        with open("/work/dataset/dataset_manifest.json", "w") as fh:
+            fh.write(manifest_summary)
+
+        exp = cfg.get("experiment") or {}
+        model = cfg.get("model") or {}
+        training = cfg.get("training") or {}
+        checkpointing = cfg.get("checkpointing") or {}
+        early_stopping = cfg.get("early_stopping") or {}
+        augmentation = cfg.get("augmentation") or {}
+        export_cfg = cfg.get("export") or {}
+
+        # Parse checkpoint bucket/prefix from checkpointing.storage_path
+        # Format: s3://<bucket>/<prefix>
+        storage_path = str(checkpointing.get("storage_path", ""))
+        checkpoint_bucket = "temp-mlops"
+        checkpoint_prefix = "checkpoints"
+        if storage_path.startswith("s3://"):
+            parts = storage_path[5:].split("/", 1)
+            checkpoint_bucket = parts[0]
+            checkpoint_prefix = parts[1].rstrip("/") if len(parts) > 1 else "checkpoints"
+
+        flags = [
+            "run",
+            "--model-variant", str(model["variant"]),
+            "--experiment-name", str(exp["name"]),
+            "--dataset-dir", "/work/dataset",
+            "--output-dir", "/work/output",
+            "--source", "s3",
+            "--epochs", str(training["epochs"]),
+            "--batch-size", str(training["batch_size"]),
+            "--image-size", str(training["image_size"]),
+            "--learning-rate", str(training["learning_rate"]),
+            "--optimizer", str(training["optimizer"]),
+            "--checkpoint-interval", str(checkpointing["interval_epochs"]),
+            "--checkpoint-bucket", checkpoint_bucket,
+            "--checkpoint-prefix", checkpoint_prefix,
+            "--patience", str(early_stopping["patience"]),
+        ]
+
+        # Optional training flags
+        if training.get("cos_lr") is not None:
+            flags += ["--cos-lr" if training["cos_lr"] else "--no-cos-lr"]
+        if training.get("lrf") is not None:
+            flags += ["--lrf", str(training["lrf"])]
+        if training.get("momentum") is not None:
+            flags += ["--momentum", str(training["momentum"])]
+        if training.get("weight_decay") is not None:
+            flags += ["--weight-decay", str(training["weight_decay"])]
+        if training.get("warmup_epochs") is not None:
+            flags += ["--warmup-epochs", str(training["warmup_epochs"])]
+        if training.get("warmup_momentum") is not None:
+            flags += ["--warmup-momentum", str(training["warmup_momentum"])]
+        if training.get("dropout") is not None:
+            flags += ["--dropout", str(training["dropout"])]
+        if training.get("label_smoothing") is not None:
+            flags += ["--label-smoothing", str(training["label_smoothing"])]
+        if training.get("nbs") is not None:
+            flags += ["--nbs", str(training["nbs"])]
+        if training.get("freeze") is not None:
+            flags += ["--freeze", str(training["freeze"])]
+        if training.get("amp") is not None:
+            flags += ["--amp" if training["amp"] else "--no-amp"]
+        if training.get("close_mosaic") is not None:
+            flags += ["--close-mosaic", str(training["close_mosaic"])]
+        if training.get("seed") is not None:
+            flags += ["--seed", str(training["seed"])]
+        if training.get("deterministic") is not None:
+            flags += ["--deterministic" if training["deterministic"] else "--no-deterministic"]
+        if training.get("pose") is not None:
+            flags += ["--pose", str(training["pose"])]
+        if training.get("kobj") is not None:
+            flags += ["--kobj", str(training["kobj"])]
+        if training.get("box") is not None:
+            flags += ["--box", str(training["box"])]
+        if training.get("cls") is not None:
+            flags += ["--cls", str(training["cls"])]
+        if training.get("dfl") is not None:
+            flags += ["--dfl", str(training["dfl"])]
+
+        # Optional weight init / resume
+        if model.get("pretrained_weights"):
+            flags += ["--pretrained-weights", str(model["pretrained_weights"])]
+        if checkpointing.get("resume_from"):
+            flags += ["--resume-from", str(checkpointing["resume_from"])]
+
+        # disk-cache-gb: cap S3 streaming cache for ephemeral pod storage
+        flags += ["--disk-cache-gb", "8.0"]
+
+        # Augmentation
+        aug = augmentation
+        for key, flag in [
+            ("hsv_h", "--hsv-h"), ("hsv_s", "--hsv-s"), ("hsv_v", "--hsv-v"),
+            ("degrees", "--degrees"), ("translate", "--translate"),
+            ("scale", "--scale"), ("shear", "--shear"),
+            ("perspective", "--perspective"), ("flipud", "--flipud"),
+            ("fliplr", "--fliplr"), ("mosaic", "--mosaic"),
+            ("mixup", "--mixup"), ("copy_paste", "--copy-paste"),
+            ("erasing", "--erasing"), ("bgr", "--bgr"),
+        ]:
+            if aug.get(key) is not None:
+                flags += [flag, str(aug[key])]
+
+        # Export flags
+        if export_cfg.get("enabled"):
+            flags += ["--export"]
+            formats = export_cfg.get("formats")
+            if formats:
+                flags += ["--export-formats", ",".join(formats)]
+            precisions = export_cfg.get("precisions")
+            if precisions:
+                flags += ["--export-precisions", ",".join(precisions)]
+
+        print(f"[model-training] Running: model-training {' '.join(flags)}", flush=True)
+        result = subprocess.run(["model-training"] + flags)
+        sys.exit(result.returncode)
+
+    outputs:
+      parameters:
+        - name: training-result
+          path: /work/output/training_result.json
     resources:
       requests:
         cpu: "1"
         memory: "4Gi"
+        ephemeral-storage: "10Gi"
       limits:
         cpu: "4"
         memory: "16Gi"
-    dependencies:
-      - dataset-loading
+        ephemeral-storage: "30Gi"
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # Step 4 — model-registration
+  # Reads training_result.json (passed as TRAINING_RESULT env) and registers
+  # the best checkpoint in the MLflow model registry with full lineage tags.
+  # ──────────────────────────────────────────────────────────────────────────
   - name: model-registration
     path: model_registration
     compute: cpu
     dependencies:
       - model-training
+    env:
+      - name: TRAINING_RESULT
+        value: "{{inputs.parameters.training-result}}"
+    inputs:
+      parameters:
+        - name: training-result
+          from: model-training
+    command: ["python", "-c"]
+    args:
+      - |
+        import os, sys, subprocess, json, yaml
+
+        raw = os.environ.get("PIPELINE_CONFIG", "")
+        if not raw.strip():
+            print("ERROR: PIPELINE_CONFIG is empty.", flush=True)
+            sys.exit(1)
+        try:
+            cfg = yaml.safe_load(raw)
+        except yaml.YAMLError as e:
+            print(f"ERROR: PIPELINE_CONFIG is not valid YAML: {e}", flush=True)
+            sys.exit(1)
+
+        tr_raw = os.environ.get("TRAINING_RESULT", "")
+        if not tr_raw.strip():
+            print("ERROR: TRAINING_RESULT input parameter is empty.", flush=True)
+            sys.exit(1)
+        try:
+            tr = json.loads(tr_raw)
+        except json.JSONDecodeError as e:
+            print(f"ERROR: TRAINING_RESULT is not valid JSON: {e}", flush=True)
+            sys.exit(1)
+
+        dataset = cfg.get("dataset") or {}
+        model = cfg.get("model") or {}
+        registration = cfg.get("registration") or {}
+
+        mlflow_run_id = tr.get("mlflow_run_id")
+        best_checkpoint_s3 = tr.get("best_checkpoint_s3")
+        if not mlflow_run_id or not best_checkpoint_s3:
+            print(f"ERROR: training_result missing mlflow_run_id or best_checkpoint_s3: {tr}", flush=True)
+            sys.exit(1)
+
+        # Derive last checkpoint path from best: replace best.pt with last.pt
+        last_checkpoint_s3 = best_checkpoint_s3.replace("/best.pt", "/last.pt")
+
+        flags = [
+            "run",
+            "--mlflow-run-id", mlflow_run_id,
+            "--best-checkpoint-path", best_checkpoint_s3,
+            "--last-checkpoint-path", last_checkpoint_s3,
+            "--dataset-version", str(dataset.get("version", "")),
+            "--model-variant", str(model.get("variant", "")),
+        ]
+
+        # Optional registration flags
+        if registration.get("registered_model_name"):
+            flags += ["--registered-model-name", str(registration["registered_model_name"])]
+        if registration.get("promote_to"):
+            flags += ["--promote-to", str(registration["promote_to"])]
+
+        # Optional lineage flags from training result
+        if dataset.get("sample_size") is not None:
+            flags += ["--dataset-sample-size", str(dataset["sample_size"])]
+
+        final_map50 = tr.get("final_map50")
+        if final_map50 is not None:
+            flags += ["--best-map50", str(final_map50)]
+
+        exported_models = tr.get("exported_models")
+        if exported_models:
+            flags += ["--exported-models", json.dumps(exported_models)]
+
+        print(f"[model-registration] Running: model-registration {' '.join(flags)}", flush=True)
+        result = subprocess.run(["model-registration"] + flags)
+        sys.exit(result.returncode)
