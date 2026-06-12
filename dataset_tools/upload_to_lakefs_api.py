@@ -167,7 +167,7 @@ def main() -> None:
     print("Committing...")
     r = session.post(
         f"{LAKEFS_URL}/api/v1/repositories/{LAKEFS_REPO}/branches/{LAKEFS_BRANCH}/commits",
-        json={"message": f"Add sample_pose_yolo dataset ({total} files)"},
+        json={"message": f"Add speedplus_yolo dataset ({total} files)"},
         timeout=600,
         allow_redirects=False,
     )

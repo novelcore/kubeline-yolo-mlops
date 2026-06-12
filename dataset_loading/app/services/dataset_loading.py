@@ -1143,7 +1143,7 @@ class DatasetLoadingService:
                 "test": "images/test",
                 "kpt_shape": [11, 3],
                 "flip_idx": [],
-                "names": {0: "object"},
+                "names": {0: "spacecraft"},
             }
 
         content["path"] = str(Path(runtime_root).resolve())
