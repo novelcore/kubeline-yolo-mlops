@@ -194,6 +194,23 @@ def main() -> None:
             None,
             help="Comma-separated precisions: 'fp16', 'int8'. Requires --export.",
         ),
+        # ---- Dataset provenance (FR-03) ----
+        dataset_version: Optional[str] = typer.Option(
+            None,
+            help="Dataset version tag propagated from the dataset_loading step.",
+        ),
+        lakefs_branch: Optional[str] = typer.Option(
+            None,
+            help="LakeFS branch the dataset was fetched from.",
+        ),
+        lakefs_commit: Optional[str] = typer.Option(
+            None,
+            help="LakeFS commit hash at dataset fetch time (from dataset_stats.json).",
+        ),
+        config_hash: Optional[str] = typer.Option(
+            None,
+            help="SHA-256 of the validated pipeline config (from config_validation artefact).",
+        ),
     ) -> None:
         try:
             manager = Manager()
@@ -255,6 +272,10 @@ def main() -> None:
                 export_enabled=export,
                 export_formats=export_formats,
                 export_precisions=export_precisions,
+                dataset_version=dataset_version,
+                lakefs_branch=lakefs_branch,
+                lakefs_commit=lakefs_commit,
+                config_hash=config_hash,
             )
             result_path = os.path.join(output_dir, "training_result.json")
             with open(result_path, "w") as f:

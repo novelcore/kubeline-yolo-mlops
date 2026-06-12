@@ -244,6 +244,10 @@ class TrainingService:
             epoch_metrics: dict[str, float] = {}
 
             model.add_callback(
+                "on_train_start",
+                self._make_provenance_callback(params),
+            )
+            model.add_callback(
                 "on_train_batch_end",
                 self._make_batch_end_callback(epoch_metrics),
             )
@@ -353,6 +357,55 @@ class TrainingService:
     # ------------------------------------------------------------------
     # Callback factories
     # ------------------------------------------------------------------
+
+    def _make_provenance_callback(
+        self,
+        params: TrainingParams,
+    ) -> Callable[[Any], None]:
+        """Return an on_train_start callback that logs dataset provenance to MLflow.
+
+        Fires after the Ultralytics MLflow callback opens the run
+        (on_pretrain_routine_end), so mlflow.active_run() is non-None.
+        Implements FR-04 and CON-02: only non-None fields are logged.
+        Q3 resolution: pipeline.config_hash is logged as both param and tag.
+        T-05 mitigation: guarded by mlflow.active_run() check.
+        """
+
+        def on_train_start(trainer: Any) -> None:  # noqa: ARG001
+            try:
+                import mlflow  # noqa: PLC0415
+
+                if mlflow.active_run() is None:
+                    _logger.warning(
+                        "No active MLflow run at on_train_start; "
+                        "skipping provenance param logging"
+                    )
+                    return
+
+                param_map = {
+                    "dataset.version": params.dataset_version,
+                    "dataset.lakefs_branch": params.lakefs_branch,
+                    "dataset.lakefs_commit": params.lakefs_commit,
+                    "pipeline.config_hash": params.config_hash,
+                }
+                for key, value in param_map.items():
+                    if value is not None:
+                        mlflow.log_param(key, value)
+
+                # Q3: config_hash also logged as tag for experiment list filtering
+                if params.config_hash is not None:
+                    mlflow.set_tag("pipeline.config_hash", params.config_hash)
+
+                _logger.info(
+                    "Logged dataset provenance to MLflow | "
+                    "lakefs_commit=%s config_hash=%s",
+                    params.lakefs_commit or "null",
+                    params.config_hash or "null",
+                )
+            except Exception as exc:  # noqa: BLE001
+                _logger.warning("Failed to log provenance params to MLflow: %s", exc)
+
+        return on_train_start
 
     @staticmethod
     def _make_batch_end_callback(

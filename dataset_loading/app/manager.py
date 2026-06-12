@@ -36,6 +36,9 @@ class Manager:
         self._service = DatasetLoadingService(
             s3_client=self._s3_client,
             max_retries=self._config.max_retries,
+            lakefs_endpoint=self._config.lakefs_endpoint,
+            lakefs_access_key=self._config.lakefs_access_key,
+            lakefs_secret_key=self._config.lakefs_secret_key,
         )
 
     # ------------------------------------------------------------------

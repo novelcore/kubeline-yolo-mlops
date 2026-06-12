@@ -13,6 +13,7 @@ Responsibilities
 7. Write a ``dataset_stats.json`` artifact to the output directory.
 """
 
+import hashlib
 import json
 import logging
 import random
@@ -23,6 +24,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+import requests
 import yaml
 
 if TYPE_CHECKING:
@@ -116,9 +118,19 @@ class DatasetLoadingService:
         retry logic is in the boto3 client configuration).
     """
 
-    def __init__(self, s3_client: Any, max_retries: int = 3) -> None:
+    def __init__(
+        self,
+        s3_client: Any,
+        max_retries: int = 3,
+        lakefs_endpoint: Optional[str] = None,
+        lakefs_access_key: Optional[str] = None,
+        lakefs_secret_key: Optional[str] = None,
+    ) -> None:
         self._s3 = s3_client
         self._max_retries = max_retries
+        self._lakefs_endpoint = lakefs_endpoint
+        self._lakefs_access_key = lakefs_access_key
+        self._lakefs_secret_key = lakefs_secret_key
         self._logger = logging.getLogger(__name__)
 
     # ------------------------------------------------------------------
@@ -149,11 +161,18 @@ class DatasetLoadingService:
 
         bucket, prefix = self._resolve_source(params)
 
+        # Fetch lakeFS branch-tip commit hash (non-blocking; falls back to None)
+        lakefs_commit: Optional[str] = None
+        if params.source == "lakefs" and params.lakefs_repo and params.lakefs_branch:
+            lakefs_commit = self._fetch_lakefs_commit(
+                params.lakefs_repo, params.lakefs_branch
+            )
+
         if params.manifest_only:
-            return self._run_manifest_only(params, bucket, prefix, output_path)
+            return self._run_manifest_only(params, bucket, prefix, output_path, lakefs_commit)
         if params.labels_only:
-            return self._run_labels_only(params, bucket, prefix, output_path)
-        return self._run_full_download(params, bucket, prefix, output_path)
+            return self._run_labels_only(params, bucket, prefix, output_path, lakefs_commit)
+        return self._run_full_download(params, bucket, prefix, output_path, lakefs_commit)
 
     # ------------------------------------------------------------------
     # Full download mode
@@ -165,6 +184,7 @@ class DatasetLoadingService:
         bucket: str,
         prefix: str,
         output_path: Path,
+        lakefs_commit: Optional[str] = None,
     ) -> YoloDatasetStats:
         """Download all images and labels from S3 with inline label validation."""
         self._logger.info(
@@ -204,6 +224,9 @@ class DatasetLoadingService:
             )
             sampled = True
 
+        # Compute dataset hash from the final (possibly sampled) image key list
+        dataset_hash = self._compute_dataset_hash(image_keys)
+
         # 6. Download all remaining files (images + labels) with inline label validation
         remaining_keys = [
             k
@@ -238,6 +261,8 @@ class DatasetLoadingService:
             sampled=sampled,
             sample_size=params.sample_size,
             seed=params.seed,
+            lakefs_commit=lakefs_commit,
+            dataset_hash=dataset_hash,
         )
 
         self._write_stats(output_path, stats)
@@ -256,6 +281,7 @@ class DatasetLoadingService:
         bucket: str,
         prefix: str,
         output_path: Path,
+        lakefs_commit: Optional[str] = None,
     ) -> YoloDatasetStats:
         """Download only labels and data.yaml; write a manifest for S3 streaming.
 
@@ -298,6 +324,9 @@ class DatasetLoadingService:
             )
             sampled = True
 
+        # Compute dataset hash from the final (possibly sampled) image key list
+        dataset_hash = self._compute_dataset_hash(image_keys)
+
         # 6. Download labels + other non-image files (skip data.yaml — already done)
         non_image_keys = [
             k for k in (label_keys + listing.other_keys) if k != listing.data_yaml_key
@@ -316,7 +345,11 @@ class DatasetLoadingService:
         self._validate_labels_only(image_keys, label_keys, output_path, data_cfg)
 
         # 8. Build and write manifest
-        manifest = self._build_manifest(bucket, prefix, image_keys)
+        manifest = self._build_manifest(
+            bucket, prefix, image_keys,
+            lakefs_commit=lakefs_commit,
+            dataset_hash=dataset_hash,
+        )
         self._write_manifest(output_path, manifest)
 
         # 9. Count labels per split (images aren't on disk)
@@ -334,6 +367,8 @@ class DatasetLoadingService:
             sampled=sampled,
             sample_size=params.sample_size,
             seed=params.seed,
+            lakefs_commit=lakefs_commit,
+            dataset_hash=dataset_hash,
         )
 
         self._write_stats(output_path, stats)
@@ -352,6 +387,7 @@ class DatasetLoadingService:
         bucket: str,
         prefix: str,
         output_path: Path,
+        lakefs_commit: Optional[str] = None,
     ) -> YoloDatasetStats:
         """List S3 keys and download only data.yaml; write a manifest with label_keys.
 
@@ -389,6 +425,9 @@ class DatasetLoadingService:
             )
             sampled = True
 
+        # Compute dataset hash from the final (possibly sampled) image key list
+        dataset_hash = self._compute_dataset_hash(image_keys)
+
         # 5. Build manifest with both image splits and label_keys
         splits: dict[str, list[str]] = {}
         for key in image_keys:
@@ -416,6 +455,8 @@ class DatasetLoadingService:
             splits=splits,
             label_keys=label_splits,
             total_images=len(image_keys),
+            lakefs_commit=lakefs_commit,
+            dataset_hash=dataset_hash,
         )
         self._write_manifest(output_path, manifest)
 
@@ -435,6 +476,8 @@ class DatasetLoadingService:
             sampled=sampled,
             sample_size=params.sample_size,
             seed=params.seed,
+            lakefs_commit=lakefs_commit,
+            dataset_hash=dataset_hash,
         )
 
         self._write_stats(output_path, stats)
@@ -989,7 +1032,12 @@ class DatasetLoadingService:
         self._logger.info("Labels-only structural validation passed")
 
     def _build_manifest(
-        self, bucket: str, prefix: str, image_keys: list[str]
+        self,
+        bucket: str,
+        prefix: str,
+        image_keys: list[str],
+        lakefs_commit: Optional[str] = None,
+        dataset_hash: Optional[str] = None,
     ) -> DatasetManifest:
         """Build a :class:`DatasetManifest` from the listed S3 image keys."""
         splits: dict[str, list[str]] = {}
@@ -1007,6 +1055,8 @@ class DatasetLoadingService:
             prefix=prefix,
             splits=splits,
             total_images=len(image_keys),
+            lakefs_commit=lakefs_commit,
+            dataset_hash=dataset_hash,
         )
 
     def _write_manifest(self, output_path: Path, manifest: DatasetManifest) -> None:
@@ -1084,6 +1134,54 @@ class DatasetLoadingService:
             else:
                 counts[split] = 0
         return counts
+
+    # ------------------------------------------------------------------
+    # Dataset lineage helpers
+    # ------------------------------------------------------------------
+
+    def _fetch_lakefs_commit(self, repo: str, branch: str) -> Optional[str]:
+        """Return the branch-tip commit hash from the lakeFS HTTP API.
+
+        Implements CON-01: a single attempt with a short timeout; any failure
+        logs a warning and returns ``None`` so the pipeline is not aborted.
+        """
+        if not self._lakefs_endpoint:
+            self._logger.warning(
+                "LAKEFS_ENDPOINT not configured; lakefs_commit will be null"
+            )
+            return None
+        url = f"{self._lakefs_endpoint.rstrip('/')}/api/v1/repositories/{repo}/commits"
+        try:
+            resp = requests.get(
+                url,
+                params={"branch": branch, "limit": 1},
+                auth=(self._lakefs_access_key or "", self._lakefs_secret_key or ""),
+                timeout=5,
+            )
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+            if results:
+                return str(results[0].get("id", ""))
+            self._logger.warning(
+                "lakeFS returned no commits for %s/%s; lakefs_commit will be null",
+                repo,
+                branch,
+            )
+            return None
+        except Exception as exc:
+            self._logger.warning(
+                "Failed to fetch lakeFS commit hash (%s); lakefs_commit will be null",
+                exc,
+            )
+            return None
+
+    def _compute_dataset_hash(self, image_keys: list[str]) -> str:
+        """Return a SHA-256 hex digest of the sorted S3 image key list.
+
+        Sorting provides determinism regardless of S3 listing order.
+        """
+        key_list = "\n".join(sorted(image_keys))
+        return hashlib.sha256(key_list.encode()).hexdigest()
 
     # ------------------------------------------------------------------
     # Source resolution

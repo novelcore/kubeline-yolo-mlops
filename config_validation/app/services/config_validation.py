@@ -1,11 +1,13 @@
+import hashlib
+import json
 import logging
 import shutil
 import time
 from pathlib import Path
-
-import yaml
 from typing import Any, Optional
 from urllib.parse import urlparse
+
+import yaml
 
 import botocore.exceptions
 import httpx
@@ -45,6 +47,11 @@ class ConfigValidationService:
 
             config = self._validate_schema(config_dict)
 
+            # Compute config hash from the schema-validated dict, before liveness
+            # checks (T-04: hash identifies the config, not the infrastructure state)
+            config_hash = self._compute_config_hash(config)
+            self._logger.info("Config hash (SHA-256): %s", config_hash)
+
             if not self._skip_liveness_checks:
                 self._logger.info("Running liveness checks")
                 self._check_dataset_path(config)
@@ -57,7 +64,7 @@ class ConfigValidationService:
             self._log_config(config)
 
             if output_path is not None:
-                self._write_output(config, output_path)
+                self._write_output(config, output_path, config_hash)
 
             self._logger.info(
                 f"Config validation passed: {config.experiment.name}"
@@ -374,12 +381,25 @@ class ConfigValidationService:
                 else:
                     child.unlink()
 
-    def _write_output(self, config: PipelineConfig, output_path: str) -> None:
-        """Write the validated config as a JSON artifact."""
+    @staticmethod
+    def _compute_config_hash(config: PipelineConfig) -> str:
+        """Return a SHA-256 hex digest of the canonical validated config JSON.
+
+        Uses sort_keys=True and compact separators (CON-03) so dict insertion
+        order does not affect the hash.
+        """
+        config_dict = config.model_dump(mode="json")
+        canonical = json.dumps(config_dict, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+    def _write_output(self, config: PipelineConfig, output_path: str, config_hash: str) -> None:
+        """Write the validated config as a JSON artifact, including config_hash."""
         try:
             path = Path(output_path)
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(config.model_dump_json(indent=2))
+            output = config.model_dump(mode="json")
+            output["config_hash"] = config_hash
+            path.write_text(json.dumps(output, indent=2))
             self._logger.info(f"Validated config written to: {output_path}")
         except OSError as e:
             raise ConfigValidationError(

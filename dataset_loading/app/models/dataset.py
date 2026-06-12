@@ -78,6 +78,17 @@ class DatasetManifest(BaseModel):
     total_images: int = Field(
         ge=0, description="Total number of images across all splits."
     )
+    lakefs_commit: Optional[str] = Field(
+        default=None,
+        description=(
+            "LakeFS branch-tip commit hash at fetch time. "
+            "Null when source=s3 or the lakeFS API was unreachable."
+        ),
+    )
+    dataset_hash: Optional[str] = Field(
+        default=None,
+        description="SHA-256 hex digest of the sorted S3 image key list.",
+    )
 
 
 class YoloDatasetStats(BaseModel):
@@ -101,3 +112,14 @@ class YoloDatasetStats(BaseModel):
         description="The requested sample size (None when not sampled).",
     )
     seed: int = Field(description="Random seed used during sampling.")
+    lakefs_commit: Optional[str] = Field(
+        default=None,
+        description=(
+            "LakeFS branch-tip commit hash at fetch time. "
+            "Null when source=s3 or the lakeFS API was unreachable."
+        ),
+    )
+    dataset_hash: Optional[str] = Field(
+        default=None,
+        description="SHA-256 hex digest of the sorted S3 image key list.",
+    )

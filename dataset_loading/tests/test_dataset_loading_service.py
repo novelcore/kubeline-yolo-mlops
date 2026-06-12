@@ -1336,3 +1336,151 @@ class TestInlineLabelValidation:
 
         with pytest.raises(DatasetLoadingError, match="empty"):
             service.run(params)
+
+
+# ---------------------------------------------------------------------------
+# Dataset lineage tests (FR-01, FR-02)
+# ---------------------------------------------------------------------------
+
+
+class TestDatasetLineage:
+    """Tests for lakefs_commit and dataset_hash provenance fields."""
+
+    def test_compute_dataset_hash_is_deterministic(
+        self, valid_source: Path, tmp_path: Path
+    ) -> None:
+        """_compute_dataset_hash returns the same digest for the same keys."""
+        service = DatasetLoadingService(s3_client=MagicMock())
+        keys = ["a/b/img1.jpg", "a/b/img2.jpg", "a/c/img3.jpg"]
+        h1 = service._compute_dataset_hash(keys)
+        h2 = service._compute_dataset_hash(keys)
+        assert h1 == h2
+        assert len(h1) == 64  # SHA-256 hex digest
+
+    def test_compute_dataset_hash_is_sort_order_independent(self) -> None:
+        """_compute_dataset_hash is identical regardless of input list order."""
+        service = DatasetLoadingService(s3_client=MagicMock())
+        keys = ["z/img3.jpg", "a/img1.jpg", "m/img2.jpg"]
+        h_orig = service._compute_dataset_hash(keys)
+        h_shuffled = service._compute_dataset_hash(list(reversed(keys)))
+        assert h_orig == h_shuffled
+
+    def test_fetch_lakefs_commit_success(self) -> None:
+        """_fetch_lakefs_commit returns the commit id on a successful API response."""
+        service = DatasetLoadingService(
+            s3_client=MagicMock(),
+            lakefs_endpoint="https://lakefs.example.com",
+            lakefs_access_key="key",
+            lakefs_secret_key="secret",
+        )
+        fake_response = MagicMock()
+        fake_response.json.return_value = {
+            "results": [{"id": "abc123def456", "message": "initial commit"}]
+        }
+        fake_response.raise_for_status.return_value = None
+
+        with patch("app.services.dataset_loading.requests.get", return_value=fake_response):
+            commit = service._fetch_lakefs_commit("my-repo", "main")
+
+        assert commit == "abc123def456"
+
+    def test_fetch_lakefs_commit_timeout_returns_none(self) -> None:
+        """_fetch_lakefs_commit returns None (not an exception) on timeout (CON-01)."""
+        import requests as req_lib
+
+        service = DatasetLoadingService(
+            s3_client=MagicMock(),
+            lakefs_endpoint="https://lakefs.example.com",
+            lakefs_access_key="key",
+            lakefs_secret_key="secret",
+        )
+
+        with patch(
+            "app.services.dataset_loading.requests.get",
+            side_effect=req_lib.Timeout("timed out"),
+        ):
+            commit = service._fetch_lakefs_commit("my-repo", "main")
+
+        assert commit is None
+
+    def test_fetch_lakefs_commit_no_endpoint_returns_none(self) -> None:
+        """_fetch_lakefs_commit returns None when no endpoint is configured."""
+        service = DatasetLoadingService(s3_client=MagicMock())  # no lakefs creds
+        commit = service._fetch_lakefs_commit("my-repo", "main")
+        assert commit is None
+
+    def test_fetch_lakefs_commit_empty_results_returns_none(self) -> None:
+        """_fetch_lakefs_commit returns None when the API returns an empty result list."""
+        service = DatasetLoadingService(
+            s3_client=MagicMock(),
+            lakefs_endpoint="https://lakefs.example.com",
+        )
+        fake_response = MagicMock()
+        fake_response.json.return_value = {"results": []}
+        fake_response.raise_for_status.return_value = None
+
+        with patch("app.services.dataset_loading.requests.get", return_value=fake_response):
+            commit = service._fetch_lakefs_commit("my-repo", "main")
+
+        assert commit is None
+
+    def test_stats_include_provenance_fields_s3_source(
+        self, valid_source: Path, tmp_path: Path
+    ) -> None:
+        """dataset_hash is set and lakefs_commit is None when source=s3."""
+        mock_s3 = _make_mock_s3(valid_source)
+        params = YoloDatasetParams(
+            version="v1",
+            source="s3",
+            output_dir=str(tmp_path / "output"),
+        )
+        service = DatasetLoadingService(s3_client=mock_s3)
+        stats = service.run(params)
+
+        assert stats.lakefs_commit is None  # Q4: explicitly null for s3 source
+        assert stats.dataset_hash is not None
+        assert len(stats.dataset_hash) == 64
+
+    def test_stats_and_manifest_include_provenance_in_manifest_only_mode(
+        self, valid_source: Path, tmp_path: Path
+    ) -> None:
+        """dataset_hash appears in both stats and manifest in manifest-only mode."""
+        from tests.test_dataset_loading_service import _make_mock_s3_with_listing  # noqa: PLC0415
+
+        src = tmp_path / "source"
+        _build_yolo_tree(src)
+
+        # Use _make_mock_s3 which sets up download_file and paginator consistently.
+        # Override the paginator to ensure all file keys are present for the manifest.
+        mock_s3 = _make_mock_s3(src)
+        prefix = "upload-initial/dataset/v1/"
+        all_keys: list[str] = []
+        for path in sorted(src.rglob("*")):
+            if path.is_file():
+                all_keys.append(str(path.relative_to(src)))
+        paginator = MagicMock()
+        paginator.paginate.return_value = [
+            {"Contents": [{"Key": prefix + k} for k in all_keys]}
+        ]
+        mock_s3.get_paginator.return_value = paginator
+
+        params = YoloDatasetParams(
+            version="v1",
+            source="s3",
+            output_dir=str(tmp_path / "output"),
+            manifest_only=True,
+        )
+        service = DatasetLoadingService(s3_client=mock_s3)
+        stats = service.run(params)
+
+        # Stats must have dataset_hash
+        assert stats.dataset_hash is not None
+        assert len(stats.dataset_hash) == 64
+        assert stats.lakefs_commit is None
+
+        # Manifest must also carry the same hash (Q1 resolution)
+        manifest_path = tmp_path / "output" / "dataset_manifest.json"
+        assert manifest_path.exists()
+        manifest_data = json.loads(manifest_path.read_text())
+        assert manifest_data["dataset_hash"] == stats.dataset_hash
+        assert manifest_data["lakefs_commit"] is None
