@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-An Argo Workflows-based MLOps pipeline for the Infinite Orbits project. The pipeline consists of four sequential steps, each packaged as an independent containerized Python application following the **Kubestep Python Template** pattern.
+An Argo Workflows-based MLOps pipeline for the Example Org project. The pipeline consists of four sequential steps, each packaged as an independent containerized Python application following the **Kubestep Python Template** pattern.
 
 Steps run in order: `config_validation` → `dataset_loading` → `model_training` → `model_registration`.
 

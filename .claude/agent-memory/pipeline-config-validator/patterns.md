@@ -37,10 +37,10 @@ objects anyway, so these values were unreachable from any step.
 | dropout | Regularization; relevant for larger model variants |
 | freeze | Enables backbone freezing for fine-tuning workflows |
 | close_mosaic | Disabling mosaic in final epochs improves convergence; commonly tuned |
-| pose | PRIMARY pose loss lever for spacecraft keypoint accuracy |
+| pose | PRIMARY pose loss lever for object keypoint accuracy |
 | kobj | Keypoint objectness; paired with pose gain |
 | box | Bounding-box regression loss; affects detection anchor quality |
-| cls | Classification loss; less critical for single-class spacecraft |
+| cls | Classification loss; less critical for single-class object |
 | dfl | Distribution Focal Loss; affects box prediction distribution |
 | seed | Reproducibility; distinct scope from dataset.seed |
 | deterministic | Reproducibility; enables cuDNN determinism |
@@ -56,21 +56,21 @@ objects anyway, so these values were unreachable from any step.
 | exist_ok | Pipeline infra concern |
 | verbose | Pipeline infra concern; belongs in step Config |
 | plots | Pipeline infra concern |
-| multi_scale | Low priority; spacecraft use fixed scale |
+| multi_scale | Low priority; object use fixed scale |
 | overlap_mask | Segmentation-only; irrelevant for pose |
 | mask_ratio | Segmentation-only |
 | pretrained | Covered by model.pretrained_weights |
-| rect | Not relevant for spacecraft pose |
-| single_cls | Not relevant for spacecraft pose |
+| rect | Not relevant for object pose |
+| single_cls | Not relevant for object pose |
 
 ### Included in AugmentationConfig
 | Parameter | Rationale |
 |-----------|-----------|
 | shear | Geometric; useful for pose; complement to degrees/translate/scale |
-| perspective | Projective transform; relevant for spacecraft imagery; validated [0, 0.001] |
+| perspective | Projective transform; relevant for object imagery; validated [0, 0.001] |
 | copy_paste | Segment copy-paste; included for completeness even if rarely tuned |
 | erasing | Strong regularization augmentation; Ultralytics default 0.4 |
-| bgr | BGR channel flip; included for completeness; default 0.0 for spacecraft |
+| bgr | BGR channel flip; included for completeness; default 0.0 for object |
 
 ### Excluded from AugmentationConfig
 | Parameter | Reason |

@@ -108,7 +108,7 @@ def _build_yolo_tree(
             "test": "images/test",
             "kpt_shape": [11, 3],
             "flip_idx": [],
-            "names": {0: "spacecraft"},
+            "names": {0: "object"},
         }
         (root / "data.yaml").write_text(yaml.dump(data))
 
@@ -489,7 +489,7 @@ class TestValidation:
             "val": "images/val",
             "test": "images/test",
             "kpt_shape": [11, 3],
-            "names": ["spacecraft"],  # should be {0: "spacecraft"}
+            "names": ["object"],  # should be {0: "object"}
         }
         (src / "data.yaml").write_text(yaml.dump(bad_yaml))
 
@@ -511,7 +511,7 @@ class TestValidation:
             "val": "images/val",
             "test": "images/test",
             "kpt_shape": [11, 4],  # dimension must be 2 or 3
-            "names": {0: "spacecraft"},
+            "names": {0: "object"},
         }
         (src / "data.yaml").write_text(yaml.dump(bad_yaml))
 
@@ -533,7 +533,7 @@ class TestValidation:
             "val": "images/val",
             "test": "images/test",
             "kpt_shape": [11, 3],
-            "names": {0: "spacecraft"},
+            "names": {0: "object"},
             "nc": 5,  # doesn't match len(names)=1
         }
         (src / "data.yaml").write_text(yaml.dump(bad_yaml))

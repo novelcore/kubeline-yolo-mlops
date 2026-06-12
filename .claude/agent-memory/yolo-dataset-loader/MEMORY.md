@@ -1,16 +1,16 @@
 # YOLO Dataset Loader — Agent Memory
 
 ## Dataset Format
-- YOLO pose estimation for spacecraft (SpeedPlus dataset).
-- Reference dataset at `/home/thanos/Documents/speedplus_yolo/`.
+- YOLO pose estimation for object (SamplePose dataset).
+- Reference dataset at `/home/thanos/Documents/sample_pose_yolo/`.
 - 3 splits: `train`, `val`, `test`.
 - Layout: `images/{split}/*.jpg`, `labels/{split}/*.txt`, `data.yaml` at root.
 - Label line: 38 tokens = `class cx cy w h kp1x kp1y kp1vis ... kp11x kp11y kp11vis`.
 - 11 keypoints × 3 values (x, y, visibility ∈ {0,1,2}), all bbox coords normalized [0,1].
-- Class 0 = "spacecraft", kpt_shape = [11, 3], flip_idx = [].
+- Class 0 = "object", kpt_shape = [11, 3], flip_idx = [].
 
 ## Storage Convention
-- S3 bucket: `io-mlops`, default prefix: `datasets/speedplus_yolo/{version}/`.
+- S3 bucket: `mlops-artifacts`, default prefix: `datasets/sample_pose_yolo/{version}/`.
 - LakeFS uses S3-compatible API via boto3 with `endpoint_url=LAKEFS_ENDPOINT`.
 - Always download fully before validating (no streaming mode).
 

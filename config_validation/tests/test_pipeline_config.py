@@ -6,9 +6,9 @@ from app.models.pipeline_config import PipelineConfig
 
 VALID_CONFIG: dict = {
     "experiment": {
-        "name": "spacecraft-pose-v1-yolov8n",
+        "name": "object-pose-v1-yolov8n",
         "description": "Baseline run",
-        "tags": {"project": "infinite-orbits", "phase": "1"},
+        "tags": {"project": "example-project", "phase": "1"},
     },
     "dataset": {
         "version": "v1",
@@ -30,7 +30,7 @@ VALID_CONFIG: dict = {
     },
     "checkpointing": {
         "interval_epochs": 10,
-        "storage_path": "s3://io-mlops/checkpoints",
+        "storage_path": "s3://mlops-artifacts/checkpoints",
         "resume_from": None,
     },
     "early_stopping": {
@@ -45,7 +45,7 @@ VALID_CONFIG: dict = {
 
 def test_valid_config_parses_successfully():
     config = PipelineConfig(**VALID_CONFIG)
-    assert config.experiment.name == "spacecraft-pose-v1-yolov8n"
+    assert config.experiment.name == "object-pose-v1-yolov8n"
     assert config.model.variant == "yolov8n-pose.pt"
     assert config.training.epochs == 100
 
@@ -109,7 +109,7 @@ def test_resume_from_s3_path_is_valid():
     data = dict(VALID_CONFIG)
     data["checkpointing"] = {
         **VALID_CONFIG["checkpointing"],
-        "resume_from": "s3://io-mlops/checkpoints/exp/last.pt",
+        "resume_from": "s3://mlops-artifacts/checkpoints/exp/last.pt",
     }
     PipelineConfig(**data)
 

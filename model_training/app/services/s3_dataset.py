@@ -63,7 +63,7 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
         Name of the S3 bucket holding the images.
     s3_prefix:
         Key prefix under which images are stored, e.g.
-        ``"datasets/speedplus_yolo/v1/images/train/"``.
+        ``"datasets/sample_pose_yolo/v1/images/train/"``.
     local_labels_root:
         Local directory under which label ``.txt`` files are stored, structured
         as ``<local_labels_root>/<split>/<stem>.txt``.

@@ -1,9 +1,9 @@
 [project]
 name = "config-validation"
 version = "0.1.0"
-description = "Validates pipeline configuration for the Infinite Orbits MLOps pipeline."
+description = "Validates pipeline configuration for the Example Org MLOps pipeline."
 authors = [
-    { name = "Infinite Orbits", email = "dev@infiniteorbits.io" }
+    { name = "Example Org", email = "dev@example.com" }
 ]
 readme = "README.md"
 

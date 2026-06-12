@@ -178,7 +178,7 @@ class TrainingConfig(BaseModel):
     deterministic: bool = True
 
     # ---- Pose-estimation loss gains ----
-    # These are the primary quality levers for spacecraft keypoint accuracy.
+    # These are the primary quality levers for object keypoint accuracy.
     pose: float = Field(default=12.0, gt=0.0)   # keypoint regression loss
     kobj: float = Field(default=2.0, gt=0.0)    # keypoint objectness loss
     box: float = Field(default=7.5, gt=0.0)     # bounding-box regression loss

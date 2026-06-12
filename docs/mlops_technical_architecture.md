@@ -1,9 +1,9 @@
 # MLOps Training Pipeline — Technical Architecture Document
-## Phase 1: Spacecraft Pose Estimation · SPEED+ · YOLO Pose · Argo Workflows
+## Phase 1: Object Pose Estimation · Sample Pose · YOLO Pose · Argo Workflows
 
 | | |
 |---|---|
-| **Client** | Infinite Orbits |
+| **Client** | Example Org |
 | **Vendor** | Novelcore (Platform Team + ML Team) |
 | **Document Type** | Technical Architecture — Phase 1 |
 | **Parent Document** | MLOps Training Pipeline — Phase 1 PRD |
@@ -72,7 +72,7 @@ graph TB
 ```mermaid
 flowchart LR
     subgraph Storage["S3 / LakeFS"]
-        DS["SPEED+ Dataset (images + labels)"]
+        DS["Sample Pose Dataset (images + labels)"]
         CK["Checkpoints"]
     end
 
@@ -107,14 +107,14 @@ flowchart LR
 
 ## 3. Dataset Specification (Technical Detail)
 
-### 3.1 SPEED+ Native Format
+### 3.1 Sample Pose Native Format
 
-The SPEED+ dataset as published has the following structure:
+The Sample Pose dataset as published has the following structure:
 
 ```
-speedplus/
+sample_pose/
 ├── camera.json                  # Camera intrinsic parameters
-├── kpts.mat                     # 11 3D keypoints of spacecraft model (body frame)
+├── kpts.mat                     # 11 3D keypoints of object model (body frame)
 ├── synthetic/
 │   ├── train.json               # Per-image pose labels (quaternion + translation)
 │   ├── validation.json          # Per-image pose labels
@@ -137,9 +137,9 @@ speedplus/
 
 `camera.json` contains the camera intrinsic matrix K and distortion coefficients in OpenCV convention (fx, fy, cx, cy, k1, k2, p1, p2). Image resolution is 1920x1200.
 
-`kpts.mat` contains a `corners` matrix of shape `(3, 11)` — the 3D coordinates of 11 spacecraft landmarks in the satellite body reference frame. These are the keypoints the model must learn to detect.
+`kpts.mat` contains a `corners` matrix of shape `(3, 11)` — the 3D coordinates of 11 object landmarks in the object body reference frame. These are the keypoints the model must learn to detect.
 
-`train.json` / `validation.json` / `test.json` contain per-image pose labels as quaternion (q_w, q_x, q_y, q_z) and translation vector (t_x, t_y, t_z) describing the spacecraft pose relative to the camera.
+`train.json` / `validation.json` / `test.json` contain per-image pose labels as quaternion (q_w, q_x, q_y, q_z) and translation vector (t_x, t_y, t_z) describing the object pose relative to the camera.
 
 ### 3.2 Target Training Format (Ultralytics YOLO Pose)
 
@@ -161,12 +161,12 @@ For each image `i` with pose label `(q_i, t_i)`:
 <class_id> <x_center> <y_center> <width> <height> <px1> <py1> <v1> <px2> <py2> <v2> ... <px11> <py11> <v11>
 ```
 
-Where all spatial values are normalized to `[0, 1]` and `class_id = 0` (single class: spacecraft). Each line has 5 + (11 x 3) = 38 values.
+Where all spatial values are normalized to `[0, 1]` and `class_id = 0` (single class: object). Each line has 5 + (11 x 3) = 38 values.
 
 **Output dataset structure:**
 
 ```
-speedplus_yolo/
+sample_pose_yolo/
 ├── data.yaml
 ├── images/
 │   ├── train/
@@ -187,22 +187,22 @@ speedplus_yolo/
 **`data.yaml`:**
 
 ```yaml
-path: /data/speedplus_yolo
+path: /data/sample_pose_yolo
 train: images/train
 val: images/val
 test: images/test
 
 kpt_shape: [11, 3]      # 11 keypoints, 3 dims (x, y, visibility)
-flip_idx: []             # No horizontal flip symmetry for spacecraft
+flip_idx: []             # No horizontal flip symmetry for object
 names:
-  0: spacecraft
+  0: object
 ```
 
-Note: `flip_idx` is empty because a spacecraft is not left-right symmetric in the same way a human body is. Horizontal flip augmentation should be disabled or used with caution.
+Note: `flip_idx` is empty because an object is not left-right symmetric in the same way a human body is. Horizontal flip augmentation should be disabled or used with caution.
 
 ### 3.3 Dataset Location and Versioning
 
-The converted dataset is stored in S3 at a path like `s3://io-mlops/datasets/speedplus_yolo/v1/`. When LakeFS is operational, this becomes a LakeFS branch/commit reference such as `lakefs://datasets/speedplus_yolo@main` accessible via LakeFS's S3-compatible gateway. The experiment YAML references this path, and the pipeline treats it as an opaque S3 endpoint.
+The converted dataset is stored in S3 at a path like `s3://mlops-artifacts/datasets/sample_pose_yolo/v1/`. When LakeFS is operational, this becomes a LakeFS branch/commit reference such as `lakefs://datasets/sample_pose_yolo@main` accessible via LakeFS's S3-compatible gateway. The experiment YAML references this path, and the pipeline treats it as an opaque S3 endpoint.
 
 ### 3.4 Dataset Sampling Algorithm
 
@@ -253,7 +253,7 @@ The seed ensures reproducibility: the same `(dataset_version, sample_size, seed)
 
 **Algorithm:**
 
-1. **Resolve dataset reference:** Read `dataset.version` and `dataset.source` from config. Construct the S3/LakeFS path (e.g., `s3://io-mlops/datasets/speedplus_yolo/v1/` or `lakefs://datasets/speedplus_yolo@<commit>`).
+1. **Resolve dataset reference:** Read `dataset.version` and `dataset.source` from config. Construct the S3/LakeFS path (e.g., `s3://mlops-artifacts/datasets/sample_pose_yolo/v1/` or `lakefs://datasets/sample_pose_yolo@<commit>`).
 
 2. **Fetch dataset:** If `dataset.sample_size` is specified, list all image filenames in the `images/train/` prefix, apply the seeded random sampling algorithm (Section 3.4) to select `sample_size` images, download only the selected images and corresponding labels to local storage, and generate a new `data.yaml` for the sample. If `dataset.sample_size` is null (full dataset), download or mount the full dataset via S3 FUSE or pre-populated PVC.
 
@@ -328,9 +328,9 @@ Note: Ultralytics has a built-in MLflow integration. The decision on whether to 
 ```json
 {
   "mlflow_run_id": "abc123",
-  "mlflow_experiment_name": "spacecraft-pose-v1",
-  "best_model_path": "s3://io-mlops/checkpoints/exp-001/best.pt",
-  "last_model_path": "s3://io-mlops/checkpoints/exp-001/last.pt",
+  "mlflow_experiment_name": "object-pose-v1",
+  "best_model_path": "s3://mlops-artifacts/checkpoints/exp-001/best.pt",
+  "last_model_path": "s3://mlops-artifacts/checkpoints/exp-001/last.pt",
   "final_metrics": {
     "mAP50": 0.85,
     "mAP50-95": 0.72,
@@ -360,7 +360,7 @@ Note: Ultralytics has a built-in MLflow integration. The decision on whether to 
 
 1. **Connect to MLflow** using the tracking URI from the validated config.
 
-2. **Register best model.** Call `mlflow.register_model()` with the model URI from the run, creating a new version in the registry under the name `"spacecraft-pose-yolo"`.
+2. **Register best model.** Call `mlflow.register_model()` with the model URI from the run, creating a new version in the registry under the name `"object-pose-yolo"`.
 
 3. **Register last model.** Register `last.pt` as a separate artifact under the same model name, tagged to distinguish it from `best.pt`.
 
@@ -413,10 +413,10 @@ Note: Ultralytics has a built-in MLflow integration. The decision on whether to 
 ```yaml
 # --- Experiment Metadata ---
 experiment:
-  name: "spacecraft-pose-v1-yolov8n"          # Required. Used as MLflow experiment name
-  description: "Baseline YOLOv8n-pose on SPEED+ synthetic full dataset"
+  name: "object-pose-v1-yolov8n"          # Required. Used as MLflow experiment name
+  description: "Baseline YOLOv8n-pose on Sample Pose synthetic full dataset"
   tags:                                        # Optional. Logged to MLflow
-    project: "infinite-orbits"
+    project: "example-project"
     phase: "1"
     
 # --- Dataset Configuration ---
@@ -449,7 +449,7 @@ training:
 # --- Checkpointing ---
 checkpointing:
   interval_epochs: 10                          # Save checkpoint every N epochs
-  storage_path: "s3://io-mlops/checkpoints"    # Base path; experiment name appended
+  storage_path: "s3://mlops-artifacts/checkpoints"    # Base path; experiment name appended
   resume_from: null                            # null | "auto" | specific S3 path to .pt
 
 # --- Early Stopping ---
@@ -465,7 +465,7 @@ augmentation:
   translate: 0.1
   scale: 0.5
   flipud: 0.0                                 # Vertical flip probability
-  fliplr: 0.0                                 # Horizontal flip — disabled for spacecraft
+  fliplr: 0.0                                 # Horizontal flip — disabled for object
   mosaic: 1.0
   mixup: 0.0
 
@@ -499,7 +499,7 @@ resources:
 ## 6. Monorepo Structure
 
 ```
-io-mlops/
+mlops-artifacts/
 ├── README.md
 ├── pyproject.toml                         # Top-level Python project (monorepo)
 ├── Makefile                               # Common commands: lint, test, build
@@ -565,7 +565,7 @@ io-mlops/
 │           └── mlflow_utils.py            # MLflow connection helpers
 │
 ├── scripts/                               # Standalone utility scripts
-│   ├── convert_speedplus_to_yolo.py       # One-time offline dataset conversion
+│   ├── convert_sample_pose_to_yolo.py       # One-time offline dataset conversion
 │   └── generate_sample.py                 # Local sampling for engineer use
 │
 ├── tests/
@@ -589,7 +589,7 @@ Experiment configs live in `configs/` and are committed to Git, providing a full
 
 The `src/io_mlops/` package is pip-installable (`pip install -e .`), making it importable both inside containers and in local development.
 
-The offline conversion script (`scripts/convert_speedplus_to_yolo.py`) is separate from the pipeline code, emphasizing that conversion is a one-time prerequisite.
+The offline conversion script (`scripts/convert_sample_pose_to_yolo.py`) is separate from the pipeline code, emphasizing that conversion is a one-time prerequisite.
 
 ---
 
@@ -689,7 +689,7 @@ Artifacts flow between steps via Argo's native artifact mechanism. Small artifac
 
 ```
 MLflow Tracking Server
-└── Experiment: "spacecraft-pose-v1"           ← experiment.name from YAML
+└── Experiment: "object-pose-v1"           ← experiment.name from YAML
     ├── Run: "baseline-yolov8n-full-dataset"   ← experiment.description
     │   ├── Parameters: {epochs, batch_size, lr, model_variant, dataset_version, ...}
     │   ├── Metrics: {train/loss, val/loss, mAP50, mAP50-95, ...} x N epochs
@@ -701,7 +701,7 @@ MLflow Tracking Server
     └── ...
 
 MLflow Model Registry
-└── Model: "spacecraft-pose-yolo"
+└── Model: "object-pose-yolo"
     ├── Version 1 ← linked to Run "baseline-yolov8n-full-dataset"
     │   ├── Tags: {dataset_version, model_variant, best_mAP50}
     │   └── Alias: (none)
@@ -742,7 +742,7 @@ The decision on whether to use the built-in integration or the custom callback w
 ### 9.1 Checkpoint Storage Layout
 
 ```
-s3://io-mlops/checkpoints/
+s3://mlops-artifacts/checkpoints/
 └── {experiment_name}/
     └── {run_id}/
         ├── best.pt              # Best validation metric
@@ -760,7 +760,7 @@ Engineer resubmits YAML with:
     resume_from: "auto"
 
 Step 1 (Validation):
-  → Scans s3://io-mlops/checkpoints/{experiment_name}/ for latest run
+  → Scans s3://mlops-artifacts/checkpoints/{experiment_name}/ for latest run
   → Finds last.pt, verifies it is loadable
   → Sets resume_path in validated config
 

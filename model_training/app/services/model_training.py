@@ -1045,7 +1045,7 @@ class TrainingService:
                 "test": "images/test",
                 "kpt_shape": [11, 3],
                 "flip_idx": [],
-                "names": {0: "spacecraft"},
+                "names": {0: "object"},
             }
 
         # Always set path to the resolved absolute dataset directory
