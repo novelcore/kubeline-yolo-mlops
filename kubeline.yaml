@@ -1,30 +1,1006 @@
+version: 2
+
+# Pipeline parameters — exposed as individual fields in the Argo UI submission form.
+#
+# Precedence rule: if `config` (the advanced override) is non-empty, it is
+# parsed as a full pipeline_config YAML and ALL individual parameters below
+# are ignored. When `config` is empty (the default), each step's PARAMS_YAML
+# env variable is assembled from the individual parameters and used as the
+# config source.
+#
+# NOTE: cpu-class, gpu-class, image-*, and platform endpoint parameters are
+# injected by the KubeLine generator and MUST NOT be defined here.
+pipeline:
+  parameters:
+    # ── Advanced override (non-empty OVERRIDES all individual params) ─────────
+    - name: config
+      default: ""
+      description: "ADVANCED: full pipeline config YAML (schema pipeline_config.example.yaml). When non-empty it OVERRIDES all individual parameters above — intended for scripted submissions (argo submit -p config=...)."
+
+    # ── Experiment ────────────────────────────────────────────────────────────
+    - name: experiment-name
+      default: "spacecraft-pose-v1-yolov8n"
+      description: "MLflow experiment name and S3 checkpoint path prefix."
+
+    - name: experiment-description
+      default: ""
+      description: "Optional free-text description stored in the MLflow run."
+
+    # ── Dataset ───────────────────────────────────────────────────────────────
+    - name: dataset-version
+      default: "upload-initial"
+      description: "Dataset version tag (e.g. 'v1' or 'upload-initial')."
+
+    - name: dataset-source
+      default: "lakefs"
+      enum: ["lakefs", "s3"]
+      description: "Storage backend for the dataset: 'lakefs' or 's3'."
+
+    - name: dataset-path-override
+      default: ""
+      description: "Full S3/LakeFS URI override. Empty = auto-construct from repo/branch/version."
+
+    - name: dataset-sample-size
+      default: ""
+      description: "Integer sample size for reproducible subsets. Empty = full dataset."
+
+    - name: dataset-seed
+      default: "42"
+      description: "Random seed for reproducible dataset sampling."
+
+    # ── Model ─────────────────────────────────────────────────────────────────
+    - name: model-variant
+      default: "yolov8n-pose.pt"
+      enum:
+        - "yolov8n-pose.pt"
+        - "yolov8s-pose.pt"
+        - "yolov8m-pose.pt"
+        - "yolov8l-pose.pt"
+        - "yolov8x-pose.pt"
+        - "yolov9n-pose.pt"
+        - "yolov9s-pose.pt"
+        - "yolov9m-pose.pt"
+        - "yolov9l-pose.pt"
+        - "yolov9x-pose.pt"
+        - "yolov10n-pose.pt"
+        - "yolov10s-pose.pt"
+        - "yolov10m-pose.pt"
+        - "yolov10l-pose.pt"
+        - "yolov10x-pose.pt"
+        - "yolov11n-pose.pt"
+        - "yolov11s-pose.pt"
+        - "yolov11m-pose.pt"
+        - "yolov11l-pose.pt"
+        - "yolov11x-pose.pt"
+      description: "YOLO pose model variant file. Determines architecture and parameter count."
+
+    - name: pretrained-weights
+      default: ""
+      description: "S3 URI to custom .pt weights for weight-only init. Empty = use model-variant's bundled weights."
+
+    # ── Core training schedule ────────────────────────────────────────────────
+    - name: epochs
+      default: "100"
+      description: "Total training epochs."
+
+    - name: batch-size
+      default: "16"
+      description: "Training batch size. Use -1 for Ultralytics auto-batch."
+
+    - name: image-size
+      default: "640"
+      description: "Input image resolution in pixels (must be a multiple of 32)."
+
+    # ── Learning rate ─────────────────────────────────────────────────────────
+    - name: learning-rate
+      default: "0.01"
+      description: "Initial learning rate (Ultralytics lr0)."
+
+    - name: cos-lr
+      default: "true"
+      enum: ["false", "true"]
+      description: "Use cosine learning rate schedule."
+
+    - name: lrf
+      default: "0.01"
+      description: "Final LR ratio: final_lr = learning_rate * lrf. Must be in (0, 1]."
+
+    # ── Optimizer ─────────────────────────────────────────────────────────────
+    - name: optimizer
+      default: "SGD"
+      enum: ["SGD", "Adam", "AdamW"]
+      description: "Gradient optimizer. SGD is the Ultralytics default for YOLO."
+
+    - name: momentum
+      default: "0.937"
+      description: "SGD momentum or Adam beta1."
+
+    - name: weight-decay
+      default: "0.0005"
+      description: "Optimizer weight decay (L2 regularization coefficient)."
+
+    # ── Warmup ────────────────────────────────────────────────────────────────
+    - name: warmup-epochs
+      default: "3.0"
+      description: "Number of LR warmup epochs."
+
+    - name: warmup-momentum
+      default: "0.8"
+      description: "Initial momentum during warmup (rises to `momentum` by end of warmup)."
+
+    # ── Regularization ────────────────────────────────────────────────────────
+    - name: dropout
+      default: "0.0"
+      description: "Dropout rate applied in the classifier head [0.0, 1.0)."
+
+    - name: label-smoothing
+      default: "0.0"
+      description: "Label smoothing epsilon [0.0, 1.0). Reduces overconfidence."
+
+    # ── Gradient accumulation ─────────────────────────────────────────────────
+    - name: nbs
+      default: "64"
+      description: "Nominal batch size. Ultralytics scales gradients so effective LR matches this batch size."
+
+    # ── Fine-tuning control ───────────────────────────────────────────────────
+    - name: freeze
+      default: ""
+      description: "Freeze the first N backbone layers. Empty = train all layers."
+
+    # ── Training efficiency ───────────────────────────────────────────────────
+    - name: amp
+      default: "true"
+      enum: ["false", "true"]
+      description: "Enable Automatic Mixed Precision (FP16). Halves GPU memory use."
+
+    - name: close-mosaic
+      default: "10"
+      description: "Disable mosaic augmentation for the last N epochs (0 = never disable)."
+
+    # ── Reproducibility ───────────────────────────────────────────────────────
+    - name: training-seed
+      default: "0"
+      description: "Global training RNG seed (separate from dataset-seed)."
+
+    - name: deterministic
+      default: "true"
+      enum: ["false", "true"]
+      description: "Enable cuDNN deterministic mode. Slight speed penalty; ensures reproducibility."
+
+    # ── Pose-estimation loss gains ────────────────────────────────────────────
+    - name: pose
+      default: "12.0"
+      description: "Keypoint regression loss gain. Primary lever for spacecraft keypoint accuracy."
+
+    - name: kobj
+      default: "2.0"
+      description: "Keypoint objectness loss gain."
+
+    - name: box
+      default: "7.5"
+      description: "Bounding-box regression loss gain."
+
+    - name: cls
+      default: "0.5"
+      description: "Classification loss gain."
+
+    - name: dfl
+      default: "1.5"
+      description: "Distribution Focal Loss gain."
+
+    # ── Early stopping ────────────────────────────────────────────────────────
+    - name: early-stopping-patience
+      default: "50"
+      description: "Epochs without improvement before early stopping triggers."
+
+    # ── Checkpointing ─────────────────────────────────────────────────────────
+    - name: checkpointing-interval-epochs
+      default: "10"
+      description: "Upload an intermediate checkpoint to S3 every N epochs."
+
+    - name: checkpointing-storage-path
+      default: ""
+      description: "Override checkpoint location (s3://bucket/prefix). Empty = platform-derived (project lakeFS repository, main/checkpoints)."
+
+    - name: checkpoint-resume-from
+      default: ""
+      description: "Checkpoint to resume from: empty = start fresh, 'auto' = latest, or a full S3 path."
+
+    # ── Augmentation ──────────────────────────────────────────────────────────
+    - name: aug-hsv-h
+      default: "0.015"
+      description: "HSV hue augmentation range [0.0, 1.0]."
+
+    - name: aug-hsv-s
+      default: "0.7"
+      description: "HSV saturation augmentation range [0.0, 1.0]."
+
+    - name: aug-hsv-v
+      default: "0.4"
+      description: "HSV value augmentation range [0.0, 1.0]."
+
+    - name: aug-degrees
+      default: "0.0"
+      description: "Random rotation range in degrees. Keep 0.0 for pose (keypoints are rotation-sensitive)."
+
+    - name: aug-translate
+      default: "0.1"
+      description: "Random translation fraction of image size."
+
+    - name: aug-scale
+      default: "0.5"
+      description: "Random scale gain (multiplicative)."
+
+    - name: aug-shear
+      default: "0.0"
+      description: "Random shear range in degrees."
+
+    - name: aug-perspective
+      default: "0.0"
+      description: "Random perspective warp [0.0, 0.001]. Values > 0.001 cause severe keypoint displacement."
+
+    - name: aug-flipud
+      default: "0.0"
+      description: "Vertical flip probability. Keep 0.0 for spacecraft (orbital geometry has defined 'up')."
+
+    - name: aug-fliplr
+      default: "0.0"
+      description: "Horizontal flip probability. Keep 0.0 for spacecraft (no left-right symmetry in canonical pose)."
+
+    - name: aug-mosaic
+      default: "1.0"
+      description: "Mosaic augmentation probability [0.0, 1.0]. Disabled for last `close-mosaic` epochs."
+
+    - name: aug-mixup
+      default: "0.0"
+      description: "MixUp augmentation probability [0.0, 1.0]."
+
+    - name: aug-copy-paste
+      default: "0.0"
+      description: "Segment copy-paste augmentation probability [0.0, 1.0]."
+
+    - name: aug-erasing
+      default: "0.4"
+      description: "Random erasing probability [0.0, 0.9]."
+
+    - name: aug-bgr
+      default: "0.0"
+      description: "BGR channel flip probability [0.0, 1.0]."
+
+    # ── Post-training export ───────────────────────────────────────────────────
+    - name: export-enabled
+      default: "false"
+      enum: ["false", "true"]
+      description: "Enable post-training model export (TensorRT/ONNX)."
+
+    - name: export-formats
+      default: "engine"
+      description: "Comma-separated export formats: 'engine' (TensorRT) and/or 'onnx'. Only used when export-enabled=true."
+
+    - name: export-precisions
+      default: "fp16"
+      description: "Comma-separated precisions: 'fp16' and/or 'int8'. Only used when export-enabled=true."
+
+    # ── Model registration ─────────────────────────────────────────────────────
+    - name: registered-model-name
+      default: ""
+      description: "MLflow registered model name. Empty = use REGISTERED_MODEL_NAME env var (default: spacecraft-pose-yolo)."
+
+    - name: promote-to
+      default: ""
+      description: "Transition the registered model version to this stage: empty = no promotion, 'Staging', or 'Production'."
+
 steps:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Step 1 — config-validation
+  # Validates all pipeline parameters. HARD-FAILS unless dataset.manifest_only
+  # is true: full-download and labels-only modes assume a shared filesystem
+  # between steps that the cluster cannot provide (each step pod has its own
+  # ephemeral volume; /work/dataset is not shared across pod boundaries).
+  # ──────────────────────────────────────────────────────────────────────────
   - name: config-validation
     path: config_validation
     compute: cpu
     dependencies: []
+    env:
+      - name: PARAMS_YAML
+        value: |
+          experiment:
+            name: "{{workflow.parameters.experiment-name}}"
+            description: "{{workflow.parameters.experiment-description}}"
+          dataset:
+            version: "{{workflow.parameters.dataset-version}}"
+            source: "{{workflow.parameters.dataset-source}}"
+            path_override: "{{workflow.parameters.dataset-path-override}}"
+            sample_size: {{workflow.parameters.dataset-sample-size}}
+            seed: {{workflow.parameters.dataset-seed}}
+            manifest_only: true
+          model:
+            variant: "{{workflow.parameters.model-variant}}"
+            pretrained_weights: "{{workflow.parameters.pretrained-weights}}"
+          training:
+            epochs: {{workflow.parameters.epochs}}
+            batch_size: {{workflow.parameters.batch-size}}
+            image_size: {{workflow.parameters.image-size}}
+            learning_rate: {{workflow.parameters.learning-rate}}
+            cos_lr: {{workflow.parameters.cos-lr}}
+            lrf: {{workflow.parameters.lrf}}
+            optimizer: "{{workflow.parameters.optimizer}}"
+            momentum: {{workflow.parameters.momentum}}
+            weight_decay: {{workflow.parameters.weight-decay}}
+            warmup_epochs: {{workflow.parameters.warmup-epochs}}
+            warmup_momentum: {{workflow.parameters.warmup-momentum}}
+            dropout: {{workflow.parameters.dropout}}
+            label_smoothing: {{workflow.parameters.label-smoothing}}
+            nbs: {{workflow.parameters.nbs}}
+            freeze: {{workflow.parameters.freeze}}
+            amp: {{workflow.parameters.amp}}
+            close_mosaic: {{workflow.parameters.close-mosaic}}
+            seed: {{workflow.parameters.training-seed}}
+            deterministic: {{workflow.parameters.deterministic}}
+            pose: {{workflow.parameters.pose}}
+            kobj: {{workflow.parameters.kobj}}
+            box: {{workflow.parameters.box}}
+            cls: {{workflow.parameters.cls}}
+            dfl: {{workflow.parameters.dfl}}
+          checkpointing:
+            interval_epochs: {{workflow.parameters.checkpointing-interval-epochs}}
+            storage_path: "{{workflow.parameters.checkpointing-storage-path}}"
+            resume_from: "{{workflow.parameters.checkpoint-resume-from}}"
+          early_stopping:
+            patience: {{workflow.parameters.early-stopping-patience}}
+          augmentation:
+            hsv_h: {{workflow.parameters.aug-hsv-h}}
+            hsv_s: {{workflow.parameters.aug-hsv-s}}
+            hsv_v: {{workflow.parameters.aug-hsv-v}}
+            degrees: {{workflow.parameters.aug-degrees}}
+            translate: {{workflow.parameters.aug-translate}}
+            scale: {{workflow.parameters.aug-scale}}
+            shear: {{workflow.parameters.aug-shear}}
+            perspective: {{workflow.parameters.aug-perspective}}
+            flipud: {{workflow.parameters.aug-flipud}}
+            fliplr: {{workflow.parameters.aug-fliplr}}
+            mosaic: {{workflow.parameters.aug-mosaic}}
+            mixup: {{workflow.parameters.aug-mixup}}
+            copy_paste: {{workflow.parameters.aug-copy-paste}}
+            erasing: {{workflow.parameters.aug-erasing}}
+            bgr: {{workflow.parameters.aug-bgr}}
+          export:
+            enabled: {{workflow.parameters.export-enabled}}
+            formats: ["{{workflow.parameters.export-formats}}"]
+            precisions: ["{{workflow.parameters.export-precisions}}"]
+    command: ["python", "-c"]
+    args:
+      - |
+        import os, sys, subprocess, yaml
 
+        # Config resolution: if PIPELINE_CONFIG (injected by platform generator)
+        # is non-empty, it OVERRIDES all individual parameters. Otherwise,
+        # PARAMS_YAML (assembled from individual Argo parameters) is used.
+        pipeline_config = os.environ.get("PIPELINE_CONFIG", "")
+        params_yaml = os.environ.get("PARAMS_YAML", "")
+        raw = pipeline_config.strip() if pipeline_config.strip() else params_yaml
+
+        if not raw.strip():
+            print("ERROR: Neither PIPELINE_CONFIG nor PARAMS_YAML is set.", flush=True)
+            sys.exit(1)
+        try:
+            cfg = yaml.safe_load(raw)
+        except yaml.YAMLError as e:
+            print(f"ERROR: Config is not valid YAML: {e}", flush=True)
+            sys.exit(1)
+        if not isinstance(cfg, dict):
+            print("ERROR: Config parsed to a non-dict value.", flush=True)
+            sys.exit(1)
+
+        # Enforce manifest-only: full-download and labels-only are not
+        # supported in the cluster because steps run in separate pods and
+        # there is no shared volume between them. In param mode, PARAMS_YAML
+        # always sets manifest_only=true; in config mode we verify it.
+        dataset = cfg.get("dataset") or {}
+        manifest_only = dataset.get("manifest_only", False)
+        labels_only = dataset.get("labels_only", False)
+        if not manifest_only:
+            mode = "labels-only" if labels_only else "full-download"
+            print(
+                f"ERROR: dataset.manifest_only must be true. "
+                f"Current mode is '{mode}'. "
+                f"Full-download and labels-only modes require a shared filesystem "
+                f"between steps, which this cluster does not provide. "
+                f"Set dataset.manifest_only: true in your pipeline config.",
+                flush=True,
+            )
+            sys.exit(1)
+
+        exp = cfg.get("experiment") or {}
+        dataset = cfg.get("dataset") or {}
+        model = cfg.get("model") or {}
+        training = cfg.get("training") or {}
+        checkpointing = cfg.get("checkpointing") or {}
+        early_stopping = cfg.get("early_stopping") or {}
+        augmentation = cfg.get("augmentation") or {}
+
+        # Precedence: explicit param wins; empty param falls back to platform env.
+        # CHECKPOINT_BUCKET/CHECKPOINT_PREFIX are injected by render-wft from the
+        # k8smlapp pipeline-context (checkpoints.bucket = lakeFS repo, prefix =
+        # main/checkpoints). When both are absent the platform didn't inject them
+        # (legacy deployment or misconfiguration) and we fail loudly.
+        storage_path = str(checkpointing.get("storage_path", "") or "").strip()
+        if not storage_path:
+            ckpt_bucket = os.environ.get("CHECKPOINT_BUCKET", "").strip()
+            ckpt_prefix = os.environ.get("CHECKPOINT_PREFIX", "").strip()
+            if not ckpt_bucket:
+                print(
+                    "ERROR: checkpointing-storage-path is empty and CHECKPOINT_BUCKET env "
+                    "is not set. The platform should inject CHECKPOINT_BUCKET/CHECKPOINT_PREFIX "
+                    "from the project lakeFS repository via render-wft. Either set "
+                    "checkpointing-storage-path explicitly or ensure the k8smlapp composition "
+                    "version includes the checkpoints block in pipeline-context.yaml.",
+                    flush=True,
+                )
+                sys.exit(1)
+            storage_path = f"s3://{ckpt_bucket}/{ckpt_prefix}" if ckpt_prefix else f"s3://{ckpt_bucket}/main/checkpoints"
+
+        flags = [
+            "run",
+            "--experiment-name", str(exp["name"]),
+            "--dataset-version", str(dataset["version"]),
+            "--dataset-source", str(dataset["source"]),
+            "--model-variant", str(model["variant"]),
+            "--training-epochs", str(training["epochs"]),
+            "--training-batch-size", str(training["batch_size"]),
+            "--training-image-size", str(training["image_size"]),
+            "--training-learning-rate", str(training["learning_rate"]),
+            "--training-optimizer", str(training["optimizer"]),
+            "--checkpointing-interval-epochs", str(checkpointing["interval_epochs"]),
+            "--checkpointing-storage-path", storage_path,
+            "--early-stopping-patience", str(early_stopping["patience"]),
+        ]
+
+        # Optional dataset flags
+        if dataset.get("lakefs_repo"):
+            flags += ["--dataset-lakefs-repo", str(dataset["lakefs_repo"])]
+        if dataset.get("lakefs_branch"):
+            flags += ["--dataset-lakefs-branch", str(dataset["lakefs_branch"])]
+        if dataset.get("path_override"):
+            flags += ["--dataset-path-override", str(dataset["path_override"])]
+        if dataset.get("sample_size") is not None:
+            flags += ["--dataset-sample-size", str(dataset["sample_size"])]
+        if dataset.get("seed") is not None:
+            flags += ["--dataset-seed", str(dataset["seed"])]
+
+        # dataset_manifest_only: always true (enforced above) — pass the flag
+        flags += ["--dataset-manifest-only"]
+
+        # Optional model flags
+        if model.get("pretrained_weights"):
+            flags += ["--model-pretrained-weights", str(model["pretrained_weights"])]
+
+        # Optional training flags (non-default values)
+        if training.get("cos_lr") is not None:
+            flags += ["--training-cos-lr" if training["cos_lr"] else "--no-training-cos-lr"]
+        if training.get("lrf") is not None:
+            flags += ["--training-lrf", str(training["lrf"])]
+        if training.get("momentum") is not None:
+            flags += ["--training-momentum", str(training["momentum"])]
+        if training.get("weight_decay") is not None:
+            flags += ["--training-weight-decay", str(training["weight_decay"])]
+        if training.get("warmup_epochs") is not None:
+            flags += ["--training-warmup-epochs", str(training["warmup_epochs"])]
+        if training.get("warmup_momentum") is not None:
+            flags += ["--training-warmup-momentum", str(training["warmup_momentum"])]
+        if training.get("dropout") is not None:
+            flags += ["--training-dropout", str(training["dropout"])]
+        if training.get("label_smoothing") is not None:
+            flags += ["--training-label-smoothing", str(training["label_smoothing"])]
+        if training.get("nbs") is not None:
+            flags += ["--training-nbs", str(training["nbs"])]
+        if training.get("freeze") is not None:
+            flags += ["--training-freeze", str(training["freeze"])]
+        if training.get("amp") is not None:
+            flags += ["--training-amp" if training["amp"] else "--no-training-amp"]
+        if training.get("close_mosaic") is not None:
+            flags += ["--training-close-mosaic", str(training["close_mosaic"])]
+        if training.get("seed") is not None:
+            flags += ["--training-seed", str(training["seed"])]
+        if training.get("deterministic") is not None:
+            flags += ["--training-deterministic" if training["deterministic"] else "--no-training-deterministic"]
+        if training.get("pose") is not None:
+            flags += ["--training-pose", str(training["pose"])]
+        if training.get("kobj") is not None:
+            flags += ["--training-kobj", str(training["kobj"])]
+        if training.get("box") is not None:
+            flags += ["--training-box", str(training["box"])]
+        if training.get("cls") is not None:
+            flags += ["--training-cls", str(training["cls"])]
+        if training.get("dfl") is not None:
+            flags += ["--training-dfl", str(training["dfl"])]
+
+        # Optional checkpointing flags
+        if checkpointing.get("resume_from"):
+            flags += ["--checkpointing-resume-from", str(checkpointing["resume_from"])]
+
+        # Augmentation flags
+        aug = augmentation
+        for key, flag in [
+            ("hsv_h", "--aug-hsv-h"), ("hsv_s", "--aug-hsv-s"), ("hsv_v", "--aug-hsv-v"),
+            ("degrees", "--aug-degrees"), ("translate", "--aug-translate"),
+            ("scale", "--aug-scale"), ("shear", "--aug-shear"),
+            ("perspective", "--aug-perspective"), ("flipud", "--aug-flipud"),
+            ("fliplr", "--aug-fliplr"), ("mosaic", "--aug-mosaic"),
+            ("mixup", "--aug-mixup"), ("copy_paste", "--aug-copy-paste"),
+            ("erasing", "--aug-erasing"), ("bgr", "--aug-bgr"),
+        ]:
+            if aug.get(key) is not None:
+                flags += [flag, str(aug[key])]
+
+        # Optional experiment description
+        if exp.get("description"):
+            flags += ["--experiment-description", str(exp["description"])]
+
+        print(f"[config-validation] Running: config-validation {' '.join(flags)}", flush=True)
+        result = subprocess.run(["config-validation"] + flags)
+        sys.exit(result.returncode)
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Step 2 — dataset-loading
+  # Downloads data.yaml and builds the S3 manifest. Always runs --manifest-only
+  # (enforced by config-validation above). After the CLI writes
+  # /work/dataset/dataset_manifest.json, the shim extracts only bucket, prefix,
+  # and a label_keys sentinel into /work/dataset/manifest_summary.json — the
+  # full key list is too large to pass as an Argo workflow parameter.
+  # ──────────────────────────────────────────────────────────────────────────
   - name: dataset-loading
     path: dataset_loading
     compute: cpu
     dependencies:
       - config-validation
+    env:
+      - name: PARAMS_YAML
+        value: |
+          dataset:
+            version: "{{workflow.parameters.dataset-version}}"
+            source: "{{workflow.parameters.dataset-source}}"
+            path_override: "{{workflow.parameters.dataset-path-override}}"
+            sample_size: {{workflow.parameters.dataset-sample-size}}
+            seed: {{workflow.parameters.dataset-seed}}
+    command: ["sh", "-c"]
+    args:
+      - |
+        python3 - <<'PYEOF'
+        import os, sys, subprocess, json, yaml
 
+        # Config resolution: PIPELINE_CONFIG (platform-injected) overrides PARAMS_YAML.
+        pipeline_config = os.environ.get("PIPELINE_CONFIG", "")
+        params_yaml = os.environ.get("PARAMS_YAML", "")
+        raw = pipeline_config.strip() if pipeline_config.strip() else params_yaml
+
+        if not raw.strip():
+            print("ERROR: Neither PIPELINE_CONFIG nor PARAMS_YAML is set.", flush=True)
+            sys.exit(1)
+        try:
+            cfg = yaml.safe_load(raw)
+        except yaml.YAMLError as e:
+            print(f"ERROR: Config is not valid YAML: {e}", flush=True)
+            sys.exit(1)
+
+        dataset = cfg.get("dataset") or {}
+
+        flags = [
+            "run",
+            "--version", str(dataset["version"]),
+            "--source", str(dataset["source"]),
+            "--output-dir", "/work/dataset",
+            "--manifest-only",
+        ]
+
+        if dataset.get("lakefs_repo"):
+            flags += ["--lakefs-repo", str(dataset["lakefs_repo"])]
+        if dataset.get("lakefs_branch"):
+            flags += ["--lakefs-branch", str(dataset["lakefs_branch"])]
+        if dataset.get("path_override"):
+            flags += ["--path-override", str(dataset["path_override"])]
+        if dataset.get("sample_size") is not None:
+            flags += ["--sample-size", str(dataset["sample_size"]), "--seed", str(dataset.get("seed", 42))]
+
+        print(f"[dataset-loading] Running: dataset-loading {' '.join(flags)}", flush=True)
+        result = subprocess.run(["dataset-loading"] + flags)
+        if result.returncode != 0:
+            sys.exit(result.returncode)
+
+        # Read the full manifest written by the CLI and extract a compact
+        # summary safe for Argo parameter passing (no key lists).
+        manifest_path = "/work/dataset/dataset_manifest.json"
+        try:
+            with open(manifest_path) as fh:
+                manifest = json.load(fh)
+        except Exception as e:
+            print(f"ERROR: Could not read {manifest_path}: {e}", flush=True)
+            sys.exit(1)
+
+        bucket = manifest.get("bucket")
+        prefix = manifest.get("prefix")
+        if not bucket or not prefix:
+            print(f"ERROR: manifest missing 'bucket' or 'prefix': {manifest}", flush=True)
+            sys.exit(1)
+
+        # label_keys sentinel: non-empty dict signals to model-training that
+        # labels must also be streamed from S3 (manifest-only mode). We do NOT
+        # embed the actual key lists — they are too large for Argo parameters.
+        label_keys_raw = manifest.get("label_keys")
+        label_keys_sentinel = {"_present": True} if label_keys_raw else {}
+
+        summary = {"bucket": bucket, "prefix": prefix, "label_keys": label_keys_sentinel}
+        summary_path = "/work/dataset/manifest_summary.json"
+        with open(summary_path, "w") as fh:
+            json.dump(summary, fh, separators=(",", ":"))
+        print(f"[dataset-loading] Wrote manifest summary to {summary_path}: bucket={bucket} prefix={prefix}", flush=True)
+        PYEOF
+
+    outputs:
+      parameters:
+        - name: data-yaml
+          path: /work/dataset/data.yaml
+        - name: manifest-summary
+          path: /work/dataset/manifest_summary.json
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Step 3 — model-training
+  # Reconstructs /work/dataset from the two input parameters (data.yaml and
+  # manifest_summary.json → dataset_manifest.json), then runs training with
+  # --source s3 so the service detects the manifest and enables S3 streaming.
+  # The training result JSON is emitted as an output parameter for registration.
+  # ──────────────────────────────────────────────────────────────────────────
   - name: model-training
     path: model_training
     compute: gpu
+    dependencies:
+      - dataset-loading
+    env:
+      - name: DATA_YAML
+        value: "{{inputs.parameters.data-yaml}}"
+      - name: MANIFEST_SUMMARY
+        value: "{{inputs.parameters.manifest-summary}}"
+      - name: PARAMS_YAML
+        value: |
+          experiment:
+            name: "{{workflow.parameters.experiment-name}}"
+          model:
+            variant: "{{workflow.parameters.model-variant}}"
+            pretrained_weights: "{{workflow.parameters.pretrained-weights}}"
+          training:
+            epochs: {{workflow.parameters.epochs}}
+            batch_size: {{workflow.parameters.batch-size}}
+            image_size: {{workflow.parameters.image-size}}
+            learning_rate: {{workflow.parameters.learning-rate}}
+            cos_lr: {{workflow.parameters.cos-lr}}
+            lrf: {{workflow.parameters.lrf}}
+            optimizer: "{{workflow.parameters.optimizer}}"
+            momentum: {{workflow.parameters.momentum}}
+            weight_decay: {{workflow.parameters.weight-decay}}
+            warmup_epochs: {{workflow.parameters.warmup-epochs}}
+            warmup_momentum: {{workflow.parameters.warmup-momentum}}
+            dropout: {{workflow.parameters.dropout}}
+            label_smoothing: {{workflow.parameters.label-smoothing}}
+            nbs: {{workflow.parameters.nbs}}
+            freeze: {{workflow.parameters.freeze}}
+            amp: {{workflow.parameters.amp}}
+            close_mosaic: {{workflow.parameters.close-mosaic}}
+            seed: {{workflow.parameters.training-seed}}
+            deterministic: {{workflow.parameters.deterministic}}
+            pose: {{workflow.parameters.pose}}
+            kobj: {{workflow.parameters.kobj}}
+            box: {{workflow.parameters.box}}
+            cls: {{workflow.parameters.cls}}
+            dfl: {{workflow.parameters.dfl}}
+          checkpointing:
+            interval_epochs: {{workflow.parameters.checkpointing-interval-epochs}}
+            storage_path: "{{workflow.parameters.checkpointing-storage-path}}"
+            resume_from: "{{workflow.parameters.checkpoint-resume-from}}"
+          early_stopping:
+            patience: {{workflow.parameters.early-stopping-patience}}
+          augmentation:
+            hsv_h: {{workflow.parameters.aug-hsv-h}}
+            hsv_s: {{workflow.parameters.aug-hsv-s}}
+            hsv_v: {{workflow.parameters.aug-hsv-v}}
+            degrees: {{workflow.parameters.aug-degrees}}
+            translate: {{workflow.parameters.aug-translate}}
+            scale: {{workflow.parameters.aug-scale}}
+            shear: {{workflow.parameters.aug-shear}}
+            perspective: {{workflow.parameters.aug-perspective}}
+            flipud: {{workflow.parameters.aug-flipud}}
+            fliplr: {{workflow.parameters.aug-fliplr}}
+            mosaic: {{workflow.parameters.aug-mosaic}}
+            mixup: {{workflow.parameters.aug-mixup}}
+            copy_paste: {{workflow.parameters.aug-copy-paste}}
+            erasing: {{workflow.parameters.aug-erasing}}
+            bgr: {{workflow.parameters.aug-bgr}}
+          export:
+            enabled: {{workflow.parameters.export-enabled}}
+            formats: ["{{workflow.parameters.export-formats}}"]
+            precisions: ["{{workflow.parameters.export-precisions}}"]
+    inputs:
+      parameters:
+        - name: data-yaml
+          from: dataset-loading
+        - name: manifest-summary
+          from: dataset-loading
+    command: ["python", "-c"]
+    args:
+      - |
+        import os, sys, subprocess, json, yaml
+
+        # Config resolution: PIPELINE_CONFIG (platform-injected) overrides PARAMS_YAML.
+        pipeline_config = os.environ.get("PIPELINE_CONFIG", "")
+        params_yaml = os.environ.get("PARAMS_YAML", "")
+        raw = pipeline_config.strip() if pipeline_config.strip() else params_yaml
+
+        if not raw.strip():
+            print("ERROR: Neither PIPELINE_CONFIG nor PARAMS_YAML is set.", flush=True)
+            sys.exit(1)
+        try:
+            cfg = yaml.safe_load(raw)
+        except yaml.YAMLError as e:
+            print(f"ERROR: Config is not valid YAML: {e}", flush=True)
+            sys.exit(1)
+
+        # Reconstruct /work/dataset from input parameters
+        os.makedirs("/work/dataset", exist_ok=True)
+
+        data_yaml = os.environ.get("DATA_YAML", "")
+        if not data_yaml.strip():
+            print("ERROR: DATA_YAML input parameter is empty.", flush=True)
+            sys.exit(1)
+        with open("/work/dataset/data.yaml", "w") as fh:
+            fh.write(data_yaml)
+
+        manifest_summary = os.environ.get("MANIFEST_SUMMARY", "")
+        if not manifest_summary.strip():
+            print("ERROR: MANIFEST_SUMMARY input parameter is empty.", flush=True)
+            sys.exit(1)
+        # Write summary as dataset_manifest.json so model_training auto-detects
+        # the S3 source (bucket + prefix) and streaming mode (label_keys presence).
+        with open("/work/dataset/dataset_manifest.json", "w") as fh:
+            fh.write(manifest_summary)
+
+        exp = cfg.get("experiment") or {}
+        model = cfg.get("model") or {}
+        training = cfg.get("training") or {}
+        checkpointing = cfg.get("checkpointing") or {}
+        early_stopping = cfg.get("early_stopping") or {}
+        augmentation = cfg.get("augmentation") or {}
+        export_cfg = cfg.get("export") or {}
+
+        # Precedence: explicit param wins; empty param falls back to platform env.
+        # CHECKPOINT_BUCKET/CHECKPOINT_PREFIX are injected by render-wft from the
+        # k8smlapp pipeline-context. model-training takes --checkpoint-bucket and
+        # --checkpoint-prefix directly so no s3:// parsing is needed in that path.
+        storage_path = str(checkpointing.get("storage_path", "") or "").strip()
+        if storage_path.startswith("s3://"):
+            # Explicit override: parse bucket/prefix from the s3:// URI.
+            parts = storage_path[5:].split("/", 1)
+            checkpoint_bucket = parts[0]
+            checkpoint_prefix = parts[1].rstrip("/") if len(parts) > 1 else "main/checkpoints"
+        else:
+            # Platform-derived: use env vars injected by render-wft.
+            checkpoint_bucket = os.environ.get("CHECKPOINT_BUCKET", "").strip()
+            checkpoint_prefix = os.environ.get("CHECKPOINT_PREFIX", "main/checkpoints").strip()
+            if not checkpoint_bucket:
+                print(
+                    "ERROR: checkpointing-storage-path is empty and CHECKPOINT_BUCKET env "
+                    "is not set. The platform should inject CHECKPOINT_BUCKET/CHECKPOINT_PREFIX "
+                    "from the project lakeFS repository via render-wft. Either set "
+                    "checkpointing-storage-path explicitly or ensure the k8smlapp composition "
+                    "version includes the checkpoints block in pipeline-context.yaml.",
+                    flush=True,
+                )
+                sys.exit(1)
+
+        flags = [
+            "run",
+            "--model-variant", str(model["variant"]),
+            "--experiment-name", str(exp["name"]),
+            "--dataset-dir", "/work/dataset",
+            "--output-dir", "/work/output",
+            "--source", "s3",
+            "--epochs", str(training["epochs"]),
+            "--batch-size", str(training["batch_size"]),
+            "--image-size", str(training["image_size"]),
+            "--learning-rate", str(training["learning_rate"]),
+            "--optimizer", str(training["optimizer"]),
+            "--checkpoint-interval", str(checkpointing["interval_epochs"]),
+            "--checkpoint-bucket", checkpoint_bucket,
+            "--checkpoint-prefix", checkpoint_prefix,
+            "--patience", str(early_stopping["patience"]),
+        ]
+
+        # Optional training flags
+        if training.get("cos_lr") is not None:
+            flags += ["--cos-lr" if training["cos_lr"] else "--no-cos-lr"]
+        if training.get("lrf") is not None:
+            flags += ["--lrf", str(training["lrf"])]
+        if training.get("momentum") is not None:
+            flags += ["--momentum", str(training["momentum"])]
+        if training.get("weight_decay") is not None:
+            flags += ["--weight-decay", str(training["weight_decay"])]
+        if training.get("warmup_epochs") is not None:
+            flags += ["--warmup-epochs", str(training["warmup_epochs"])]
+        if training.get("warmup_momentum") is not None:
+            flags += ["--warmup-momentum", str(training["warmup_momentum"])]
+        if training.get("dropout") is not None:
+            flags += ["--dropout", str(training["dropout"])]
+        if training.get("label_smoothing") is not None:
+            flags += ["--label-smoothing", str(training["label_smoothing"])]
+        if training.get("nbs") is not None:
+            flags += ["--nbs", str(training["nbs"])]
+        if training.get("freeze") is not None:
+            flags += ["--freeze", str(training["freeze"])]
+        if training.get("amp") is not None:
+            flags += ["--amp" if training["amp"] else "--no-amp"]
+        if training.get("close_mosaic") is not None:
+            flags += ["--close-mosaic", str(training["close_mosaic"])]
+        if training.get("seed") is not None:
+            flags += ["--seed", str(training["seed"])]
+        if training.get("deterministic") is not None:
+            flags += ["--deterministic" if training["deterministic"] else "--no-deterministic"]
+        if training.get("pose") is not None:
+            flags += ["--pose", str(training["pose"])]
+        if training.get("kobj") is not None:
+            flags += ["--kobj", str(training["kobj"])]
+        if training.get("box") is not None:
+            flags += ["--box", str(training["box"])]
+        if training.get("cls") is not None:
+            flags += ["--cls", str(training["cls"])]
+        if training.get("dfl") is not None:
+            flags += ["--dfl", str(training["dfl"])]
+
+        # Optional weight init / resume
+        if model.get("pretrained_weights"):
+            flags += ["--pretrained-weights", str(model["pretrained_weights"])]
+        if checkpointing.get("resume_from"):
+            flags += ["--resume-from", str(checkpointing["resume_from"])]
+
+        # disk-cache-gb: cap S3 streaming cache for ephemeral pod storage
+        flags += ["--disk-cache-gb", "8.0"]
+
+        # Augmentation
+        aug = augmentation
+        for key, flag in [
+            ("hsv_h", "--hsv-h"), ("hsv_s", "--hsv-s"), ("hsv_v", "--hsv-v"),
+            ("degrees", "--degrees"), ("translate", "--translate"),
+            ("scale", "--scale"), ("shear", "--shear"),
+            ("perspective", "--perspective"), ("flipud", "--flipud"),
+            ("fliplr", "--fliplr"), ("mosaic", "--mosaic"),
+            ("mixup", "--mixup"), ("copy_paste", "--copy-paste"),
+            ("erasing", "--erasing"), ("bgr", "--bgr"),
+        ]:
+            if aug.get(key) is not None:
+                flags += [flag, str(aug[key])]
+
+        # Export flags
+        if export_cfg.get("enabled"):
+            flags += ["--export"]
+            formats = export_cfg.get("formats")
+            if formats:
+                flags += ["--export-formats", ",".join(formats)]
+            precisions = export_cfg.get("precisions")
+            if precisions:
+                flags += ["--export-precisions", ",".join(precisions)]
+
+        print(f"[model-training] Running: model-training {' '.join(flags)}", flush=True)
+        result = subprocess.run(["model-training"] + flags)
+        sys.exit(result.returncode)
+
+    outputs:
+      parameters:
+        - name: training-result
+          path: /work/output/training_result.json
     resources:
       requests:
         cpu: "1"
         memory: "4Gi"
+        ephemeral-storage: "10Gi"
       limits:
         cpu: "4"
         memory: "16Gi"
-    dependencies:
-      - dataset-loading
+        ephemeral-storage: "30Gi"
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # Step 4 — model-registration
+  # Reads training_result.json (passed as TRAINING_RESULT env) and registers
+  # the best checkpoint in the MLflow model registry with full lineage tags.
+  # ──────────────────────────────────────────────────────────────────────────
   - name: model-registration
     path: model_registration
     compute: cpu
     dependencies:
       - model-training
+    env:
+      - name: TRAINING_RESULT
+        value: "{{inputs.parameters.training-result}}"
+      - name: PARAMS_YAML
+        value: |
+          dataset:
+            version: "{{workflow.parameters.dataset-version}}"
+            sample_size: {{workflow.parameters.dataset-sample-size}}
+          model:
+            variant: "{{workflow.parameters.model-variant}}"
+          registration:
+            registered_model_name: "{{workflow.parameters.registered-model-name}}"
+            promote_to: "{{workflow.parameters.promote-to}}"
+    inputs:
+      parameters:
+        - name: training-result
+          from: model-training
+    command: ["python", "-c"]
+    args:
+      - |
+        import os, sys, subprocess, json, yaml
+
+        # Config resolution: PIPELINE_CONFIG (platform-injected) overrides PARAMS_YAML.
+        pipeline_config = os.environ.get("PIPELINE_CONFIG", "")
+        params_yaml = os.environ.get("PARAMS_YAML", "")
+        raw = pipeline_config.strip() if pipeline_config.strip() else params_yaml
+
+        if not raw.strip():
+            print("ERROR: Neither PIPELINE_CONFIG nor PARAMS_YAML is set.", flush=True)
+            sys.exit(1)
+        try:
+            cfg = yaml.safe_load(raw)
+        except yaml.YAMLError as e:
+            print(f"ERROR: Config is not valid YAML: {e}", flush=True)
+            sys.exit(1)
+
+        tr_raw = os.environ.get("TRAINING_RESULT", "")
+        if not tr_raw.strip():
+            print("ERROR: TRAINING_RESULT input parameter is empty.", flush=True)
+            sys.exit(1)
+        try:
+            tr = json.loads(tr_raw)
+        except json.JSONDecodeError as e:
+            print(f"ERROR: TRAINING_RESULT is not valid JSON: {e}", flush=True)
+            sys.exit(1)
+
+        dataset = cfg.get("dataset") or {}
+        model = cfg.get("model") or {}
+        registration = cfg.get("registration") or {}
+
+        mlflow_run_id = tr.get("mlflow_run_id")
+        best_checkpoint_s3 = tr.get("best_checkpoint_s3")
+        if not mlflow_run_id or not best_checkpoint_s3:
+            print(f"ERROR: training_result missing mlflow_run_id or best_checkpoint_s3: {tr}", flush=True)
+            sys.exit(1)
+
+        # Derive last checkpoint path from best: replace best.pt with last.pt
+        last_checkpoint_s3 = best_checkpoint_s3.replace("/best.pt", "/last.pt")
+
+        flags = [
+            "run",
+            "--mlflow-run-id", mlflow_run_id,
+            "--best-checkpoint-path", best_checkpoint_s3,
+            "--last-checkpoint-path", last_checkpoint_s3,
+            "--dataset-version", str(dataset.get("version", "")),
+            "--model-variant", str(model.get("variant", "")),
+        ]
+
+        # Optional registration flags
+        if registration.get("registered_model_name"):
+            flags += ["--registered-model-name", str(registration["registered_model_name"])]
+        if registration.get("promote_to"):
+            flags += ["--promote-to", str(registration["promote_to"])]
+
+        # Optional lineage flags from training result
+        if dataset.get("sample_size") is not None:
+            flags += ["--dataset-sample-size", str(dataset["sample_size"])]
+
+        final_map50 = tr.get("final_map50")
+        if final_map50 is not None:
+            flags += ["--best-map50", str(final_map50)]
+
+        exported_models = tr.get("exported_models")
+        if exported_models:
+            flags += ["--exported-models", json.dumps(exported_models)]
+
+        print(f"[model-registration] Running: model-registration {' '.join(flags)}", flush=True)
+        result = subprocess.run(["model-registration"] + flags)
+        sys.exit(result.returncode)

@@ -75,7 +75,7 @@ training:
 # --- Checkpointing ---
 checkpointing:
   interval_epochs: 10             # Save checkpoint every N epochs
-  storage_path: "s3://io-audio-text-data/upload-initial/checkpoints"
+  storage_path: ""   # Empty = platform-derived (project lakeFS repo, main/checkpoints). Override: s3://bucket/prefix.
   resume_from: null               # null | "auto" | specific S3 path to .pt file
 
 # --- Early Stopping ---
