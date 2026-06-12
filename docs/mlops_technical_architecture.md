@@ -61,7 +61,7 @@ graph TB
 |---|---|---|---|
 | Argo Workflows | DAG orchestration, step sequencing, retry logic, artifact passing | Platform Team deploys; ML Team authors workflows | Workflow submitted via Argo CLI with YAML as parameter |
 | MLflow Tracking Server | Experiment logging (params, metrics, artifacts) | Platform Team deploys | Backend store: PostgreSQL; Artifact store: S3 |
-| MLflow Model Registry | Versioned model storage with stage transitions | Platform Team deploys | Accessed via MLflow Python SDK from Steps 3 and 4 |
+| MLflow Model Registry | Versioned model storage with version aliases | Platform Team deploys | Accessed via MLflow Python SDK from Steps 3 and 4 |
 | S3 (AWS) | Dataset storage, checkpoints, artifacts, MLflow artifact store | Platform Team provisions | LakeFS sits in front of S3 as a versioning layer |
 | LakeFS | Git-like versioning for datasets on S3 | Platform Team deploys; ML Team integrates | S3-compatible API; transparent to downstream consumers |
 | Container Registry | Docker images for pipeline steps | Platform Team manages | ECR or equivalent; ML Team pushes images |
@@ -366,7 +366,7 @@ Note: Ultralytics has a built-in MLflow integration. The decision on whether to 
 
 4. **Tag the model version** with lineage metadata: `dataset_version` (LakeFS commit hash or S3 path), `dataset_sample_size` (full or N), `config_hash` (SHA-256 of the experiment YAML), `git_commit` (code version), `model_variant` (e.g., `yolov8n-pose`), `training_run_id` (MLflow run ID), `best_mAP50` (final best validation mAP).
 
-5. **Set model stage** to `None` (default). Promotion to `Staging` or `Production` is a manual action by the engineer via MLflow UI.
+5. **Assign an alias** (`champion` or `challenger`) to the version if configured; otherwise leave it unaliased. Aliases are movable pointers — the engineer can (re)assign `@champion` to a new version via the MLflow UI or SDK.
 
 **Output:** Registered model version number, logged to Argo step output.
 
@@ -704,9 +704,9 @@ MLflow Model Registry
 └── Model: "spacecraft-pose-yolo"
     ├── Version 1 ← linked to Run "baseline-yolov8n-full-dataset"
     │   ├── Tags: {dataset_version, model_variant, best_mAP50}
-    │   └── Stage: None
+    │   └── Alias: (none)
     ├── Version 2 ← linked to Run "yolov8s-sample-5k"
-    │   └── Stage: Staging
+    │   └── Alias: @champion
     └── ...
 ```
 

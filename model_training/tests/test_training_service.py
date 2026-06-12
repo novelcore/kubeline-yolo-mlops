@@ -5,6 +5,7 @@ mocked so that no real training, S3 calls, or GPU initialisation occur.
 """
 
 import json
+import os
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -1065,3 +1066,44 @@ class TestCheckpointUploadCallback:
         # Only final weight uploads (best.pt + last.pt), no intermediate checkpoint
         upload_calls = [str(c) for c in mock_s3.upload_file.call_args_list]
         assert not any("epoch_" in c for c in upload_calls)
+
+
+# ---------------------------------------------------------------------------
+# Kubecore metadata tagging
+# ---------------------------------------------------------------------------
+
+
+class TestTagKubecoreMetadata:
+    def test_sets_tags_via_mlflow_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Tags are written via MlflowClient.set_tag, not the fluent API."""
+        monkeypatch.setenv("KUBECORE_WORKFLOW_NAME", "wf-001")
+        monkeypatch.setenv("KUBECORE_PROJECT", "my-project")
+
+        with patch("mlflow.tracking.MlflowClient") as mock_client_cls:
+            mock_client = mock_client_cls.return_value
+            TrainingService._tag_kubecore_metadata("run-abc")
+
+        set_tag_calls = {
+            c.args[1]: c.args[2] for c in mock_client.set_tag.call_args_list
+        }
+        assert set_tag_calls.get("kubecore.workflow_name") == "wf-001"
+        assert set_tag_calls.get("kubecore.project") == "my-project"
+
+    def test_skips_when_run_id_empty(self) -> None:
+        """No MLflow call is made when run_id is empty."""
+        with patch("mlflow.tracking.MlflowClient") as mock_client_cls:
+            TrainingService._tag_kubecore_metadata("")
+
+        mock_client_cls.assert_not_called()
+
+    def test_no_tags_set_when_no_kubecore_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When no KUBECORE_* env vars are set, set_tag is never called."""
+        for key in list(os.environ.keys()):
+            if key.startswith("KUBECORE_"):
+                monkeypatch.delenv(key)
+
+        with patch("mlflow.tracking.MlflowClient") as mock_client_cls:
+            mock_client = mock_client_cls.return_value
+            TrainingService._tag_kubecore_metadata("run-abc")
+
+        mock_client.set_tag.assert_not_called()

@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+from pydantic import ValidationError
 
 from app.models.registration import RegistrationParams, RegistrationResult
 from app.services.model_registration import (
@@ -302,12 +303,12 @@ class TestRetryBehavior:
 
 
 class TestPromotion:
-    """Model version stage transition."""
+    """Model version registry alias assignment."""
 
     def test_promotes_best_version_when_requested(
         self, service: ModelRegistrationService, minimal_params: RegistrationParams
     ) -> None:
-        minimal_params.promote_to = "Staging"
+        minimal_params.promote_to = "champion"
         with (
             patch("app.services.model_registration.mlflow") as mock_mlflow,
             patch("app.services.model_registration.MlflowClient") as mock_client_cls,
@@ -317,11 +318,11 @@ class TestPromotion:
 
             result = service.run(minimal_params)
 
-        assert result.promoted_to == "Staging"
-        mock_client.transition_model_version_stage.assert_called_once_with(
+        assert result.promoted_to == "champion"
+        mock_client.set_registered_model_alias.assert_called_once_with(
             name=MODEL_NAME,
+            alias="champion",
             version="7",
-            stage="Staging",
         )
 
     def test_no_promotion_when_promote_to_is_none(
@@ -337,4 +338,43 @@ class TestPromotion:
             result = service.run(minimal_params)
 
         assert result.promoted_to is None
-        mock_client.transition_model_version_stage.assert_not_called()
+        mock_client.set_registered_model_alias.assert_not_called()
+
+
+class TestRegistrationParamsValidation:
+    """Pydantic validation rules for RegistrationParams.promote_to (F-06 fix)."""
+
+    def _base(self, **kwargs) -> dict:
+        return {
+            "mlflow_run_id": RUN_ID,
+            "best_checkpoint_path": BEST_S3,
+            "registered_model_name": MODEL_NAME,
+            **kwargs,
+        }
+
+    def test_promote_to_none_python_is_accepted(self) -> None:
+        """AC-04: Python None is a valid promote_to value."""
+        params = RegistrationParams(**self._base(promote_to=None))
+        assert params.promote_to is None
+
+    def test_promote_to_omitted_defaults_to_none(self) -> None:
+        """promote_to field is optional and defaults to None."""
+        params = RegistrationParams(**self._base())
+        assert params.promote_to is None
+
+    def test_promote_to_champion_is_accepted(self) -> None:
+        params = RegistrationParams(**self._base(promote_to="champion"))
+        assert params.promote_to == "champion"
+
+    def test_promote_to_challenger_is_accepted(self) -> None:
+        params = RegistrationParams(**self._base(promote_to="challenger"))
+        assert params.promote_to == "challenger"
+
+    def test_promote_to_string_none_is_rejected(self) -> None:
+        """AC-03: The string 'None' must be rejected — it is not the same as Python None."""
+        with pytest.raises(ValidationError, match="champion"):
+            RegistrationParams(**self._base(promote_to="None"))
+
+    def test_promote_to_invalid_alias_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            RegistrationParams(**self._base(promote_to="staging"))

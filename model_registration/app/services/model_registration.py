@@ -39,7 +39,7 @@ class ModelRegistrationService:
         2. Register best.pt under params.registered_model_name.
         3. Set lineage tags on the best.pt version.
         4. Optionally register last.pt and tag it.
-        5. Optionally transition the best.pt version to a stage.
+        5. Optionally assign a registry alias (champion/challenger) to the best.pt version.
         6. Return a RegistrationResult.
         """
         mlflow.set_tracking_uri(self._mlflow_tracking_uri)
@@ -87,15 +87,15 @@ class ModelRegistrationService:
         promoted_to: Optional[str] = None
         if params.promote_to:
             self._with_retry(
-                lambda: client.transition_model_version_stage(
+                lambda: client.set_registered_model_alias(
                     name=params.registered_model_name,
+                    alias=params.promote_to,
                     version=str(best_version),
-                    stage=params.promote_to,
                 )
             )
             promoted_to = params.promote_to
             self._logger.info(
-                "Transitioned version %s to stage '%s'", best_version, promoted_to
+                "Assigned alias '%s' to version %s", promoted_to, best_version
             )
 
         return RegistrationResult(

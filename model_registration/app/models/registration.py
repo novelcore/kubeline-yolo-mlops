@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -18,10 +18,12 @@ class RegistrationParams(BaseModel):
     registered_model_name: str = Field(
         description="Name under which to register the model in the MLflow model registry"
     )
-    promote_to: Optional[str] = Field(
+    promote_to: Optional[Literal["champion", "challenger"]] = Field(
         default=None,
-        pattern=r"^(Staging|Production|Archived|None)$",
-        description="Model version stage to transition to after registration",
+        description=(
+            "Registry alias to assign to the best.pt version after registration "
+            "(champion or challenger); None/unset assigns no alias"
+        ),
     )
 
     # Lineage tags — all optional; passed through to MLflow model version tags
@@ -60,5 +62,5 @@ class RegistrationResult(BaseModel):
     registered_at: datetime
     promoted_to: Optional[str] = Field(
         default=None,
-        description="Stage the model version was transitioned to, if any",
+        description="Registry alias assigned to the best.pt version, if any",
     )
