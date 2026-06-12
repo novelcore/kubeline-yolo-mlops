@@ -126,7 +126,7 @@ export:
 # --- Model Registration ---
 registration:
   registered_model_name: null  # null = use REGISTERED_MODEL_NAME env var (default: spacecraft-pose-yolo)
-  promote_to: null             # null | "Staging" | "Production"
+  promote_to: null             # null | "champion" | "challenger"  (MLflow 3 registry alias)
 
 # --- Resource Requests (informational; not validated by pipeline) ---
 resources:
