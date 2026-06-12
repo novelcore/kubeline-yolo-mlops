@@ -49,17 +49,20 @@ The CLI (`cli.py`) differs from other pipeline steps: it accepts **every pipelin
 ### Two config layers
 
 - **`models/config.py`** (`Config` / `BaseSettings`) — runtime settings from env vars: log level, timeouts, `SKIP_LIVENESS_CHECKS`, `MLFLOW_TRACKING_URI`
-- **`models/pipeline_config.py`** (`PipelineConfig`) — pipeline parameters from the YAML. Seven nested sub-models: `ExperimentConfig`, `DatasetConfig`, `ModelConfig`, `TrainingConfig`, `CheckpointingConfig`, `EarlyStoppingConfig`, `AugmentationConfig`
+- **`models/pipeline_config.py`** (`PipelineConfig`) — pipeline parameters from the YAML. Eight nested sub-models: `ExperimentConfig`, `DatasetConfig`, `ModelConfig`, `TrainingConfig`, `CheckpointingConfig`, `EarlyStoppingConfig`, `AugmentationConfig`, `RegistrationConfig`
 
 ### Validation rules worth knowing
 
 - `TrainingConfig` uses `extra="forbid"` — unknown keys raise errors (prevents silent misconfiguration)
+- `RegistrationConfig` uses `extra="forbid"` — same strictness as `TrainingConfig`
 - `PipelineConfig` uses `extra="ignore"` — top-level unknown sections (e.g. `resources`) are silently dropped
 - `image_size` must be a multiple of 32
 - `model.variant` must match `yolov{8|9|10|11}{n|s|m|l|x}-pose.pt`
 - Cross-field: `close_mosaic < epochs`, `warmup_epochs < epochs`
 - `checkpointing.storage_path` must start with `s3://` or `lakefs://`
 - `checkpointing.resume_from` must be `null`, `"auto"`, or an `s3://` path
+- `registration.promote_to` must be `null`, `"champion"`, or `"challenger"` — string `"None"` is rejected
+- `registration.registered_model_name` must contain only alphanumeric characters, hyphens, underscores, and dots
 
 ### Liveness checks (when `SKIP_LIVENESS_CHECKS=false`)
 
