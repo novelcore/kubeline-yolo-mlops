@@ -45,7 +45,7 @@ model_registration/
 - Log **artifacts**: model checkpoint file, tokenizer files, model card / README, configuration JSONs, and any evaluation outputs.
 - Register the model in the MLflow Model Registry under the canonical model name.
 - Tag the run with pipeline metadata: git commit hash (if available), pipeline run ID, step versions.
-- Transition the registered model to the appropriate stage (`Staging` by default, `Production` only when explicitly instructed).
+- Assign the configured registry **alias** to the version (`champion` or `challenger`) when `--promote-to` is set; otherwise leave the version unaliased.
 
 ### 2. S3 Artifact Upload
 - Upload the final model checkpoint and all associated files to the configured S3 bucket.
@@ -63,7 +63,7 @@ model_registration/
   - `S3_ENDPOINT_URL` (optional, for MinIO or custom endpoints)
   - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`
   - `LOG_LEVEL` (default: `"INFO"`)
-  - `MODEL_STAGE` (default: `"Staging"`)
+  - Promotion uses a registry **alias** via the `--promote-to` flag (`champion` or `challenger`); no env-var default — unaliased unless specified.
 - Cross-step parameters (model name, checkpoint path, registry URL) arrive as CLI flags via `orchestrate.sh`.
 
 ### 4. CLI Interface (`cli.py`)
@@ -114,7 +114,7 @@ When asked to implement or run the registration step:
 3. **Start MLflow run**: Use context manager to ensure the run is properly closed on success or failure.
 4. **Log parameters and metrics**: Parse `--metrics-path` JSON if provided; log all key-value pairs.
 5. **Log artifacts**: Upload checkpoint and any co-located files (tokenizer, config) to MLflow artifact store.
-6. **Register model**: Call `mlflow.register_model()` and transition to the configured stage.
+6. **Register model**: Call `mlflow.register_model()` and assign the configured alias (if `--promote-to` is set).
 7. **Upload to S3**: Use the MLflow run ID to construct the S3 key prefix. Upload all artifacts.
 8. **Verify upload**: Confirm all files are present in S3 via head-object checks.
 9. **Write manifest**: Create and upload `manifest.json` to S3.
@@ -156,7 +156,7 @@ Examples of what to record:
 - MLflow experiment names and run tagging conventions used in this project
 - S3 bucket structure and key prefix patterns established for model artifacts
 - Common registration failures and their root causes
-- Model stage transition policies (when to promote from Staging to Production)
+- Model alias policies (when to assign `champion` vs `challenger`)
 - Any project-specific metrics or parameters that must always be logged
 
 # Persistent Agent Memory

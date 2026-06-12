@@ -500,7 +500,7 @@ class TestWriteDataYaml:
 
         assert content["path"] == str(dataset_no_yaml.resolve())
         assert "kpt_shape" in content
-        assert content["names"] == {0: "object"}
+        assert content["names"] == {0: "spacecraft"}
 
 
 # ---------------------------------------------------------------------------
