@@ -129,3 +129,55 @@ class TestMetrics:
         assert hits == 0
         assert misses == 0
         assert evictions == 0
+
+
+class TestRestartReuse:
+    """A3: a file left by a previous run is re-associated with its key on get()."""
+
+    def test_restart_reuses_file_by_key(self, tmp_path: Path) -> None:
+        cache_dir = tmp_path / "cache"
+        first = LruDiskCache(cache_dir, max_bytes=1024)
+        first.put("s3://bucket/images/train/img1.jpg", b"payload")
+
+        # New instance over the same directory simulates a process restart.
+        second = LruDiskCache(cache_dir, max_bytes=1024)
+        path = second.get("s3://bucket/images/train/img1.jpg")
+
+        assert path is not None
+        assert path.read_bytes() == b"payload"
+        hits, misses, _ = second.reset_metrics()
+        assert hits == 1
+        assert misses == 0
+
+    def test_restart_reput_does_not_double_count(self, tmp_path: Path) -> None:
+        cache_dir = tmp_path / "cache"
+        first = LruDiskCache(cache_dir, max_bytes=1024)
+        first.put("k.jpg", b"12345")  # 5 bytes
+
+        second = LruDiskCache(cache_dir, max_bytes=1024)
+        assert second.current_bytes == 5  # picked up on scan
+        # Re-fetching the same key writes to the same md5 path — no double count.
+        second.put("k.jpg", b"67890")
+        assert second.current_bytes == 5
+
+
+class TestAtomicWrites:
+    """A4: writes are atomic; partial *.tmp files are never indexed as real."""
+
+    def test_put_leaves_no_tmp_files(self, tmp_path: Path) -> None:
+        cache_dir = tmp_path / "cache"
+        cache = LruDiskCache(cache_dir, max_bytes=1024)
+        cache.put("a.jpg", b"data")
+        assert list(cache_dir.glob("*.tmp")) == []
+
+    def test_scan_skips_and_removes_leftover_tmp(self, tmp_path: Path) -> None:
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        (cache_dir / "real.jpg").write_bytes(b"12345")  # 5 bytes
+        # A crash mid-write would leave a temp file like this.
+        partial = cache_dir / "deadbeef.jpg.xyz.tmp"
+        partial.write_bytes(b"truncated")
+
+        cache = LruDiskCache(cache_dir, max_bytes=1024)
+        assert cache.current_bytes == 5  # only the real file is counted
+        assert not partial.exists()  # leftover temp is cleaned up

@@ -23,7 +23,7 @@ re-downloaded every time.
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -80,7 +80,8 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
     def __init__(
         self,
         *args: Any,
-        s3_client: Any,
+        s3_client: Any = None,
+        s3_client_factory: Callable[[], Any] | None = None,
         s3_bucket: str,
         s3_prefix: str,
         local_labels_root: str,
@@ -88,6 +89,7 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
         s3_labels_prefix: str | None = None,
         cache_dir: str | None = None,
         cache_max_bytes: int = 2 * 1024**3,
+        disk_cache: LruDiskCache | None = None,
         **kwargs: Any,
     ) -> None:
         if not _ULTRALYTICS_AVAILABLE:
@@ -96,7 +98,22 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
                 "Install it with: pip install ultralytics"
             )
 
-        self._s3_client = s3_client
+        # Fork-safe S3 access: store a factory and build the client lazily,
+        # once per process.  botocore clients are NOT fork-safe (the connection
+        # pool is shared across the fork), so every DataLoader worker must build
+        # its own client after forking — see _get_s3().
+        if s3_client_factory is not None:
+            self._s3_client_factory: Callable[[], Any] | None = s3_client_factory
+        elif s3_client is not None:
+            # Single pre-built client (e.g. unit tests / single-process use).
+            self._s3_client_factory = lambda: s3_client
+        else:
+            raise ValueError(
+                "S3YoloDataset requires either s3_client or s3_client_factory"
+            )
+        self._s3_client_cached: Any = None
+        self._s3_client_pid: int | None = None
+
         self._s3_bucket = s3_bucket
         # Normalise prefix: must end with "/"
         self._s3_prefix = s3_prefix.rstrip("/") + "/"
@@ -107,9 +124,10 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
             s3_labels_prefix.rstrip("/") + "/" if s3_labels_prefix else None
         )
 
-        # Disk cache (None = disabled)
-        self._disk_cache: LruDiskCache | None = None
-        if cache_dir is not None:
+        # Disk cache.  Prefer a shared instance (one LRU budget across the train
+        # and val datasets); otherwise construct one from cache_dir.  None = off.
+        self._disk_cache: LruDiskCache | None = disk_cache
+        if self._disk_cache is None and cache_dir is not None:
             self._disk_cache = LruDiskCache(
                 cache_dir=cache_dir,
                 max_bytes=cache_max_bytes,
@@ -118,6 +136,33 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
         # Ultralytics needs a path argument pointing to the image directory.
         # We pass a synthetic sentinel; get_image_and_label is overridden below.
         super().__init__(*args, **kwargs)
+
+    # ------------------------------------------------------------------
+    # Fork-safe S3 client
+    # ------------------------------------------------------------------
+
+    def _get_s3(self) -> Any:
+        """Return a boto3 S3 client owned by the current process.
+
+        DataLoader workers are forked from the main process; a botocore client
+        carried across the fork shares a connection pool and produces raced or
+        corrupted responses.  We therefore (re)build the client whenever the PID
+        changes, so each worker gets its own.
+        """
+        pid = os.getpid()
+        cached = getattr(self, "_s3_client_cached", None)
+        if cached is not None and getattr(self, "_s3_client_pid", None) == pid:
+            return cached
+
+        factory = getattr(self, "_s3_client_factory", None)
+        if factory is not None:
+            client = factory()
+        else:
+            # Legacy / test path: a client was assigned directly to _s3_client.
+            client = getattr(self, "_s3_client", None)
+        self._s3_client_cached = client
+        self._s3_client_pid = pid
+        return client
 
     # ------------------------------------------------------------------
     # Enumerate images from S3
@@ -134,7 +179,7 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
         supported_exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
         uris: list[str] = []
 
-        paginator = self._s3_client.get_paginator("list_objects_v2")
+        paginator = self._get_s3().get_paginator("list_objects_v2")
         pages = paginator.paginate(Bucket=self._s3_bucket, Prefix=self._s3_prefix)
 
         for page in pages:
@@ -342,12 +387,11 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
         if self._s3_labels_prefix is not None:
             stem = Path(lb_file).stem
             s3_key = f"{self._s3_labels_prefix}{stem}.txt"
+            s3 = self._get_s3()
             try:
-                response = self._s3_client.get_object(
-                    Bucket=self._s3_bucket, Key=s3_key
-                )
+                response = s3.get_object(Bucket=self._s3_bucket, Key=s3_key)
                 return response["Body"].read().decode("utf-8")
-            except self._s3_client.exceptions.NoSuchKey:
+            except s3.exceptions.NoSuchKey:
                 return None
             except Exception as exc:
                 _logger.warning(
@@ -397,15 +441,26 @@ class S3YoloDataset(_UltralyticsYOLODataset):  # type: ignore[misc]
         raw_bytes: bytes | None = None
 
         # -- Disk cache lookup --
+        # The cached file may have been evicted (by another dataset instance or a
+        # forked worker sharing this directory) or left truncated by a crash
+        # between the get() and this read.  Treat any read failure as a miss and
+        # re-fetch from S3 rather than letting an unhandled FileNotFoundError /
+        # OSError abort training.
         if self._disk_cache is not None:
             cached_path = self._disk_cache.get(key)
             if cached_path is not None:
-                raw_bytes = cached_path.read_bytes()
+                try:
+                    raw_bytes = cached_path.read_bytes()
+                except OSError as exc:
+                    _logger.debug(
+                        "Cache read miss for %s (%s); re-fetching from S3", key, exc
+                    )
+                    raw_bytes = None
 
         # -- S3 fetch on miss --
         if raw_bytes is None:
             try:
-                response = self._s3_client.get_object(Bucket=self._s3_bucket, Key=key)
+                response = self._get_s3().get_object(Bucket=self._s3_bucket, Key=key)
                 raw_bytes = response["Body"].read()
             except Exception as exc:
                 raise OSError(

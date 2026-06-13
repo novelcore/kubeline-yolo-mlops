@@ -86,8 +86,15 @@ class TrainingService:
         self,
         s3_client: Any,
         mlflow_tracking_uri: str,
+        s3_client_factory: Callable[[], Any] | None = None,
     ) -> None:
         self._s3 = s3_client
+        # Factory used to build per-process S3 clients inside forked DataLoader
+        # workers (botocore clients are not fork-safe).  Falls back to returning
+        # the shared client when no factory is supplied.
+        self._s3_client_factory: Callable[[], Any] = (
+            s3_client_factory if s3_client_factory is not None else (lambda: s3_client)
+        )
         self._mlflow_tracking_uri = mlflow_tracking_uri
         self._logger = logging.getLogger(__name__)
 
@@ -287,6 +294,7 @@ class TrainingService:
 
                 s3_trainer_cls = make_s3_pose_trainer(
                     s3_client=self._s3,
+                    s3_client_factory=self._s3_client_factory,
                     s3_bucket=params.s3_bucket,  # type: ignore[arg-type]
                     s3_prefix=params.s3_prefix,  # type: ignore[arg-type]
                     local_labels_root=labels_root,
@@ -744,6 +752,7 @@ class TrainingService:
             s3_labels_prefix = params.s3_prefix if params.s3_stream_labels else None
             s3_validator_cls = make_s3_pose_validator(
                 s3_client=self._s3,
+                s3_client_factory=self._s3_client_factory,
                 s3_bucket=params.s3_bucket,  # type: ignore[arg-type]
                 s3_prefix=params.s3_prefix,  # type: ignore[arg-type]
                 local_labels_root=labels_root,

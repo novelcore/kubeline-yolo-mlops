@@ -35,12 +35,17 @@ class S3PoseTrainer(_PoseTrainer):  # type: ignore[misc]
 
     # Filled by the factory
     _s3_client: Any = None
+    _s3_client_factory: Any = None
     _s3_bucket: str = ""
     _s3_prefix: str = ""
     _local_labels_root: str = ""
     _s3_labels_prefix: str | None = None
     _cache_dir: str | None = None
     _cache_max_bytes: int = 2 * 1024**3
+
+    # One disk cache shared across the train and val datasets (single LRU
+    # budget over a single directory).  Created lazily on first build_dataset.
+    _shared_disk_cache: Any = None
 
     def build_dataset(self, img_path: str, mode: str = "train", batch: int | None = None) -> Any:
         """Override to return an :class:`S3YoloDataset`.
@@ -73,6 +78,17 @@ class S3PoseTrainer(_PoseTrainer):  # type: ignore[misc]
 
         gs = self.args  # Ultralytics training args namespace
 
+        # Build (once) a single disk cache shared by the train and val datasets
+        # so they don't run two independent LRU indexes over the same directory
+        # (which would double the budget and cross-evict each other's files).
+        if self._cache_dir is not None and self._shared_disk_cache is None:
+            from app.services.lru_disk_cache import LruDiskCache
+
+            self._shared_disk_cache = LruDiskCache(
+                cache_dir=self._cache_dir,
+                max_bytes=self._cache_max_bytes,
+            )
+
         dataset = S3YoloDataset(
             img_path=img_path,
             imgsz=gs.imgsz,
@@ -91,6 +107,7 @@ class S3PoseTrainer(_PoseTrainer):  # type: ignore[misc]
             fraction=gs.fraction if mode == "train" else 1.0,
             # S3-specific kwargs
             s3_client=self._s3_client,
+            s3_client_factory=self._s3_client_factory,
             s3_bucket=self._s3_bucket,
             s3_prefix=split_prefix,
             local_labels_root=self._local_labels_root,
@@ -100,8 +117,8 @@ class S3PoseTrainer(_PoseTrainer):  # type: ignore[misc]
                 if self._s3_labels_prefix
                 else None
             ),
-            cache_dir=self._cache_dir,
-            cache_max_bytes=self._cache_max_bytes,
+            # Shared LRU instance (one budget across train+val).
+            disk_cache=self._shared_disk_cache,
         )
 
         _logger.info(
@@ -115,18 +132,24 @@ class S3PoseTrainer(_PoseTrainer):  # type: ignore[misc]
 
 
 def make_s3_pose_trainer(
-    s3_client: Any,
-    s3_bucket: str,
-    s3_prefix: str,
-    local_labels_root: str,
+    s3_client: Any = None,
+    s3_bucket: str = "",
+    s3_prefix: str = "",
+    local_labels_root: str = "",
     s3_labels_prefix: str | None = None,
     cache_dir: str | None = None,
     cache_max_bytes: int = 2 * 1024**3,
+    s3_client_factory: Any = None,
 ) -> type:
     """Create a configured :class:`S3PoseTrainer` subclass.
 
     Returns a *class* (not an instance) suitable for passing to
     ``model.train(trainer=...)``.
+
+    Pass ``s3_client_factory`` (a zero-arg callable returning a fresh boto3
+    client) so that forked DataLoader workers each build their own client;
+    botocore clients are not fork-safe.  ``s3_client`` remains accepted for
+    single-process / test use.
     """
     if not _ULTRALYTICS_AVAILABLE:
         raise ImportError(
@@ -136,6 +159,7 @@ def make_s3_pose_trainer(
 
     class _Configured(S3PoseTrainer):
         _s3_client = s3_client
+        _s3_client_factory = s3_client_factory
         _s3_bucket = s3_bucket
         _s3_prefix = s3_prefix
         _local_labels_root = local_labels_root
