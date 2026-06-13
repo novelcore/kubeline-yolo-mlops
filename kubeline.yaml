@@ -442,7 +442,6 @@ steps:
             storage_path = f"s3://{ckpt_bucket}/{ckpt_prefix}" if ckpt_prefix else f"s3://{ckpt_bucket}/main/checkpoints"
 
         flags = [
-            "run",
             "--experiment-name", str(exp["name"]),
             "--dataset-version", str(dataset["version"]),
             "--dataset-source", str(dataset["source"]),
@@ -587,7 +586,6 @@ steps:
         dataset = cfg.get("dataset") or {}
 
         flags = [
-            "run",
             "--version", str(dataset["version"]),
             "--source", str(dataset["source"]),
             "--output-dir", "/work/dataset",
@@ -797,7 +795,6 @@ steps:
                 sys.exit(1)
 
         flags = [
-            "run",
             "--model-variant", str(model["variant"]),
             "--experiment-name", str(exp["name"]),
             "--dataset-dir", "/work/dataset",
@@ -975,7 +972,6 @@ steps:
         last_checkpoint_s3 = best_checkpoint_s3.replace("/best.pt", "/last.pt")
 
         flags = [
-            "run",
             "--mlflow-run-id", mlflow_run_id,
             "--best-checkpoint-path", best_checkpoint_s3,
             "--last-checkpoint-path", last_checkpoint_s3,
