@@ -19,3 +19,17 @@ htmlcov/
 artifacts/
 # Local MLflow tracking DB — never commit (contains run/experiment metadata)
 mlflow.db
+*.db
+
+# ML local run artifacts — never commit (esp. to a public repo)
+mlruns/
+runs/
+datasets/
+*.npy
+*.npz
+*.cache
+yolo11n-pose.pt
+step_zero_spike.py
+
+# OS cruft
+.DS_Store
