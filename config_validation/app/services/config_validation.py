@@ -152,6 +152,10 @@ class ConfigValidationService:
                 "Erasing": config.augmentation.erasing,
                 "BGR": config.augmentation.bgr,
             }),
+            ("Registration", {
+                "Model name": config.registration.registered_model_name or "(none)",
+                "Promote to": config.registration.promote_to or "(none)",
+            }),
         ]
 
         BOLD = "\033[1m"
