@@ -8,7 +8,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -1107,3 +1107,143 @@ class TestTagKubecoreMetadata:
             TrainingService._tag_kubecore_metadata("run-abc")
 
         mock_client.set_tag.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TrainingParams provenance fields (FR-03)
+# ---------------------------------------------------------------------------
+
+
+class TestTrainingParamsProvenance:
+    """Tests for the dataset provenance fields added to TrainingParams (FR-03)."""
+
+    def test_provenance_fields_default_to_none(self, tmp_path: Path) -> None:
+        """All provenance fields are optional and default to None (CON-02)."""
+        params = _make_params(str(tmp_path / "ds"), str(tmp_path / "out"))
+        assert params.dataset_version is None
+        assert params.lakefs_branch is None
+        assert params.lakefs_commit is None
+        assert params.config_hash is None
+
+    def test_provenance_fields_accept_values(self, tmp_path: Path) -> None:
+        """Provenance fields accept string values when provided."""
+        params = _make_params(
+            str(tmp_path / "ds"),
+            str(tmp_path / "out"),
+            dataset_version="v1",
+            lakefs_branch="main",
+            lakefs_commit="abc123def456" * 2 + "abcd",  # 64-char hex-like
+            config_hash="deadbeef" * 8,
+        )
+        assert params.dataset_version == "v1"
+        assert params.lakefs_branch == "main"
+        assert params.lakefs_commit is not None
+        assert params.config_hash is not None
+
+    def test_params_without_provenance_are_valid_pydantic_model(
+        self, tmp_path: Path
+    ) -> None:
+        """TrainingParams is valid when no provenance fields are passed (AC-07 model layer).
+
+        The service-level AC-07 coverage comes from the full TestTrainingServiceRun
+        suite — every test there uses _make_params() without provenance fields and
+        all pass, proving the service runs without error when they are absent.
+        """
+        params = _make_params(str(tmp_path / "ds"), str(tmp_path / "out"))
+        # Must not raise; provenance fields must be absent (None) not missing
+        assert params.model_dump().get("lakefs_commit") is None
+        assert params.model_dump().get("config_hash") is None
+        assert "lakefs_commit" in params.model_dump()  # field exists, value is None
+        assert "config_hash" in params.model_dump()
+
+
+# ---------------------------------------------------------------------------
+# MLflow provenance logging (FR-04)
+# ---------------------------------------------------------------------------
+
+
+class TestProvenanceCallback:
+    """Tests for _make_provenance_callback (FR-04)."""
+
+    def _fire_callback(self, params: TrainingParams) -> Callable[[Any], None]:
+        """Build the callback and return it (does not fire it)."""
+        service = _make_service()
+        return service._make_provenance_callback(params)
+
+    def test_logs_all_non_none_params(self, tmp_path: Path) -> None:
+        """All non-None provenance fields are logged as MLflow params."""
+        params = _make_params(
+            str(tmp_path / "ds"),
+            str(tmp_path / "out"),
+            dataset_version="v1",
+            lakefs_branch="main",
+            lakefs_commit="abc" * 21 + "a",
+            config_hash="dead" * 16,
+        )
+        callback = self._fire_callback(params)
+
+        with (
+            patch("mlflow.active_run", return_value=MagicMock()),
+            patch("mlflow.log_param") as mock_log_param,
+            patch("mlflow.set_tag") as mock_set_tag,
+        ):
+            callback(MagicMock())  # fire with fake trainer
+
+        logged = {call.args[0]: call.args[1] for call in mock_log_param.call_args_list}
+        assert logged["dataset.version"] == "v1"
+        assert logged["dataset.lakefs_branch"] == "main"
+        assert logged["dataset.lakefs_commit"] == params.lakefs_commit
+        assert logged["pipeline.config_hash"] == params.config_hash
+
+        # Q3: config_hash also logged as a tag
+        mock_set_tag.assert_called_once_with("pipeline.config_hash", params.config_hash)
+
+    def test_skips_none_fields(self, tmp_path: Path) -> None:
+        """None provenance fields are not logged (CON-02)."""
+        params = _make_params(str(tmp_path / "ds"), str(tmp_path / "out"))
+        callback = self._fire_callback(params)
+
+        with (
+            patch("mlflow.active_run", return_value=MagicMock()),
+            patch("mlflow.log_param") as mock_log_param,
+            patch("mlflow.set_tag") as mock_set_tag,
+        ):
+            callback(MagicMock())
+
+        mock_log_param.assert_not_called()
+        mock_set_tag.assert_not_called()
+
+    def test_no_active_run_logs_warning_not_exception(self, tmp_path: Path) -> None:
+        """When no MLflow run is active the callback logs a warning and does not raise (T-05)."""
+        params = _make_params(
+            str(tmp_path / "ds"),
+            str(tmp_path / "out"),
+            lakefs_commit="abc123",
+        )
+        callback = self._fire_callback(params)
+
+        with (
+            patch("mlflow.active_run", return_value=None),
+            patch("mlflow.log_param") as mock_log_param,
+        ):
+            callback(MagicMock())  # must not raise
+
+        mock_log_param.assert_not_called()
+
+    def test_config_hash_tag_not_set_when_none(self, tmp_path: Path) -> None:
+        """pipeline.config_hash tag is not set when config_hash is None."""
+        params = _make_params(
+            str(tmp_path / "ds"),
+            str(tmp_path / "out"),
+            lakefs_commit="abc123",  # only commit, no config_hash
+        )
+        callback = self._fire_callback(params)
+
+        with (
+            patch("mlflow.active_run", return_value=MagicMock()),
+            patch("mlflow.log_param"),
+            patch("mlflow.set_tag") as mock_set_tag,
+        ):
+            callback(MagicMock())
+
+        mock_set_tag.assert_not_called()

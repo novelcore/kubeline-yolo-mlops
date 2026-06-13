@@ -193,6 +193,24 @@ class TrainingParams(BaseModel):
     # ---- Export / Quantization ----
     export: ExportConfig = Field(default_factory=ExportConfig)
 
+    # ---- Dataset provenance (FR-03) ----
+    dataset_version: Optional[str] = Field(
+        default=None,
+        description="Dataset version tag from the dataset loading step.",
+    )
+    lakefs_branch: Optional[str] = Field(
+        default=None,
+        description="LakeFS branch the dataset was fetched from.",
+    )
+    lakefs_commit: Optional[str] = Field(
+        default=None,
+        description="LakeFS branch-tip commit hash at dataset fetch time.",
+    )
+    config_hash: Optional[str] = Field(
+        default=None,
+        description="SHA-256 of the canonical pipeline config JSON (from config_validation).",
+    )
+
 
 class TrainingResult(BaseModel):
     """Outcome of a completed training run."""
