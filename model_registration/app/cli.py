@@ -39,7 +39,7 @@ def main() -> None:
         ),
         promote_to: Optional[str] = typer.Option(
             None,
-            help="Transition the best.pt version to this stage after registration (e.g. Staging).",
+            help="Assign this registry alias to the best.pt version after registration (champion or challenger).",
         ),
         dataset_version: Optional[str] = typer.Option(
             None,

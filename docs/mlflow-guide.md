@@ -27,7 +27,7 @@ MLflow has four main components. We use two of them:
 | Component              | What It Does                                    | We Use It? |
 |------------------------|-------------------------------------------------|------------|
 | **Tracking**           | Logs parameters, metrics, and artifacts per run | Yes        |
-| **Model Registry**     | Versions and stages trained models              | Yes        |
+| **Model Registry**     | Versions and aliases trained models             | Yes        |
 | **Projects**           | Packages ML code in a reproducible format       | No         |
 | **Models**             | Standard format for deploying models            | No         |
 
@@ -59,13 +59,18 @@ Registered Model: "spacecraft-pose-yolo"
   └── Version 3  (best.pt from run ghi789)  ← latest
 ```
 
-### Model Stages
+### Model Aliases
 
-Registered model versions can be promoted through stages to control deployment:
+In MLflow 3, registered model versions are promoted using **aliases** — named, movable pointers to a specific version — rather than a fixed stage ladder. An alias can be reassigned to a new version at any time, and a version can hold more than one alias:
 
 ```
-None → Staging → Production → Archived
+@champion    → current best / deployed version
+@challenger  → candidate under evaluation
 ```
+
+Resolve a version by alias with the URI `models:/<model-name>@champion`.
+
+> The older MLflow *stages* (`None/Staging/Production/Archived`) are deprecated and slated for removal in a future major release; this pipeline uses aliases.
 
 ---
 
@@ -166,12 +171,12 @@ After training completes, the registration step:
 | `model_variant`       | `yolov8n-pose.pt`               |
 | `best_mAP50`          | `0.82`                          |
 
-4. **Promotes the version** to a stage (`Staging` or `Production`) if configured:
+4. **Assigns an alias** to the version (`champion` or `challenger`) if configured:
 
 ```yaml
 registration:
   registered_model_name: "spacecraft-pose-yolo"
-  promote_to: "Staging"
+  promote_to: "champion"
 ```
 
 ---
@@ -349,24 +354,22 @@ Click **Models** in the top navigation bar to access the Model Registry.
 Shows all registered model names (e.g., `spacecraft-pose-yolo`). Each entry displays:
 - **Latest version number**
 - **Last updated timestamp**
-- **Version counts per stage** (None / Staging / Production / Archived)
+- **Aliases** assigned across versions (e.g. `@champion`, `@challenger`)
 
 #### Model Version Detail
 
 Click a model name and then a version number to see:
 - **Source run** — Link back to the training run that produced this checkpoint
 - **Lineage tags** — `training_run_id`, `dataset_version`, `dataset_sample_size`, `config_hash`, `git_commit`, `model_variant`, `best_mAP50`, `checkpoint_type`
-- **Current stage** — `None`, `Staging`, `Production`, or `Archived`
-- **Stage transition history** — Who promoted the version and when
+- **Aliases** — any registry aliases pointing at this version (e.g. `@champion`)
+- **Tags** — including any status tags applied during promotion
 
 #### Promoting a Model Version
 
-To move a model version to a new stage via the UI:
-1. Open the model version detail page
-2. Click the **Stage** dropdown
-3. Select the target stage (`Staging`, `Production`, or `Archived`)
-4. Add an optional comment explaining why
-5. Click **Transition**
+To point an alias at a model version via the UI:
+1. Open the registered model page
+2. Next to the target version, add an alias (e.g. `champion` or `challenger`)
+3. Reassigning an existing alias moves it from the old version to the new one
 
 ### Dashboard Tips
 
@@ -442,7 +445,11 @@ print(f"Downloaded to: {local_path}")
 ```python
 versions = client.search_model_versions("name='spacecraft-pose-yolo'")
 for v in versions:
-    print(f"Version {v.version} | Stage: {v.current_stage} | Run: {v.run_id}")
+    print(f"Version {v.version} | Run: {v.run_id}")
+
+# Resolve the version an alias points to
+champion = client.get_model_version_by_alias("my-yolo-model", "champion")
+print(f"@champion -> version {champion.version}")
 ```
 
 ---
@@ -477,13 +484,13 @@ runs = mlflow.search_runs(
 )
 ```
 
-### "Promote a model to Production"
+### "Promote a model to champion"
 
 ```python
-client.transition_model_version_stage(
+client.set_registered_model_alias(
     name="spacecraft-pose-yolo",
+    alias="champion",
     version="3",
-    stage="Production",
 )
 ```
 
@@ -546,7 +553,7 @@ Artifacts are uploaded through the MLflow tracking server (proxy mode). Large fi
 | **Tag**                 | A key-value label on a run or model version (e.g., `dataset_version=v1`)            |
 | **Registered Model**    | A named model entry in the registry with one or more versions                       |
 | **Model Version**       | A specific checkpoint registered under a model name                                 |
-| **Stage**               | A lifecycle label on a model version: `None`, `Staging`, `Production`, `Archived`   |
+| **Alias**               | A movable, named pointer to a model version (e.g. `@champion`, `@challenger`); resolve via `models:/<name>@alias`   |
 | **Backend Store**       | Database (PostgreSQL) that holds run metadata, params, metrics                      |
 | **Artifact Store**      | Object storage (S3) that holds model files and other binary artifacts               |
 | **Proxy Artifacts**     | Artifact uploads that go through the tracking server instead of directly to S3      |

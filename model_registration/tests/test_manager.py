@@ -113,18 +113,18 @@ class TestManagerRun:
     def test_passes_promote_to(self, config: Config) -> None:
         with patch("app.manager.ModelRegistrationService") as mock_service_cls:
             mock_service = mock_service_cls.return_value
-            mock_service.run.return_value = _make_result(promoted_to="Staging")
+            mock_service.run.return_value = _make_result(promoted_to="champion")
 
             manager = Manager(config=config)
             result = manager.run(
                 mlflow_run_id=RUN_ID,
                 best_checkpoint_path=BEST_S3,
-                promote_to="Staging",
+                promote_to="champion",
             )
 
         called_params = mock_service.run.call_args.kwargs["params"]
-        assert called_params.promote_to == "Staging"
-        assert result.promoted_to == "Staging"
+        assert called_params.promote_to == "champion"
+        assert result.promoted_to == "champion"
 
     def test_constructs_service_with_tracking_uri_from_config(
         self, config: Config

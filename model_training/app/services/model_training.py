@@ -330,7 +330,7 @@ class TrainingService:
         mlflow_run_id = self._get_mlflow_run_id()
 
         # Tag the completed MLflow run with Kubeline platform metadata
-        self._tag_kubecore_metadata()
+        self._tag_kubecore_metadata(mlflow_run_id)
 
         final_map50 = float(epoch_metrics.get("val/mAP50", 0.0))
         final_map50_95 = float(epoch_metrics.get("val/mAP50_95", 0.0))
@@ -522,10 +522,16 @@ class TrainingService:
         return ""
 
     @staticmethod
-    def _tag_kubecore_metadata() -> None:
-        """Tag the MLflow run with KUBECORE_* environment variables."""
+    def _tag_kubecore_metadata(run_id: str) -> None:
+        """Tag the MLflow run with KUBECORE_* environment variables.
+
+        Uses MlflowClient (not the fluent API) so it works on an already-ended
+        run without triggering a new ghost run via mlflow.autolog().
+        """
+        if not run_id:
+            return
         try:
-            import mlflow  # noqa: PLC0415
+            from mlflow.tracking import MlflowClient  # noqa: PLC0415
 
             kubecore_tags = {
                 k.lower().replace("kubecore_", "kubecore."): v
@@ -533,7 +539,9 @@ class TrainingService:
                 if k.startswith("KUBECORE_") and v
             }
             if kubecore_tags:
-                mlflow.set_tags(kubecore_tags)
+                client = MlflowClient()
+                for key, value in kubecore_tags.items():
+                    client.set_tag(run_id, key, value)
                 _logger.info("Tagged MLflow run with %d kubecore tags", len(kubecore_tags))
         except Exception:  # noqa: BLE001
             _logger.warning("Failed to tag MLflow run with kubecore metadata")
