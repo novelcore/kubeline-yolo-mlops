@@ -1379,10 +1379,15 @@ class TestDatasetLineage:
         }
         fake_response.raise_for_status.return_value = None
 
-        with patch("app.services.dataset_loading.requests.get", return_value=fake_response):
+        with patch("app.services.dataset_loading.requests.get", return_value=fake_response) as mock_get:
             commit = service._fetch_lakefs_commit("my-repo", "main")
 
         assert commit == "abc123def456"
+        # Assert the correct lakeFS API endpoint is used: branch is in the path, not a query param.
+        call_url = mock_get.call_args[0][0]
+        assert call_url == "https://lakefs.example.com/api/v1/repositories/my-repo/refs/main/commits"
+        call_params = mock_get.call_args[1].get("params", {})
+        assert "branch" not in call_params
 
     def test_fetch_lakefs_commit_timeout_returns_none(self) -> None:
         """_fetch_lakefs_commit returns None (not an exception) on timeout (CON-01)."""

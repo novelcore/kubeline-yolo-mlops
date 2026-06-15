@@ -17,3 +17,7 @@ dist/
 htmlcov/
 
 artifacts/
+
+# Local dev stack (AC-06 verification — not for commit)
+dev/
+pipeline_config.ac06.yaml
