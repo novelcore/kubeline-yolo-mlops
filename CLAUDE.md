@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-An Argo Workflows-based MLOps pipeline for the Example Org project. The pipeline consists of four sequential steps, each packaged as an independent containerized Python application following the **Kubestep Python Template** pattern.
+An Argo Workflows-based MLOps pipeline for the KAOS YOLO project. The pipeline consists of four sequential steps, each packaged as an independent containerized Python application following the **Kubestep Python Template** pattern.
 
 Steps run in order: `config_validation` → `dataset_loading` → `model_training` → `model_registration`.
 
@@ -84,6 +84,27 @@ Every step is a self-contained Python package with an identical internal layout:
 - The pipeline YAML (`pipeline_config.yaml`) carries cross-step configuration (dataset paths, hyperparameters, registry URL). It is validated by `config_validation` using Pydantic models in `app/models/pipeline_config.py`.
 - `orchestrate.sh` parses the pipeline YAML into shell variables with the `CFG_<section>_<key>` naming convention and passes the values as CLI flags to each step.
 - Docker images are named `<image-prefix>-<step-name-with-dashes>` (e.g., `io-config-validation`). The orchestrator mounts the config at `/data/pipeline_config.yaml` and an `artifacts/` volume at `/artifacts`.
+
+## kubeline.yaml — Pipeline DSL
+
+`kubeline.yaml` (version 2) is the pipeline definition consumed by the KAOS
+in-cluster `ml-ci-build` CI generator (see novelcore/kubecore-operator#454 and
+novelcore/charts#18). The generator reads this file and emits an Argo
+`WorkflowTemplate`.
+
+**What the app owns:** step list, dependencies, `command`/`args` (Python shims
+that parse `PIPELINE_CONFIG` and invoke the step CLIs), `inputs`/`outputs`
+parameter wiring, and optional resource overrides.
+
+**What the platform injects automatically:** image refs, nodeSelectors /
+tolerations / compute classes, `serviceAccountName`, `podMetadata` cost labels,
+lakeFS env (`LAKEFS_ENDPOINT`, `LAKEFS_REPOSITORY`, `LAKEFS_ACCESS_KEY_ID`,
+`LAKEFS_SECRET_ACCESS_KEY`), MLflow env (`MLFLOW_TRACKING_URI`), and
+`PIPELINE_CONFIG` (the raw pipeline config YAML) into every step's env.
+
+**Constraint:** `dataset.manifest_only: true` is required. Full-download and
+labels-only modes assume a shared filesystem between step pods, which the
+cluster does not provide.
 
 ## Tech Stack
 

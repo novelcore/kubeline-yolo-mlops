@@ -14,8 +14,8 @@ def test_config_default_values(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.log_level == "INFO"
     assert config.max_retries == 3
     assert config.timeout == 60
-    assert config.mlflow_experiment_name == "example-project"
-    assert config.registered_model_name == "object-pose-yolo"
+    assert config.mlflow_experiment_name == "kaos-yolo"
+    assert config.registered_model_name == "spacecraft-pose-yolo"
 
 
 def test_config_reads_mlflow_tracking_uri(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -28,11 +28,11 @@ def test_config_reads_mlflow_tracking_uri(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_config_reads_mlflow_experiment_name(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
-    monkeypatch.setenv("MLFLOW_EXPERIMENT_NAME", "object-pose-v2")
+    monkeypatch.setenv("MLFLOW_EXPERIMENT_NAME", "spacecraft-pose-v2")
 
     config = Config()
 
-    assert config.mlflow_experiment_name == "object-pose-v2"
+    assert config.mlflow_experiment_name == "spacecraft-pose-v2"
 
 
 def test_config_reads_registered_model_name(monkeypatch: pytest.MonkeyPatch) -> None:

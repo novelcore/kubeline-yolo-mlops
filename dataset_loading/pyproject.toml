@@ -1,9 +1,9 @@
 [project]
 name = "dataset-loading"
 version = "0.1.0"
-description = "Loads and preprocesses datasets for the Example Org MLOps pipeline."
+description = "Loads and preprocesses datasets for the KAOS YOLO MLOps pipeline."
 authors = [
-    { name = "Example Org", email = "dev@example.com" }
+    { name = "Novelcore", email = "dev@novelcore.org" }
 ]
 readme = "README.md"
 

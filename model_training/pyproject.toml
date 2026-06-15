@@ -1,9 +1,9 @@
 [project]
 name = "model-training"
 version = "0.1.0"
-description = "YOLO pose-estimation training step for the Example Org MLOps pipeline."
+description = "YOLO pose-estimation training step for the KAOS YOLO MLOps pipeline."
 authors = [
-    { name = "Example Org", email = "dev@example.com" }
+    { name = "Novelcore", email = "dev@novelcore.org" }
 ]
 readme = "README.md"
 

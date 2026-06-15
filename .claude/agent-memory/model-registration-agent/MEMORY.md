@@ -59,11 +59,11 @@ Both error codes are required in the inline comment when torch is not installed 
 
 ## Config env vars (required)
 - `MLFLOW_TRACKING_URI` — required, no default
-- `MLFLOW_EXPERIMENT_NAME` — default `"example-project"`
-- `REGISTERED_MODEL_NAME` — default `"object-pose-yolo"`
+- `MLFLOW_EXPERIMENT_NAME` — default `"kaos-yolo"`
+- `REGISTERED_MODEL_NAME` — default `"spacecraft-pose-yolo"`
 
 ## MLflow model name convention
-Default registered model name: `"object-pose-yolo"` (configurable via `REGISTERED_MODEL_NAME` env var or `--registered-model-name` CLI flag).
+Default registered model name: `"spacecraft-pose-yolo"` (configurable via `REGISTERED_MODEL_NAME` env var or `--registered-model-name` CLI flag).
 
 ## Lineage tags applied to each registered version
 `checkpoint_type`, `training_run_id`, `dataset_version`, `dataset_sample_size`, `config_hash`, `git_commit`, `model_variant`, `best_mAP50` — all optional except `checkpoint_type`.

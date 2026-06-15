@@ -1,9 +1,9 @@
 [project]
 name = "model-registration"
 version = "0.1.0"
-description = "Registers trained models to the MLflow model registry for the Example Org MLOps pipeline."
+description = "Registers trained models to the MLflow model registry for the KAOS YOLO MLOps pipeline."
 authors = [
-    { name = "Example Org", email = "dev@example.com" }
+    { name = "Novelcore", email = "dev@novelcore.org" }
 ]
 readme = "README.md"
 

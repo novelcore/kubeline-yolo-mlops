@@ -1,8 +1,8 @@
 # Agent Memory: YOLO + MLflow Trainer — model_training step
 
 ## Project Identity
-- Pipeline: Example Org object pose estimation (Sample Pose dataset)
-- Task: 11-keypoint pose estimation, single class "object"
+- Pipeline: KAOS YOLO spacecraft pose estimation (SPEED+ dataset)
+- Task: 11-keypoint pose estimation, single class "spacecraft"
 - YOLO variants in use: yolov{8|9|10|11}{n|s|m|l|x}-pose.pt (validated by config_validation)
 - Label format: 1 class + 4 bbox + 11*3 keypoints = 38 tokens per line
 - Default YOLO variant for experiments: yolov8n-pose.pt
