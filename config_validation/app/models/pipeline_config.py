@@ -1,11 +1,14 @@
 import re
-from typing import ClassVar, Optional
+from typing import ClassVar, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # Valid YOLO Pose model variants (v8–v11, sizes n/s/m/l/x)
 _YOLO_POSE_VARIANT_PATTERN = re.compile(r"^yolov(8|9|10|11)[nsmlx]-pose\.pt$")
+
+# MLflow model registry name — only alphanumeric, hyphens, underscores, dots
+_MLFLOW_MODEL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9._\-]+$")
 
 
 class ExperimentConfig(BaseModel):
@@ -325,6 +328,23 @@ class ExportConfig(BaseModel):
         return v
 
 
+class RegistrationConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    registered_model_name: Optional[str] = None
+    promote_to: Optional[Literal["champion", "challenger"]] = None
+
+    @field_validator("registered_model_name", mode="after")
+    @classmethod
+    def registered_model_name_must_be_valid(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not _MLFLOW_MODEL_NAME_PATTERN.match(v):
+            raise ValueError(
+                f"registration.registered_model_name contains invalid characters: {v!r}. "
+                f"Only alphanumeric characters, hyphens, underscores, and dots are allowed."
+            )
+        return v
+
+
 class PipelineConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")  # silently drops resources section
 
@@ -336,3 +356,4 @@ class PipelineConfig(BaseModel):
     early_stopping: EarlyStoppingConfig
     augmentation: AugmentationConfig = Field(default_factory=AugmentationConfig)
     export: ExportConfig = Field(default_factory=ExportConfig)
+    registration: RegistrationConfig = Field(default_factory=RegistrationConfig)
