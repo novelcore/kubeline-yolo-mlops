@@ -55,22 +55,44 @@ class Manager:
     # ------------------------------------------------------------------
 
     def _build_s3_client(self) -> object:
-        """Construct a boto3 S3 client for real AWS S3 (checkpoint uploads).
+        """Construct a boto3 S3 client for S3-compatible storage.
 
-        Always uses the default credential chain (IRSA / instance role) so
-        that checkpoint uploads target real AWS S3, not the lakeFS S3 gateway.
-        The lakeFS endpoint is only relevant for dataset_loading (separate step).
+        Priority (bug/480 — GCP-only, lakeFS S3 gateway):
+        1. When LAKEFS_ENDPOINT + LAKEFS_ACCESS_KEY + LAKEFS_SECRET_KEY are all
+           set, build a client targeting the lakeFS S3-compatible gateway.
+           region_name is not sent (lakeFS ignores it and some versions reject it).
+           This covers both manifest-only dataset streaming AND checkpoint uploads
+           when the platform routes checkpoints back into lakeFS.
+        2. Otherwise fall back to the cloud credential chain (IRSA / Workload
+           Identity / instance role) for real AWS S3, using s3_endpoint_url and
+           aws_access_key_id/secret if set.
         """
         boto_cfg = BotoConfig(
             retries={"max_attempts": 3, "mode": "adaptive"},
         )
 
+        cfg = self._config
+        if cfg.lakefs_endpoint and cfg.lakefs_access_key and cfg.lakefs_secret_key:
+            self._logger.info(
+                "S3 client: lakeFS gateway at %s (LAKEFS_ACCESS_KEY present)",
+                cfg.lakefs_endpoint,
+            )
+            return boto3.client(
+                "s3",
+                endpoint_url=cfg.lakefs_endpoint,
+                aws_access_key_id=cfg.lakefs_access_key,
+                aws_secret_access_key=cfg.lakefs_secret_key,
+                region_name=None,
+                config=boto_cfg,
+            )
+
+        self._logger.info("S3 client: cloud credential chain (IRSA / Workload Identity)")
         return boto3.client(
             "s3",
-            endpoint_url=self._config.s3_endpoint_url,
-            aws_access_key_id=self._config.aws_access_key_id,
-            aws_secret_access_key=self._config.aws_secret_access_key,
-            region_name=self._config.aws_default_region,
+            endpoint_url=cfg.s3_endpoint_url,
+            aws_access_key_id=cfg.aws_access_key_id,
+            aws_secret_access_key=cfg.aws_secret_access_key,
+            region_name=cfg.aws_default_region,
             config=boto_cfg,
         )
 
