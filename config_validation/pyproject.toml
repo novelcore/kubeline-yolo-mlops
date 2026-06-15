@@ -3,7 +3,7 @@ name = "config-validation"
 version = "0.1.0"
 description = "Validates pipeline configuration for the KAOS YOLO MLOps pipeline."
 authors = [
-    { name = "Novelcore", email = "dev@novelcore.org" }
+    { name = "Example Org", email = "dev@example.org" }
 ]
 readme = "README.md"
 

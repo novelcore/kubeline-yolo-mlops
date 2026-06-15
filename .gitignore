@@ -17,6 +17,7 @@ dist/
 htmlcov/
 
 artifacts/
+
 # Local MLflow tracking DB — never commit (contains run/experiment metadata)
 mlflow.db
 *.db
@@ -33,3 +34,7 @@ step_zero_spike.py
 
 # OS cruft
 .DS_Store
+
+# Local dev stack (AC-06 verification — not for commit)
+dev/
+pipeline_config.ac06.yaml

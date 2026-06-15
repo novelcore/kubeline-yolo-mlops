@@ -108,7 +108,7 @@ def _build_yolo_tree(
             "test": "images/test",
             "kpt_shape": [11, 3],
             "flip_idx": [],
-            "names": {0: "spacecraft"},
+            "names": {0: "object"},
         }
         (root / "data.yaml").write_text(yaml.dump(data))
 
@@ -489,7 +489,7 @@ class TestValidation:
             "val": "images/val",
             "test": "images/test",
             "kpt_shape": [11, 3],
-            "names": ["spacecraft"],  # should be {0: "spacecraft"}
+            "names": ["object"],  # should be {0: "object"}
         }
         (src / "data.yaml").write_text(yaml.dump(bad_yaml))
 
@@ -511,7 +511,7 @@ class TestValidation:
             "val": "images/val",
             "test": "images/test",
             "kpt_shape": [11, 4],  # dimension must be 2 or 3
-            "names": {0: "spacecraft"},
+            "names": {0: "object"},
         }
         (src / "data.yaml").write_text(yaml.dump(bad_yaml))
 
@@ -533,7 +533,7 @@ class TestValidation:
             "val": "images/val",
             "test": "images/test",
             "kpt_shape": [11, 3],
-            "names": {0: "spacecraft"},
+            "names": {0: "object"},
             "nc": 5,  # doesn't match len(names)=1
         }
         (src / "data.yaml").write_text(yaml.dump(bad_yaml))
@@ -1379,10 +1379,15 @@ class TestDatasetLineage:
         }
         fake_response.raise_for_status.return_value = None
 
-        with patch("app.services.dataset_loading.requests.get", return_value=fake_response):
+        with patch("app.services.dataset_loading.requests.get", return_value=fake_response) as mock_get:
             commit = service._fetch_lakefs_commit("my-repo", "main")
 
         assert commit == "abc123def456"
+        # Assert the correct lakeFS API endpoint is used: branch is in the path, not a query param.
+        call_url = mock_get.call_args[0][0]
+        assert call_url == "https://lakefs.example.com/api/v1/repositories/my-repo/refs/main/commits"
+        call_params = mock_get.call_args[1].get("params", {})
+        assert "branch" not in call_params
 
     def test_fetch_lakefs_commit_timeout_returns_none(self) -> None:
         """_fetch_lakefs_commit returns None (not an exception) on timeout (CON-01)."""

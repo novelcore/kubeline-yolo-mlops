@@ -7,7 +7,7 @@ from app.models.config import Config
 
 def test_config_default_values() -> None:
     """Config has the correct default values when no env vars are set."""
-    config = Config()
+    config = Config(_env_file=None)  # type: ignore[call-arg]
     assert config.app_name == "io-dataset-loading"
     assert config.log_level == "INFO"
     assert config.max_retries == 3

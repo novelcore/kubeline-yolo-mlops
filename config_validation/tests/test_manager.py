@@ -4,7 +4,7 @@ from app.manager import Manager
 from app.services.config_validation import ConfigValidationError
 
 VALID_CONFIG_DICT: dict = {
-    "experiment": {"name": "spacecraft-pose-v1-yolov8n", "description": "Baseline run"},
+    "experiment": {"name": "object-pose-v1-yolov8n", "description": "Baseline run"},
     "dataset": {"version": "v1", "source": "s3", "sample_size": None, "seed": 42},
     "model": {"variant": "yolov8n-pose.pt", "pretrained_weights": None},
     "training": {
@@ -16,7 +16,7 @@ VALID_CONFIG_DICT: dict = {
     },
     "checkpointing": {
         "interval_epochs": 10,
-        "storage_path": "s3://io-mlops/checkpoints",
+        "storage_path": "s3://mlops-artifacts/checkpoints",
         "resume_from": None,
     },
     "early_stopping": {"patience": 50},

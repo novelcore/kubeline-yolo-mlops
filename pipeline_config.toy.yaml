@@ -1,9 +1,9 @@
 # --- Toy experiment: 1000 samples, few epochs ---
 experiment:
-  name: "spacecraft-pose-toy-1k"
+  name: "object-pose-toy-1k"
   description: "Toy run with 1000 samples for pipeline smoke-test"
   tags:
-    project: "kaos-yolo"
+    project: "example-project"
     phase: "toy"
 
 dataset:

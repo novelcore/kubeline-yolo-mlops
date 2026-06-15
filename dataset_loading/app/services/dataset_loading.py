@@ -1150,11 +1150,11 @@ class DatasetLoadingService:
                 "LAKEFS_ENDPOINT not configured; lakefs_commit will be null"
             )
             return None
-        url = f"{self._lakefs_endpoint.rstrip('/')}/api/v1/repositories/{repo}/commits"
+        url = f"{self._lakefs_endpoint.rstrip('/')}/api/v1/repositories/{repo}/refs/{branch}/commits"
         try:
             resp = requests.get(
                 url,
-                params={"branch": branch, "limit": 1},
+                params={"limit": 1},
                 auth=(self._lakefs_access_key or "", self._lakefs_secret_key or ""),
                 timeout=5,
             )

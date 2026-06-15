@@ -12,10 +12,10 @@ from app.services.model_registration import (
 )
 
 TRACKING_URI = "http://mlflow.example.com"
-MODEL_NAME = "spacecraft-pose-yolo"
+MODEL_NAME = "object-pose-yolo"
 RUN_ID = "abc123def456"
-BEST_S3 = "s3://io-mlops/checkpoints/exp-001/best.pt"
-LAST_S3 = "s3://io-mlops/checkpoints/exp-001/last.pt"
+BEST_S3 = "s3://mlops-artifacts/checkpoints/exp-001/best.pt"
+LAST_S3 = "s3://mlops-artifacts/checkpoints/exp-001/last.pt"
 
 
 @pytest.fixture
@@ -94,7 +94,7 @@ class TestRegisterBestOnly:
     ) -> None:
         params = RegistrationParams(
             mlflow_run_id=RUN_ID,
-            best_checkpoint_path="s3://io-mlops/checkpoints/model.pt",
+            best_checkpoint_path="s3://mlops-artifacts/checkpoints/model.pt",
             registered_model_name=MODEL_NAME,
         )
         with (

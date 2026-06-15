@@ -58,7 +58,7 @@ model_registration/
 ### 3. Configuration Management
 - `app/models/config.py` uses `pydantic_settings.BaseSettings` with `env_file=".env"` for step-level settings:
   - `MLFLOW_TRACKING_URI` (required)
-  - `MLFLOW_EXPERIMENT_NAME` (default: `"kaos-yolo"`)
+  - `MLFLOW_EXPERIMENT_NAME` (default: `"example-project"`)
   - `S3_BUCKET_NAME` (required)
   - `S3_ENDPOINT_URL` (optional, for MinIO or custom endpoints)
   - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`

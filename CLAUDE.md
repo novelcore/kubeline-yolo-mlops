@@ -88,8 +88,8 @@ Every step is a self-contained Python package with an identical internal layout:
 ## kubeline.yaml — Pipeline DSL
 
 `kubeline.yaml` (version 2) is the pipeline definition consumed by the KAOS
-in-cluster `ml-ci-build` CI generator (see novelcore/kubecore-operator#454 and
-novelcore/charts#18). The generator reads this file and emits an Argo
+in-cluster `ml-ci-build` CI generator (see your-org/your-operator and
+your-org/your-charts). The generator reads this file and emits an Argo
 `WorkflowTemplate`.
 
 **What the app owns:** step list, dependencies, `command`/`args` (Python shims

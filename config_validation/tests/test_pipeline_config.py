@@ -6,9 +6,9 @@ from app.models.pipeline_config import PipelineConfig, RegistrationConfig
 
 VALID_CONFIG: dict = {
     "experiment": {
-        "name": "spacecraft-pose-v1-yolov8n",
+        "name": "object-pose-v1-yolov8n",
         "description": "Baseline run",
-        "tags": {"project": "kaos-yolo", "phase": "1"},
+        "tags": {"project": "example-project", "phase": "1"},
     },
     "dataset": {
         "version": "v1",
@@ -45,7 +45,7 @@ VALID_CONFIG: dict = {
 
 def test_valid_config_parses_successfully():
     config = PipelineConfig(**VALID_CONFIG)
-    assert config.experiment.name == "spacecraft-pose-v1-yolov8n"
+    assert config.experiment.name == "object-pose-v1-yolov8n"
     assert config.model.variant == "yolov8n-pose.pt"
     assert config.training.epochs == 100
 

@@ -1,9 +1,9 @@
 # --- Experiment Metadata ---
 experiment:
-  name: "spacecraft-pose-v1-yolov8n"
-  description: "Baseline YOLOv8n-pose on SPEED+ synthetic full dataset"
+  name: "object-pose-v1-yolov8n"
+  description: "Baseline YOLOv8n-pose on Sample Pose synthetic full dataset"
   tags:
-    project: "kaos-yolo"
+    project: "example-project"
     phase: "1"
 
 # --- Dataset Configuration ---
@@ -65,7 +65,7 @@ training:
   seed: 0                         # Global training seed (separate from dataset.seed)
   deterministic: true             # Enable cuDNN deterministic mode (slight speed penalty)
 
-  # Pose-estimation loss gains — primary quality levers for spacecraft keypoints
+  # Pose-estimation loss gains — primary quality levers for object keypoints
   pose: 12.0                      # Keypoint regression loss gain
   kobj: 2.0                       # Keypoint objectness loss gain
   box: 7.5                        # Bounding-box regression loss gain
@@ -75,7 +75,7 @@ training:
 # --- Checkpointing ---
 checkpointing:
   interval_epochs: 10             # Save checkpoint every N epochs
-  storage_path: ""   # Empty = platform-derived (project lakeFS repo, main/checkpoints). Override: s3://bucket/prefix.
+  storage_path: "s3://io-audio-text-data/upload-initial/checkpoints"
   resume_from: null               # null | "auto" | specific S3 path to .pt file
 
 # --- Early Stopping ---
@@ -83,8 +83,8 @@ early_stopping:
   patience: 50                    # Epochs without improvement before stopping
 
 # --- Augmentation (passed directly to Ultralytics) ---
-# Spacecraft imagery notes:
-#   - fliplr disabled: satellites have no left-right symmetry in canonical pose
+# Object imagery notes:
+#   - fliplr disabled: objects have no left-right symmetry in canonical pose
 #   - flipud disabled: orbital geometry has a defined "up"
 #   - degrees: 0.0 — pose labels are rotation-sensitive; random rotation breaks keypoint geometry
 #   - perspective: use with extreme caution; > 0.001 causes severe keypoint displacement
@@ -103,7 +103,7 @@ augmentation:
 
   # Flip
   flipud: 0.0
-  fliplr: 0.0                    # Disabled for spacecraft (no left-right symmetry)
+  fliplr: 0.0                    # Disabled for object (no left-right symmetry)
 
   # Composition
   mosaic: 1.0
@@ -125,7 +125,7 @@ export:
 
 # --- Model Registration ---
 registration:
-  registered_model_name: null  # null = use REGISTERED_MODEL_NAME env var (default: spacecraft-pose-yolo)
+  registered_model_name: null  # null = use REGISTERED_MODEL_NAME env var (default: object-pose-yolo)
   promote_to: null             # null | "champion" | "challenger"  (MLflow 3 registry alias)
 
 # --- Resource Requests (informational; not validated by pipeline) ---

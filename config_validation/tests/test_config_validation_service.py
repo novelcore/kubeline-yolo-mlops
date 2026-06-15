@@ -10,7 +10,7 @@ from app.models.pipeline_config import PipelineConfig
 
 VALID_CONFIG: dict = {
     "experiment": {
-        "name": "spacecraft-pose-v1-yolov8n",
+        "name": "object-pose-v1-yolov8n",
         "description": "Baseline run",
     },
     "dataset": {
@@ -75,7 +75,7 @@ def service_with_liveness(mock_s3) -> ConfigValidationService:
 def test_valid_config_returns_pipeline_config(service_no_liveness):
     result = service_no_liveness.run(VALID_CONFIG)
     assert isinstance(result, PipelineConfig)
-    assert result.experiment.name == "spacecraft-pose-v1-yolov8n"
+    assert result.experiment.name == "object-pose-v1-yolov8n"
 
 
 def test_valid_config_prints_success(service_no_liveness, capfd):
@@ -95,7 +95,7 @@ def test_output_written_to_file(service_no_liveness, tmp_path):
     service_no_liveness.run(VALID_CONFIG, output_path=str(out))
     assert out.exists()
     data = json.loads(out.read_text())
-    assert data["experiment"]["name"] == "spacecraft-pose-v1-yolov8n"
+    assert data["experiment"]["name"] == "object-pose-v1-yolov8n"
 
 
 def test_output_path_parent_dirs_created(service_no_liveness, tmp_path):
@@ -191,7 +191,7 @@ def test_resume_from_auto_found_passes(mocker):
     mock_s3.list_objects_v2.return_value = {
         "KeyCount": 1,
         "Contents": [
-            {"Key": "spacecraft-pose-v1-yolov8n/last.pt", "LastModified": datetime.now(timezone.utc)}
+            {"Key": "object-pose-v1-yolov8n/last.pt", "LastModified": datetime.now(timezone.utc)}
         ],
     }
     mocker.patch("app.services.config_validation.httpx.get").return_value = MagicMock(is_success=True)

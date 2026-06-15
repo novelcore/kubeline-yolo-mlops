@@ -53,7 +53,7 @@ A **run** is a single execution of the training step. Each run has:
 A **registered model** is a named entry in the Model Registry. Each registration creates a new version:
 
 ```
-Registered Model: "spacecraft-pose-yolo"
+Registered Model: "object-pose-yolo"
   ├── Version 1  (best.pt from run abc123)
   ├── Version 2  (best.pt from run def456)
   └── Version 3  (best.pt from run ghi789)  ← latest
@@ -156,7 +156,7 @@ This makes every run traceable back to its pipeline execution.
 
 After training completes, the registration step:
 
-1. **Registers `best.pt`** under the configured model name (e.g., `spacecraft-pose-yolo`)
+1. **Registers `best.pt`** under the configured model name (e.g., `object-pose-yolo`)
 2. **Registers `last.pt`** as a separate version (derived from the best.pt path)
 3. **Sets lineage tags** on each version for traceability:
 
@@ -175,7 +175,7 @@ After training completes, the registration step:
 
 ```yaml
 registration:
-  registered_model_name: "spacecraft-pose-yolo"
+  registered_model_name: "object-pose-yolo"
   promote_to: "champion"
 ```
 
@@ -211,7 +211,7 @@ The sidebar lists all experiments by name. Our pipeline creates one experiment p
 
 ```yaml
 experiment:
-  name: "spacecraft-pose-toy"
+  name: "object-pose-toy"
 ```
 
 Click an experiment to see all runs that belong to it.
@@ -222,7 +222,7 @@ Each row is a training run. The table columns include:
 
 | Column       | Description                                                                 |
 |--------------|-----------------------------------------------------------------------------|
-| **Run Name** | Set by the pipeline to the Kubeline workflow name (e.g., `spacecraft-pose-toy-20260324-143022`) |
+| **Run Name** | Set by the pipeline to the Kubeline workflow name (e.g., `object-pose-toy-20260324-143022`) |
 | **Created**  | Timestamp when the run started                                              |
 | **Duration** | Wall-clock time of the run                                                  |
 | **Status**   | `RUNNING`, `FINISHED`, or `FAILED`                                          |
@@ -244,7 +244,7 @@ metrics.`val/mAP50` > 0.5
 params.lr0 = "0.01"
 
 # Runs from a specific pipeline execution
-tags.`kubecore.workflow_name` = "spacecraft-pose-toy-20260324-143022"
+tags.`kubecore.workflow_name` = "object-pose-toy-20260324-143022"
 ```
 
 You can also sort by any column — click the column header to sort ascending/descending.
@@ -351,7 +351,7 @@ Click **Models** in the top navigation bar to access the Model Registry.
 
 #### Registered Models List
 
-Shows all registered model names (e.g., `spacecraft-pose-yolo`). Each entry displays:
+Shows all registered model names (e.g., `object-pose-yolo`). Each entry displays:
 - **Latest version number**
 - **Last updated timestamp**
 - **Aliases** assigned across versions (e.g. `@champion`, `@challenger`)
@@ -409,11 +409,11 @@ for exp in experiments:
 
 ```python
 # Find all runs in an experiment
-runs = mlflow.search_runs(experiment_names=["spacecraft-pose-toy"])
+runs = mlflow.search_runs(experiment_names=["object-pose-toy"])
 
 # Filter by metric
 best_runs = mlflow.search_runs(
-    experiment_names=["spacecraft-pose-toy"],
+    experiment_names=["object-pose-toy"],
     filter_string="metrics.`val/mAP50` > 0.5",
     order_by=["metrics.`val/mAP50` DESC"],
 )
@@ -443,7 +443,7 @@ print(f"Downloaded to: {local_path}")
 ### Listing Model Versions
 
 ```python
-versions = client.search_model_versions("name='spacecraft-pose-yolo'")
+versions = client.search_model_versions("name='object-pose-yolo'")
 for v in versions:
     print(f"Version {v.version} | Run: {v.run_id}")
 
@@ -460,7 +460,7 @@ print(f"@champion -> version {champion.version}")
 
 ```python
 client = mlflow.tracking.MlflowClient()
-version = client.get_model_version("spacecraft-pose-yolo", "3")
+version = client.get_model_version("object-pose-yolo", "3")
 run_id = version.tags.get("training_run_id")
 run = client.get_run(run_id)
 print(run.data.params)  # Full hyperparameters for that model
@@ -469,7 +469,7 @@ print(run.data.params)  # Full hyperparameters for that model
 ### "What dataset was used to train model version 3?"
 
 ```python
-version = client.get_model_version("spacecraft-pose-yolo", "3")
+version = client.get_model_version("object-pose-yolo", "3")
 print(version.tags.get("dataset_version"))      # e.g., "v1"
 print(version.tags.get("dataset_sample_size"))   # e.g., "1000"
 ```
@@ -478,7 +478,7 @@ print(version.tags.get("dataset_sample_size"))   # e.g., "1000"
 
 ```python
 runs = mlflow.search_runs(
-    experiment_names=["spacecraft-pose-toy"],
+    experiment_names=["object-pose-toy"],
     filter_string="params.lr0 = '0.01'",
     order_by=["metrics.`val/mAP50` DESC"],
 )
@@ -488,7 +488,7 @@ runs = mlflow.search_runs(
 
 ```python
 client.set_registered_model_alias(
-    name="spacecraft-pose-yolo",
+    name="object-pose-yolo",
     alias="champion",
     version="3",
 )
@@ -498,7 +498,7 @@ client.set_registered_model_alias(
 
 ```python
 best = mlflow.search_runs(
-    experiment_names=["spacecraft-pose-toy"],
+    experiment_names=["object-pose-toy"],
     order_by=["metrics.`val/mAP50` DESC"],
     max_results=1,
 )
@@ -545,7 +545,7 @@ Artifacts are uploaded through the MLflow tracking server (proxy mode). Large fi
 | Term                    | Definition                                                                          |
 |-------------------------|-------------------------------------------------------------------------------------|
 | **Tracking URI**        | The URL of the MLflow server (`http://mlflow.example.com:5000`)                     |
-| **Experiment**          | A named collection of runs (e.g., `spacecraft-pose-toy`)                            |
+| **Experiment**          | A named collection of runs (e.g., `object-pose-toy`)                            |
 | **Run**                 | One training execution — has params, metrics, artifacts, and tags                   |
 | **Parameter**           | A training input logged once per run (e.g., `lr0=0.01`)                             |
 | **Metric**              | A training output, optionally logged per step/epoch (e.g., `val/mAP50=0.82`)       |

@@ -14,8 +14,8 @@ def test_config_default_values(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.log_level == "INFO"
     assert config.max_retries == 3
     assert config.timeout == 60
-    assert config.mlflow_experiment_name == "kaos-yolo"
-    assert config.registered_model_name == "spacecraft-pose-yolo"
+    assert config.mlflow_experiment_name == "example-project"
+    assert config.registered_model_name == "object-pose-yolo"
 
 
 def test_config_reads_mlflow_tracking_uri(monkeypatch: pytest.MonkeyPatch) -> None:
