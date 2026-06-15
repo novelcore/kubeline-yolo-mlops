@@ -24,7 +24,7 @@ class Config(BaseSettings):
         description="URI of the MLflow tracking server",
     )
     mlflow_experiment_name: str = Field(
-        default="kaos-yolo",
+        default="example-project",
         description="MLflow experiment name",
     )
     registered_model_name: str = Field(
