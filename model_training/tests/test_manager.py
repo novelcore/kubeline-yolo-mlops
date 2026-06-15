@@ -119,13 +119,40 @@ class TestManagerInit:
             manager = Manager(config=config)
         assert manager._config.log_level == "DEBUG"
 
-    def test_s3_client_ignores_lakefs_endpoint(
+    def test_s3_client_uses_lakefs_creds_when_all_set(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """S3 client always uses default credentials, never lakeFS endpoint."""
+        """S3 client targets the lakeFS gateway when all three LAKEFS_* vars are set.
+
+        This is the GCP manifest-only path (bug/480): the model-training step
+        streams the dataset directly from the lakeFS S3-compatible gateway and
+        uploads checkpoints there too. No AWS_* credentials exist on GCP.
+        """
         monkeypatch.setenv("LAKEFS_ENDPOINT", "https://lakefs.test")
         monkeypatch.setenv("LAKEFS_ACCESS_KEY", "lf-key")
         monkeypatch.setenv("LAKEFS_SECRET_KEY", "lf-secret")
+
+        with patch("app.manager.boto3") as mock_boto3:
+            Manager()
+            call_kwargs = mock_boto3.client.call_args[1]
+            assert call_kwargs.get("endpoint_url") == "https://lakefs.test"
+            assert call_kwargs.get("aws_access_key_id") == "lf-key"
+            assert call_kwargs.get("aws_secret_access_key") == "lf-secret"
+            # region_name must be None — lakeFS ignores it, some versions reject it
+            assert call_kwargs.get("region_name") is None
+
+    def test_s3_client_falls_back_to_cloud_creds_when_lakefs_incomplete(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """S3 client falls back to cloud credential chain when LAKEFS_* are absent.
+
+        Covers two sub-cases: (a) all LAKEFS_* absent; (b) only some are set.
+        In both cases the client must not inject any lakeFS endpoint.
+        """
+        # Only partial LAKEFS_* set — must not activate lakeFS path
+        monkeypatch.setenv("LAKEFS_ENDPOINT", "https://lakefs.test")
+        monkeypatch.delenv("LAKEFS_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("LAKEFS_SECRET_KEY", raising=False)
 
         with patch("app.manager.boto3") as mock_boto3:
             Manager()
