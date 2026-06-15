@@ -3,7 +3,7 @@ name = "model-training"
 version = "0.1.0"
 description = "YOLO pose-estimation training step for the KAOS YOLO MLOps pipeline."
 authors = [
-    { name = "Novelcore", email = "dev@novelcore.org" }
+    { name = "Example Org", email = "dev@example.org" }
 ]
 readme = "README.md"
 

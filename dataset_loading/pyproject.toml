@@ -3,7 +3,7 @@ name = "dataset-loading"
 version = "0.1.0"
 description = "Loads and preprocesses datasets for the KAOS YOLO MLOps pipeline."
 authors = [
-    { name = "Novelcore", email = "dev@novelcore.org" }
+    { name = "Example Org", email = "dev@example.org" }
 ]
 readme = "README.md"
 

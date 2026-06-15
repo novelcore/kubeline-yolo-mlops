@@ -19,7 +19,7 @@ pipeline:
 
     # ── Experiment ────────────────────────────────────────────────────────────
     - name: experiment-name
-      default: "spacecraft-pose-v1-yolov8n"
+      default: "object-pose-v1-yolov8n"
       description: "MLflow experiment name and S3 checkpoint path prefix."
 
     - name: experiment-description
@@ -170,7 +170,7 @@ pipeline:
     # ── Pose-estimation loss gains ────────────────────────────────────────────
     - name: pose
       default: "12.0"
-      description: "Keypoint regression loss gain. Primary lever for spacecraft keypoint accuracy."
+      description: "Keypoint regression loss gain. Primary lever for object keypoint accuracy."
 
     - name: kobj
       default: "2.0"
@@ -241,11 +241,11 @@ pipeline:
 
     - name: aug-flipud
       default: "0.0"
-      description: "Vertical flip probability. Keep 0.0 for spacecraft (orbital geometry has defined 'up')."
+      description: "Vertical flip probability. Keep 0.0 for object (no defined up direction has defined 'up')."
 
     - name: aug-fliplr
       default: "0.0"
-      description: "Horizontal flip probability. Keep 0.0 for spacecraft (no left-right symmetry in canonical pose)."
+      description: "Horizontal flip probability. Keep 0.0 for object (no left-right symmetry in canonical pose)."
 
     - name: aug-mosaic
       default: "1.0"
@@ -284,7 +284,7 @@ pipeline:
     # ── Model registration ─────────────────────────────────────────────────────
     - name: registered-model-name
       default: ""
-      description: "MLflow registered model name. Empty = use REGISTERED_MODEL_NAME env var (default: spacecraft-pose-yolo)."
+      description: "MLflow registered model name. Empty = use REGISTERED_MODEL_NAME env var (default: object-pose-yolo)."
 
     - name: promote-to
       default: ""

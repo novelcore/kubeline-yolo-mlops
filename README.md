@@ -14,7 +14,7 @@ The pipeline consists of four sequential steps, each packaged as an independent 
 ## Project Structure
 
 ```
-kaos-yolo-mlops/
+kubeline-yolo-mlops/
 ├── config_validation/      # Step 1: Validate pipeline config
 │   ├── app/
 │   ├── tests/

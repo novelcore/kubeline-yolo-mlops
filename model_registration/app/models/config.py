@@ -28,7 +28,7 @@ class Config(BaseSettings):
         description="MLflow experiment name",
     )
     registered_model_name: str = Field(
-        default="spacecraft-pose-yolo",
+        default="object-pose-yolo",
         description="Name under which the model is registered in the MLflow model registry",
     )
 

@@ -3,8 +3,8 @@
 
 | | |
 |---|---|
-| **Client** | Novelcore |
-| **Vendor** | Novelcore (Platform Team + ML Team) |
+| **Client** | Example Org |
+| **Vendor** | Example Org (Platform Team + ML Team) |
 | **Document Type** | Technical Architecture — Phase 1 |
 | **Parent Document** | MLOps Training Pipeline — Phase 1 PRD |
 | **Version** | 1.0 – Draft |
@@ -114,7 +114,7 @@ The SPEED+ dataset as published has the following structure:
 ```
 speedplus/
 ├── camera.json                  # Camera intrinsic parameters
-├── kpts.mat                     # 11 3D keypoints of spacecraft model (body frame)
+├── kpts.mat                     # 11 3D keypoints of object model (body frame)
 ├── synthetic/
 │   ├── train.json               # Per-image pose labels (quaternion + translation)
 │   ├── validation.json          # Per-image pose labels
@@ -137,9 +137,9 @@ speedplus/
 
 `camera.json` contains the camera intrinsic matrix K and distortion coefficients in OpenCV convention (fx, fy, cx, cy, k1, k2, p1, p2). Image resolution is 1920x1200.
 
-`kpts.mat` contains a `corners` matrix of shape `(3, 11)` — the 3D coordinates of 11 spacecraft landmarks in the satellite body reference frame. These are the keypoints the model must learn to detect.
+`kpts.mat` contains a `corners` matrix of shape `(3, 11)` — the 3D coordinates of 11 object landmarks in the satellite body reference frame. These are the keypoints the model must learn to detect.
 
-`train.json` / `validation.json` / `test.json` contain per-image pose labels as quaternion (q_w, q_x, q_y, q_z) and translation vector (t_x, t_y, t_z) describing the spacecraft pose relative to the camera.
+`train.json` / `validation.json` / `test.json` contain per-image pose labels as quaternion (q_w, q_x, q_y, q_z) and translation vector (t_x, t_y, t_z) describing the object pose relative to the camera.
 
 ### 3.2 Target Training Format (Ultralytics YOLO Pose)
 
@@ -161,7 +161,7 @@ For each image `i` with pose label `(q_i, t_i)`:
 <class_id> <x_center> <y_center> <width> <height> <px1> <py1> <v1> <px2> <py2> <v2> ... <px11> <py11> <v11>
 ```
 
-Where all spatial values are normalized to `[0, 1]` and `class_id = 0` (single class: spacecraft). Each line has 5 + (11 x 3) = 38 values.
+Where all spatial values are normalized to `[0, 1]` and `class_id = 0` (single class: object). Each line has 5 + (11 x 3) = 38 values.
 
 **Output dataset structure:**
 
@@ -193,12 +193,12 @@ val: images/val
 test: images/test
 
 kpt_shape: [11, 3]      # 11 keypoints, 3 dims (x, y, visibility)
-flip_idx: []             # No horizontal flip symmetry for spacecraft
+flip_idx: []             # No horizontal flip symmetry for this object class
 names:
-  0: spacecraft
+  0: object
 ```
 
-Note: `flip_idx` is empty because a spacecraft is not left-right symmetric in the same way a human body is. Horizontal flip augmentation should be disabled or used with caution.
+Note: `flip_idx` is empty because an object is not left-right symmetric in the same way a human body is. Horizontal flip augmentation should be disabled or used with caution.
 
 ### 3.3 Dataset Location and Versioning
 
@@ -328,7 +328,7 @@ Note: Ultralytics has a built-in MLflow integration. The decision on whether to 
 ```json
 {
   "mlflow_run_id": "abc123",
-  "mlflow_experiment_name": "spacecraft-pose-v1",
+  "mlflow_experiment_name": "object-pose-v1",
   "best_model_path": "s3://io-mlops/checkpoints/exp-001/best.pt",
   "last_model_path": "s3://io-mlops/checkpoints/exp-001/last.pt",
   "final_metrics": {
@@ -360,7 +360,7 @@ Note: Ultralytics has a built-in MLflow integration. The decision on whether to 
 
 1. **Connect to MLflow** using the tracking URI from the validated config.
 
-2. **Register best model.** Call `mlflow.register_model()` with the model URI from the run, creating a new version in the registry under the name `"spacecraft-pose-yolo"`.
+2. **Register best model.** Call `mlflow.register_model()` with the model URI from the run, creating a new version in the registry under the name `"object-pose-yolo"`.
 
 3. **Register last model.** Register `last.pt` as a separate artifact under the same model name, tagged to distinguish it from `best.pt`.
 
@@ -413,10 +413,10 @@ Note: Ultralytics has a built-in MLflow integration. The decision on whether to 
 ```yaml
 # --- Experiment Metadata ---
 experiment:
-  name: "spacecraft-pose-v1-yolov8n"          # Required. Used as MLflow experiment name
+  name: "object-pose-v1-yolov8n"          # Required. Used as MLflow experiment name
   description: "Baseline YOLOv8n-pose on SPEED+ synthetic full dataset"
   tags:                                        # Optional. Logged to MLflow
-    project: "kaos-yolo"
+    project: "example-project"
     phase: "1"
     
 # --- Dataset Configuration ---
@@ -465,7 +465,7 @@ augmentation:
   translate: 0.1
   scale: 0.5
   flipud: 0.0                                 # Vertical flip probability
-  fliplr: 0.0                                 # Horizontal flip — disabled for spacecraft
+  fliplr: 0.0                                 # Horizontal flip — disabled for this object class
   mosaic: 1.0
   mixup: 0.0
 
@@ -689,7 +689,7 @@ Artifacts flow between steps via Argo's native artifact mechanism. Small artifac
 
 ```
 MLflow Tracking Server
-└── Experiment: "spacecraft-pose-v1"           ← experiment.name from YAML
+└── Experiment: "object-pose-v1"           ← experiment.name from YAML
     ├── Run: "baseline-yolov8n-full-dataset"   ← experiment.description
     │   ├── Parameters: {epochs, batch_size, lr, model_variant, dataset_version, ...}
     │   ├── Metrics: {train/loss, val/loss, mAP50, mAP50-95, ...} x N epochs
@@ -701,7 +701,7 @@ MLflow Tracking Server
     └── ...
 
 MLflow Model Registry
-└── Model: "spacecraft-pose-yolo"
+└── Model: "object-pose-yolo"
     ├── Version 1 ← linked to Run "baseline-yolov8n-full-dataset"
     │   ├── Tags: {dataset_version, model_variant, best_mAP50}
     │   └── Alias: (none)
