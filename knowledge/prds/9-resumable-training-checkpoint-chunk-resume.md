@@ -14,8 +14,8 @@ topics:
 phase: "Phase 1 — Pipeline Resilience"
 business_gate: "KAOS YOLO training pipeline hardening"
 owner: "meter-peter"
-github_issue: 9
-last_updated: 2026-06-12
+github_issue: 20
+last_updated: 2026-06-16
 extracted_chunks:
   - architectural-decision
   - architectural-rationale
