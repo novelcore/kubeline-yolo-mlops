@@ -1343,6 +1343,123 @@ class TestLogExportCalibrationParams:
         mock_log_cal.assert_not_called()
 
 
+class TestEvaluateExportedModel:
+    """Unit tests for _evaluate_exported_model and _log_export_eval_metrics (F-03)."""
+
+    def _results(self, map50: float = 0.85) -> MagicMock:
+        r = MagicMock()
+        r.results_dict = {
+            "metrics/precision(B)": 0.9,
+            "metrics/recall(B)": 0.88,
+            "metrics/mAP50(B)": map50,
+            "metrics/mAP50-95(B)": 0.7,
+        }
+        return r
+
+    def test_skips_when_no_yolo_cls(self) -> None:
+        """Returns None without error when yolo_cls is not provided."""
+        service = _make_service()
+        params = MagicMock()
+        result = service._evaluate_exported_model(
+            yolo_cls=None,
+            exported_path=Path("/tmp/best.engine"),
+            label="engine_fp16",
+            params=params,
+            data_yaml_path="data.yaml",
+            mlflow_run_id="run-abc",
+        )
+        assert result is None
+
+    def test_skips_when_test_split_unavailable(self) -> None:
+        """Returns None without evaluating when test split is absent."""
+        service = _make_service()
+        params = MagicMock()
+        yolo_cls = MagicMock()
+        with patch.object(service, "_is_test_split_available", return_value=False):
+            result = service._evaluate_exported_model(
+                yolo_cls=yolo_cls,
+                exported_path=Path("/tmp/best.engine"),
+                label="engine_int8",
+                params=params,
+                data_yaml_path="data.yaml",
+                mlflow_run_id="run-abc",
+            )
+        assert result is None
+        yolo_cls.assert_not_called()
+
+    def test_returns_map50_on_success(self) -> None:
+        """Returns mAP50 float when evaluation succeeds."""
+        service = _make_service()
+        params = MagicMock()
+        mock_eval_model = MagicMock()
+        mock_eval_model.val.return_value = self._results(map50=0.72)
+        yolo_cls = MagicMock(return_value=mock_eval_model)
+        mock_client = MagicMock()
+
+        with (
+            patch.object(service, "_is_test_split_available", return_value=True),
+            patch("mlflow.tracking.MlflowClient", return_value=mock_client),
+        ):
+            result = service._evaluate_exported_model(
+                yolo_cls=yolo_cls,
+                exported_path=Path("/tmp/best.engine"),
+                label="engine_fp16",
+                params=params,
+                data_yaml_path="data.yaml",
+                mlflow_run_id="run-abc",
+            )
+
+        assert result == pytest.approx(0.72)
+
+    def test_logs_four_metrics_with_export_prefix(self) -> None:
+        """AC-02: metrics are logged as export/{label}/... keys."""
+        service = _make_service()
+        params = MagicMock()
+        mock_eval_model = MagicMock()
+        mock_eval_model.val.return_value = self._results()
+        yolo_cls = MagicMock(return_value=mock_eval_model)
+        mock_client = MagicMock()
+
+        with (
+            patch.object(service, "_is_test_split_available", return_value=True),
+            patch("mlflow.tracking.MlflowClient", return_value=mock_client),
+        ):
+            service._evaluate_exported_model(
+                yolo_cls=yolo_cls,
+                exported_path=Path("/tmp/best.engine"),
+                label="engine_fp16",
+                params=params,
+                data_yaml_path="data.yaml",
+                mlflow_run_id="run-abc",
+            )
+
+        logged_keys = {c.args[1] for c in mock_client.log_metric.call_args_list}
+        assert "export/engine_fp16/mAP50" in logged_keys
+        assert "export/engine_fp16/mAP50_95" in logged_keys
+        assert "export/engine_fp16/precision" in logged_keys
+        assert "export/engine_fp16/recall" in logged_keys
+
+    def test_val_exception_is_swallowed(self) -> None:
+        """CON-01 / T-05: exception from val() is non-fatal, returns None."""
+        service = _make_service()
+        params = MagicMock()
+        mock_eval_model = MagicMock()
+        mock_eval_model.val.side_effect = RuntimeError("TRT not supported")
+        yolo_cls = MagicMock(return_value=mock_eval_model)
+
+        with patch.object(service, "_is_test_split_available", return_value=True):
+            result = service._evaluate_exported_model(
+                yolo_cls=yolo_cls,
+                exported_path=Path("/tmp/best.engine"),
+                label="engine_int8",
+                params=params,
+                data_yaml_path="data.yaml",
+                mlflow_run_id="run-abc",
+            )
+
+        assert result is None  # must not raise
+
+
 class TestExportConfig:
     """Validation rules for ExportConfig calibration and validation fields (F-01)."""
 

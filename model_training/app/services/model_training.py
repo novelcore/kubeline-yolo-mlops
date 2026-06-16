@@ -25,7 +25,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 import yaml
 
@@ -319,6 +319,7 @@ class TrainingService:
                     params=params,
                     save_dir=save_dir,
                     data_yaml_path=str(data_yaml_path),
+                    yolo_cls=yolo_cls,
                 )
 
             # 9. Post-training evaluation on the test split (reporting only)
@@ -609,6 +610,7 @@ class TrainingService:
         params: "TrainingParams",
         save_dir: Path,
         data_yaml_path: str,
+        yolo_cls: Any = None,
     ) -> dict[str, str]:
         """Export trained model to requested formats/precisions.
 
@@ -682,6 +684,16 @@ class TrainingService:
                         artifact_path="exports",
                     )
 
+                    # Evaluate exported model on test split (F-03); non-fatal (CON-01)
+                    self._evaluate_exported_model(
+                        yolo_cls=yolo_cls,
+                        exported_path=exported_path,
+                        label=label,
+                        params=params,
+                        data_yaml_path=data_yaml_path,
+                        mlflow_run_id=mlflow_run_id,
+                    )
+
                 except Exception as exc:  # noqa: BLE001
                     self._logger.error(
                         "Export failed for %s: %s", label, exc
@@ -726,6 +738,97 @@ class TrainingService:
                 client.log_param(run_id, key, value)
         except Exception as exc:  # noqa: BLE001
             _logger.warning("Failed to log calibration params to MLflow: %s", exc)
+
+    def _evaluate_exported_model(
+        self,
+        yolo_cls: Any,
+        exported_path: Path,
+        label: str,
+        params: "TrainingParams",
+        data_yaml_path: str,
+        mlflow_run_id: str,
+    ) -> Optional[float]:
+        """Evaluate an exported model on the test split and log metrics (F-03).
+
+        Skipped when ``yolo_cls`` is not available or the test split is absent.
+        Returns the mAP50 value (for F-04 delta computation), or ``None`` on
+        skip / error. Always non-fatal (CON-01, T-05).
+        """
+        if yolo_cls is None or not self._is_test_split_available(params):
+            return None
+        try:
+            self._logger.info(
+                "Evaluating exported model %s on test split", label
+            )
+            eval_model = yolo_cls(str(exported_path))
+            results = eval_model.val(
+                data=data_yaml_path,
+                split="test",
+                imgsz=params.image_size,
+                batch=params.batch_size,
+                device=params.device,
+                plots=False,
+                save_json=False,
+                verbose=False,
+            )
+            return self._log_export_eval_metrics(
+                label=label,
+                results=results,
+                run_id=mlflow_run_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning(
+                "Exported model evaluation failed for %s (non-fatal, T-05): %s",
+                label,
+                exc,
+            )
+            return None
+
+    def _log_export_eval_metrics(
+        self,
+        label: str,
+        results: Any,
+        run_id: str,
+    ) -> Optional[float]:
+        """Log export evaluation metrics to MLflow as ``export/{label}/...`` (F-03).
+
+        Returns the mAP50 float for use in delta computation (F-04), or ``None``
+        if the metric is absent or logging fails.
+        """
+        if not run_id:
+            return None
+
+        results_dict = getattr(results, "results_dict", None) or {}
+        metric_map = {
+            _METRIC_PRECISION: f"export/{label}/precision",
+            _METRIC_RECALL: f"export/{label}/recall",
+            _METRIC_MAP50: f"export/{label}/mAP50",
+            _METRIC_MAP50_95: f"export/{label}/mAP50_95",
+        }
+
+        map50: Optional[float] = None
+        try:
+            from mlflow.tracking import MlflowClient  # noqa: PLC0415
+
+            client = MlflowClient()
+            for src_key, mlflow_key in metric_map.items():
+                val = results_dict.get(src_key)
+                if val is None:
+                    continue
+                fval = float(val)
+                if src_key == _METRIC_MAP50:
+                    map50 = fval
+                try:
+                    client.log_metric(run_id, mlflow_key, fval)
+                except Exception as exc:  # noqa: BLE001
+                    self._logger.warning(
+                        "Failed to log export metric %s: %s", mlflow_key, exc
+                    )
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning(
+                "Failed to log export eval metrics for %s: %s", label, exc
+            )
+        return map50
 
     # ------------------------------------------------------------------
     # Post-training test-set evaluation
