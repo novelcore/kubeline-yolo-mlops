@@ -320,6 +320,7 @@ class TrainingService:
                     save_dir=save_dir,
                     data_yaml_path=str(data_yaml_path),
                     yolo_cls=yolo_cls,
+                    fp32_map50=epoch_metrics.get("val/mAP50"),
                 )
 
             # 9. Post-training evaluation on the test split (reporting only)
@@ -611,6 +612,7 @@ class TrainingService:
         save_dir: Path,
         data_yaml_path: str,
         yolo_cls: Any = None,
+        fp32_map50: Optional[float] = None,
     ) -> dict[str, str]:
         """Export trained model to requested formats/precisions.
 
@@ -684,7 +686,7 @@ class TrainingService:
                         artifact_path="exports",
                     )
 
-                    # Evaluate exported model on test split (F-03); non-fatal (CON-01)
+                    # Evaluate exported model on test split and log delta (F-03, F-04)
                     self._evaluate_exported_model(
                         yolo_cls=yolo_cls,
                         exported_path=exported_path,
@@ -692,6 +694,7 @@ class TrainingService:
                         params=params,
                         data_yaml_path=data_yaml_path,
                         mlflow_run_id=mlflow_run_id,
+                        fp32_map50=fp32_map50,
                     )
 
                 except Exception as exc:  # noqa: BLE001
@@ -747,6 +750,7 @@ class TrainingService:
         params: "TrainingParams",
         data_yaml_path: str,
         mlflow_run_id: str,
+        fp32_map50: Optional[float] = None,
     ) -> Optional[float]:
         """Evaluate an exported model on the test split and log metrics (F-03).
 
@@ -775,6 +779,7 @@ class TrainingService:
                 label=label,
                 results=results,
                 run_id=mlflow_run_id,
+                fp32_map50=fp32_map50,
             )
         except Exception as exc:  # noqa: BLE001
             self._logger.warning(
@@ -789,8 +794,13 @@ class TrainingService:
         label: str,
         results: Any,
         run_id: str,
+        fp32_map50: Optional[float] = None,
     ) -> Optional[float]:
-        """Log export evaluation metrics to MLflow as ``export/{label}/...`` (F-03).
+        """Log export evaluation metrics to MLflow as ``export/{label}/...`` (F-03/F-04).
+
+        When ``fp32_map50`` is provided and the exported model's mAP50 is
+        available, also logs ``export/{label}/map50_delta`` = fp32_map50 −
+        exported_map50 (positive means degradation). Always non-fatal.
 
         Returns the mAP50 float for use in delta computation (F-04), or ``None``
         if the metric is absent or logging fails.
@@ -823,6 +833,15 @@ class TrainingService:
                 except Exception as exc:  # noqa: BLE001
                     self._logger.warning(
                         "Failed to log export metric %s: %s", mlflow_key, exc
+                    )
+            # F-04: log mAP50 delta (FP32 baseline − exported) when both are available
+            if fp32_map50 is not None and map50 is not None:
+                delta = fp32_map50 - map50
+                try:
+                    client.log_metric(run_id, f"export/{label}/map50_delta", delta)
+                except Exception as exc:  # noqa: BLE001
+                    self._logger.warning(
+                        "Failed to log export delta metric for %s: %s", label, exc
                     )
         except Exception as exc:  # noqa: BLE001
             self._logger.warning(

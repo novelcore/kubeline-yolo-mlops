@@ -1460,6 +1460,88 @@ class TestEvaluateExportedModel:
         assert result is None  # must not raise
 
 
+class TestExportMap50Delta:
+    """Unit tests for mAP50 delta logging (F-04)."""
+
+    def _results(self, map50: float = 0.80) -> MagicMock:
+        r = MagicMock()
+        r.results_dict = {
+            "metrics/precision(B)": 0.9,
+            "metrics/recall(B)": 0.88,
+            "metrics/mAP50(B)": map50,
+            "metrics/mAP50-95(B)": 0.65,
+        }
+        return r
+
+    def test_delta_logged_when_both_map50_values_available(self) -> None:
+        """AC-03: map50_delta = fp32_map50 − exported_map50 is logged to MLflow."""
+        service = _make_service()
+        mock_client = MagicMock()
+
+        with patch("mlflow.tracking.MlflowClient", return_value=mock_client):
+            service._log_export_eval_metrics(
+                label="engine_int8",
+                results=self._results(map50=0.78),
+                run_id="run-xyz",
+                fp32_map50=0.85,
+            )
+
+        logged = {c.args[1]: c.args[2] for c in mock_client.log_metric.call_args_list}
+        assert "export/engine_int8/map50_delta" in logged
+        assert logged["export/engine_int8/map50_delta"] == pytest.approx(0.85 - 0.78)
+
+    def test_delta_not_logged_when_fp32_map50_absent(self) -> None:
+        """No delta key when fp32_map50 is not provided (fp32 baseline unavailable)."""
+        service = _make_service()
+        mock_client = MagicMock()
+
+        with patch("mlflow.tracking.MlflowClient", return_value=mock_client):
+            service._log_export_eval_metrics(
+                label="engine_fp16",
+                results=self._results(map50=0.80),
+                run_id="run-xyz",
+                fp32_map50=None,
+            )
+
+        logged_keys = {c.args[1] for c in mock_client.log_metric.call_args_list}
+        assert "export/engine_fp16/map50_delta" not in logged_keys
+
+    def test_delta_not_logged_when_exported_map50_absent(self) -> None:
+        """No delta key when results_dict lacks the mAP50 entry."""
+        service = _make_service()
+        mock_client = MagicMock()
+        results = MagicMock()
+        results.results_dict = {}  # no metrics at all
+
+        with patch("mlflow.tracking.MlflowClient", return_value=mock_client):
+            service._log_export_eval_metrics(
+                label="engine_int8",
+                results=results,
+                run_id="run-xyz",
+                fp32_map50=0.85,
+            )
+
+        logged_keys = {c.args[1] for c in mock_client.log_metric.call_args_list}
+        assert "export/engine_int8/map50_delta" not in logged_keys
+
+    def test_delta_exception_is_swallowed(self) -> None:
+        """CON-01: failure to log delta metric is non-fatal — method must not raise."""
+        service = _make_service()
+        mock_client = MagicMock()
+        mock_client.log_metric.side_effect = RuntimeError("MLflow unreachable")
+
+        with patch("mlflow.tracking.MlflowClient", return_value=mock_client):
+            result = service._log_export_eval_metrics(
+                label="engine_int8",
+                results=self._results(map50=0.78),
+                run_id="run-xyz",
+                fp32_map50=0.85,
+            )
+
+        # map50 is extracted before logging, so it is still returned even on error
+        assert result == pytest.approx(0.78)
+
+
 class TestExportConfig:
     """Validation rules for ExportConfig calibration and validation fields (F-01)."""
 
