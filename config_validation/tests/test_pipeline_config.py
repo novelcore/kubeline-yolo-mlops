@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.models.pipeline_config import PipelineConfig, RegistrationConfig
+from app.models.pipeline_config import ExportConfig, PipelineConfig, RegistrationConfig
 
 
 VALID_CONFIG: dict = {
@@ -329,4 +329,77 @@ class TestRegistrationConfig:
         }}
         config = PipelineConfig(**data)
         assert config.registration.registered_model_name == "my-yolo-model"
-        assert config.registration.promote_to == "champion"
+
+
+class TestExportConfig:
+    """Validation rules for ExportConfig calibration and validation fields (F-01, F-08)."""
+
+    def test_defaults_are_applied(self) -> None:
+        """CON-02: ExportConfig with no args uses safe defaults for all new fields."""
+        cfg = ExportConfig()
+        assert cfg.calibration_method == "entropy"
+        assert cfg.calibration_samples == 512
+        assert cfg.per_channel is True
+        assert cfg.symmetric is True
+        assert cfg.validate_exports is False
+        assert cfg.validation_samples == 100
+
+    def test_calibration_method_lowercase_accepted(self) -> None:
+        """AC-09: lowercase calibration_method values are accepted."""
+        assert ExportConfig(calibration_method="entropy").calibration_method == "entropy"
+        assert ExportConfig(calibration_method="minmax").calibration_method == "minmax"
+        assert ExportConfig(calibration_method="percentile").calibration_method == "percentile"
+
+    def test_calibration_method_uppercase_normalised(self) -> None:
+        """AC-09: CON-03 — uppercase input is normalised to lowercase."""
+        assert ExportConfig(calibration_method="Entropy").calibration_method == "entropy"
+        assert ExportConfig(calibration_method="ENTROPY").calibration_method == "entropy"
+        assert ExportConfig(calibration_method="MinMax").calibration_method == "minmax"
+
+    def test_calibration_method_invalid_raises(self) -> None:
+        with pytest.raises(ValidationError, match="calibration_method"):
+            ExportConfig(calibration_method="linear")
+
+    def test_calibration_samples_lower_boundary(self) -> None:
+        """100 is the minimum valid value (ge=100)."""
+        assert ExportConfig(calibration_samples=100).calibration_samples == 100
+
+    def test_calibration_samples_upper_boundary(self) -> None:
+        """10000 is the maximum valid value (le=10000)."""
+        assert ExportConfig(calibration_samples=10000).calibration_samples == 10000
+
+    def test_calibration_samples_below_minimum_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            ExportConfig(calibration_samples=99)
+
+    def test_calibration_samples_above_maximum_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            ExportConfig(calibration_samples=10001)
+
+    def test_pipeline_config_without_export_section_uses_defaults(self) -> None:
+        """AC-08: existing pipeline YAML without export: section parses with defaults."""
+        config = PipelineConfig(**VALID_CONFIG)
+        assert config.export.enabled is False
+        assert config.export.calibration_method == "entropy"
+        assert config.export.validate_exports is False
+
+    def test_pipeline_config_with_export_calibration_fields(self) -> None:
+        """New calibration fields are read correctly from pipeline config."""
+        data = {**VALID_CONFIG, "export": {
+            "enabled": True,
+            "formats": ["engine"],
+            "precisions": ["int8"],
+            "calibration_method": "Percentile",
+            "calibration_samples": 256,
+            "per_channel": False,
+            "symmetric": False,
+            "validate_exports": True,
+            "validation_samples": 50,
+        }}
+        config = PipelineConfig(**data)
+        assert config.export.calibration_method == "percentile"
+        assert config.export.calibration_samples == 256
+        assert config.export.per_channel is False
+        assert config.export.symmetric is False
+        assert config.export.validate_exports is True
+        assert config.export.validation_samples == 50

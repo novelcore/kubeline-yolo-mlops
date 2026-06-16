@@ -302,8 +302,19 @@ class ExportConfig(BaseModel):
     formats: list[str] = Field(default_factory=list)
     precisions: list[str] = Field(default_factory=list)
 
+    # ---- INT8 TensorRT calibration ----
+    calibration_method: str = Field(default="entropy")
+    calibration_samples: int = Field(default=512, ge=100, le=10000)
+    per_channel: bool = Field(default=True)
+    symmetric: bool = Field(default=True)
+
+    # ---- Export validation ----
+    validate_exports: bool = Field(default=False)
+    validation_samples: int = Field(default=100, ge=1)
+
     _VALID_FORMATS: ClassVar[set[str]] = {"engine", "onnx"}
     _VALID_PRECISIONS: ClassVar[set[str]] = {"fp16", "int8"}
+    _VALID_CALIBRATION_METHODS: ClassVar[set[str]] = {"entropy", "minmax", "percentile"}
 
     @field_validator("formats")
     @classmethod
@@ -326,6 +337,17 @@ class ExportConfig(BaseModel):
                 f"Valid: {cls._VALID_PRECISIONS}"
             )
         return v
+
+    @field_validator("calibration_method", mode="before")
+    @classmethod
+    def calibration_method_must_be_valid(cls, v: object) -> str:
+        normalised = str(v).lower()
+        if normalised not in cls._VALID_CALIBRATION_METHODS:
+            raise ValueError(
+                f"export.calibration_method {v!r} is invalid. "
+                f"Valid: {cls._VALID_CALIBRATION_METHODS}"
+            )
+        return normalised
 
 
 class RegistrationConfig(BaseModel):

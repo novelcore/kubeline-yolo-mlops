@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from app.models.training import AugmentationParams, TrainingParams
+from app.models.training import AugmentationParams, ExportConfig, TrainingParams
 from app.services.model_training import TrainingError, TrainingService
 
 
@@ -1247,3 +1247,63 @@ class TestProvenanceCallback:
             callback(MagicMock())
 
         mock_set_tag.assert_not_called()
+
+
+class TestExportConfig:
+    """Validation rules for ExportConfig calibration and validation fields (F-01)."""
+
+    def test_defaults_are_applied(self) -> None:
+        """CON-02: all new fields have safe defaults."""
+        cfg = ExportConfig()
+        assert cfg.calibration_method == "entropy"
+        assert cfg.calibration_samples == 512
+        assert cfg.per_channel is True
+        assert cfg.symmetric is True
+        assert cfg.validate_exports is False
+        assert cfg.validation_samples == 100
+
+    def test_calibration_method_lowercase_accepted(self) -> None:
+        """AC-09: all three valid values accepted in lowercase."""
+        assert ExportConfig(calibration_method="entropy").calibration_method == "entropy"
+        assert ExportConfig(calibration_method="minmax").calibration_method == "minmax"
+        assert ExportConfig(calibration_method="percentile").calibration_method == "percentile"
+
+    def test_calibration_method_uppercase_normalised(self) -> None:
+        """AC-09: CON-03 — input is lowercased before validation."""
+        assert ExportConfig(calibration_method="Entropy").calibration_method == "entropy"
+        assert ExportConfig(calibration_method="ENTROPY").calibration_method == "entropy"
+        assert ExportConfig(calibration_method="MinMax").calibration_method == "minmax"
+        assert ExportConfig(calibration_method="PERCENTILE").calibration_method == "percentile"
+
+    def test_calibration_method_invalid_raises(self) -> None:
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="calibration_method"):
+            ExportConfig(calibration_method="linear")
+
+    def test_calibration_samples_lower_boundary(self) -> None:
+        assert ExportConfig(calibration_samples=100).calibration_samples == 100
+
+    def test_calibration_samples_upper_boundary(self) -> None:
+        assert ExportConfig(calibration_samples=10000).calibration_samples == 10000
+
+    def test_calibration_samples_below_minimum_raises(self) -> None:
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            ExportConfig(calibration_samples=99)
+
+    def test_calibration_samples_above_maximum_raises(self) -> None:
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            ExportConfig(calibration_samples=10001)
+
+    def test_validate_exports_default_false(self) -> None:
+        """CON-01: validate_exports defaults to False — non-fatal by default."""
+        assert ExportConfig().validate_exports is False
+
+    def test_validation_samples_minimum_one(self) -> None:
+        assert ExportConfig(validation_samples=1).validation_samples == 1
+
+    def test_validation_samples_zero_raises(self) -> None:
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            ExportConfig(validation_samples=0)

@@ -38,8 +38,44 @@ class ExportConfig(BaseModel):
         description="Precision levels: 'fp16', 'int8'.",
     )
 
+    # ---- INT8 TensorRT calibration ----
+    calibration_method: str = Field(
+        default="entropy",
+        description="INT8 TensorRT calibration algorithm: 'entropy', 'minmax', or 'percentile'.",
+    )
+    calibration_samples: int = Field(
+        default=512,
+        ge=100,
+        le=10000,
+        description="Number of images used for INT8 calibration (100–10000).",
+    )
+    per_channel: bool = Field(
+        default=True,
+        description="Use per-channel quantization scales (recommended for accuracy).",
+    )
+    symmetric: bool = Field(
+        default=True,
+        description="Use symmetric quantization (True) or asymmetric (False).",
+    )
+
+    # ---- Export validation ----
+    validate_exports: bool = Field(
+        default=False,
+        description=(
+            "When True, run an inference comparison between the FP32 model and each "
+            "exported model on validation_samples images. Logs a warning (or raises) "
+            "when output deviation exceeds the configured threshold."
+        ),
+    )
+    validation_samples: int = Field(
+        default=100,
+        ge=1,
+        description="Number of sample images used for export inference validation.",
+    )
+
     _VALID_FORMATS: ClassVar[set[str]] = {"engine", "onnx"}
     _VALID_PRECISIONS: ClassVar[set[str]] = {"fp16", "int8"}
+    _VALID_CALIBRATION_METHODS: ClassVar[set[str]] = {"entropy", "minmax", "percentile"}
 
     @field_validator("formats")
     @classmethod
@@ -60,6 +96,17 @@ class ExportConfig(BaseModel):
                 f"Invalid precision(s): {invalid}. Valid: {cls._VALID_PRECISIONS}"
             )
         return v
+
+    @field_validator("calibration_method", mode="before")
+    @classmethod
+    def calibration_method_must_be_valid(cls, v: object) -> str:
+        normalised = str(v).lower()
+        if normalised not in cls._VALID_CALIBRATION_METHODS:
+            raise ValueError(
+                f"Invalid calibration_method: {v!r}. "
+                f"Valid: {cls._VALID_CALIBRATION_METHODS}"
+            )
+        return normalised
 
 
 class TrainingParams(BaseModel):
