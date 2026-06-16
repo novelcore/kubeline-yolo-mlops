@@ -64,3 +64,11 @@ class RegistrationResult(BaseModel):
         default=None,
         description="Registry alias assigned to the best.pt version, if any",
     )
+    exported_versions: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Map of export label to registered MLflow model version number "
+            "(e.g. {'engine_fp16': 3, 'onnx_fp16': 4}). Empty when no exported "
+            "models were registered. Populated by F-06."
+        ),
+    )

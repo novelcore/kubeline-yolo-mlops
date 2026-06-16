@@ -378,3 +378,214 @@ class TestRegistrationParamsValidation:
     def test_promote_to_invalid_alias_is_rejected(self) -> None:
         with pytest.raises(ValidationError):
             RegistrationParams(**self._base(promote_to="staging"))
+
+
+EXPORTED_MODELS = {
+    "engine_fp16": "s3://mlops-artifacts/checkpoints/exp-001/best.engine",
+    "onnx_fp16": "s3://mlops-artifacts/checkpoints/exp-001/best.onnx",
+}
+
+
+class TestRegisterExportedVariants:
+    """F-06: exported model variants registered as separate MLflow model versions."""
+
+    def _params_with_exports(self, exported_models=None) -> RegistrationParams:
+        return RegistrationParams(
+            mlflow_run_id=RUN_ID,
+            best_checkpoint_path=BEST_S3,
+            registered_model_name=MODEL_NAME,
+            exported_models=exported_models or EXPORTED_MODELS,
+        )
+
+    def test_registers_each_variant_under_derived_name(
+        self, service: ModelRegistrationService
+    ) -> None:
+        """AC-04: each label is registered under {model_name}-{label}."""
+        params = self._params_with_exports()
+        with (
+            patch("app.services.model_registration.mlflow") as mock_mlflow,
+            patch("app.services.model_registration.MlflowClient") as mock_client_cls,
+        ):
+            # best.pt + last.pt + 2 exports = 4 calls
+            mock_mlflow.register_model.side_effect = [
+                _make_mv("1"), _make_mv("2"), _make_mv("3"), _make_mv("4")
+            ]
+            mock_client_cls.return_value
+
+            service.run(params)
+
+        names_used = [
+            c.kwargs.get("name") or c.args[1]
+            for c in mock_mlflow.register_model.call_args_list
+        ]
+        assert f"{MODEL_NAME}-engine_fp16" in names_used
+        assert f"{MODEL_NAME}-onnx_fp16" in names_used
+
+    def test_exported_versions_returned_in_result(
+        self, service: ModelRegistrationService
+    ) -> None:
+        """AC-05: RegistrationResult.exported_versions maps labels to version numbers."""
+        params = self._params_with_exports()
+        with (
+            patch("app.services.model_registration.mlflow") as mock_mlflow,
+            patch("app.services.model_registration.MlflowClient"),
+        ):
+            mock_mlflow.register_model.side_effect = [
+                _make_mv("1"), _make_mv("2"), _make_mv("3"), _make_mv("4")
+            ]
+
+            result = service.run(params)
+
+        assert "engine_fp16" in result.exported_versions
+        assert "onnx_fp16" in result.exported_versions
+        assert result.exported_versions["engine_fp16"] == 3
+        assert result.exported_versions["onnx_fp16"] == 4
+
+    def test_lineage_tags_set_on_exported_version(
+        self, service: ModelRegistrationService
+    ) -> None:
+        """AC-04: source_model_name, source_model_version, source_run_id tags are set."""
+        params = RegistrationParams(
+            mlflow_run_id=RUN_ID,
+            best_checkpoint_path=BEST_S3,
+            registered_model_name=MODEL_NAME,
+            exported_models={"engine_fp16": "s3://bucket/best.engine"},
+        )
+        with (
+            patch("app.services.model_registration.mlflow") as mock_mlflow,
+            patch("app.services.model_registration.MlflowClient") as mock_client_cls,
+        ):
+            mock_mlflow.register_model.side_effect = [
+                _make_mv("1"), _make_mv("2"), _make_mv("5")
+            ]
+            mock_client = mock_client_cls.return_value
+
+            service.run(params)
+
+        tag_calls = mock_client.set_model_version_tag.call_args_list
+        # Extract tags for the exported version (version "5")
+        export_tags = {
+            (c.kwargs.get("key") or c.args[2]): (c.kwargs.get("value") or c.args[3])
+            for c in tag_calls
+            if (c.kwargs.get("version") or c.args[1]) == "5"
+        }
+        assert export_tags.get("source_model_name") == MODEL_NAME
+        assert export_tags.get("source_model_version") == "1"  # best_version
+        assert export_tags.get("source_run_id") == RUN_ID
+        assert export_tags.get("export_label") == "engine_fp16"
+        assert export_tags.get("checkpoint_type") == "exported"
+
+    def test_label_sanitisation_replaces_invalid_chars(
+        self, service: ModelRegistrationService
+    ) -> None:
+        """CON-04: dots and spaces in labels are replaced with hyphens."""
+        params = RegistrationParams(
+            mlflow_run_id=RUN_ID,
+            best_checkpoint_path=BEST_S3,
+            registered_model_name=MODEL_NAME,
+            exported_models={"engine.fp16": "s3://bucket/best.engine"},
+        )
+        with (
+            patch("app.services.model_registration.mlflow") as mock_mlflow,
+            patch("app.services.model_registration.MlflowClient"),
+        ):
+            mock_mlflow.register_model.side_effect = [
+                _make_mv("1"), _make_mv("2"), _make_mv("3")
+            ]
+
+            service.run(params)
+
+        names_used = [
+            c.kwargs.get("name") or c.args[1]
+            for c in mock_mlflow.register_model.call_args_list
+        ]
+        assert f"{MODEL_NAME}-engine-fp16" in names_used
+        assert f"{MODEL_NAME}-engine.fp16" not in names_used
+
+    def test_single_variant_failure_is_non_fatal(
+        self, service: ModelRegistrationService
+    ) -> None:
+        """CON-01: a failed export registration does not abort remaining variants."""
+        params = self._params_with_exports()
+        with (
+            patch("app.services.model_registration.mlflow") as mock_mlflow,
+            patch("app.services.model_registration.MlflowClient"),
+            patch("app.services.model_registration.time.sleep"),
+        ):
+            # best.pt, last.pt succeed; first export always fails; second export succeeds
+            mock_mlflow.register_model.side_effect = [
+                _make_mv("1"),   # best.pt
+                _make_mv("2"),   # last.pt
+                Exception("TRT engine upload failed"),  # attempt 1 for export 1
+                Exception("TRT engine upload failed"),  # attempt 2 for export 1
+                Exception("TRT engine upload failed"),  # attempt 3 for export 1
+                _make_mv("4"),   # second export succeeds
+            ]
+
+            result = service.run(params)
+
+        # One variant failed, one succeeded — result must not be empty
+        assert len(result.exported_versions) == 1
+
+    def test_no_exported_variants_when_exported_models_is_none(
+        self, service: ModelRegistrationService
+    ) -> None:
+        """CON-02: exported_versions defaults to {} when exported_models is not provided."""
+        params = RegistrationParams(
+            mlflow_run_id=RUN_ID,
+            best_checkpoint_path=BEST_S3,
+            registered_model_name=MODEL_NAME,
+        )
+        with (
+            patch("app.services.model_registration.mlflow") as mock_mlflow,
+            patch("app.services.model_registration.MlflowClient"),
+        ):
+            mock_mlflow.register_model.side_effect = [_make_mv("1"), _make_mv("2")]
+
+            result = service.run(params)
+
+        assert result.exported_versions == {}
+
+    def test_no_exported_variants_when_exported_models_is_empty(
+        self, service: ModelRegistrationService
+    ) -> None:
+        """Empty dict is a valid input — no extra register_model calls."""
+        params = RegistrationParams(
+            mlflow_run_id=RUN_ID,
+            best_checkpoint_path=BEST_S3,
+            registered_model_name=MODEL_NAME,
+            exported_models={},
+        )
+        with (
+            patch("app.services.model_registration.mlflow") as mock_mlflow,
+            patch("app.services.model_registration.MlflowClient"),
+        ):
+            mock_mlflow.register_model.side_effect = [_make_mv("1"), _make_mv("2")]
+
+            result = service.run(params)
+
+        assert result.exported_versions == {}
+        assert mock_mlflow.register_model.call_count == 2  # only best.pt + last.pt
+
+
+class TestRegistrationResultExportedVersions:
+    """F-07: RegistrationResult.exported_versions field (CON-02 backward compat)."""
+
+    def test_exported_versions_defaults_to_empty_dict(self) -> None:
+        """CON-02: existing callers that don't pass exported_versions still work."""
+        result = RegistrationResult(
+            registered_model_name=MODEL_NAME,
+            best_version=1,
+            registered_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        )
+        assert result.exported_versions == {}
+
+    def test_exported_versions_can_be_set(self) -> None:
+        result = RegistrationResult(
+            registered_model_name=MODEL_NAME,
+            best_version=1,
+            registered_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            exported_versions={"engine_fp16": 3, "onnx_fp16": 4},
+        )
+        assert result.exported_versions["engine_fp16"] == 3
+        assert result.exported_versions["onnx_fp16"] == 4

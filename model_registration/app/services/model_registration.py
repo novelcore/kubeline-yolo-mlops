@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -98,13 +99,109 @@ class ModelRegistrationService:
                 "Assigned alias '%s' to version %s", promoted_to, best_version
             )
 
+        # Register exported variants (F-06); non-fatal per variant (CON-01)
+        exported_versions = self._register_exported_variants(
+            client=client,
+            params=params,
+            best_version=best_version,
+        )
+
         return RegistrationResult(
             registered_model_name=params.registered_model_name,
             best_version=best_version,
             last_version=last_version,
             registered_at=datetime.now(timezone.utc),
             promoted_to=promoted_to,
+            exported_versions=exported_versions,
         )
+
+    def _register_exported_variants(
+        self,
+        client: MlflowClient,
+        params: RegistrationParams,
+        best_version: int,
+    ) -> dict[str, int]:
+        """Register each exported model as a separate MLflow model version (F-06, D-03).
+
+        For each entry in ``params.exported_models``, registers the S3 URI under
+        ``{registered_model_name}-{sanitised_label}`` and sets lineage tags that
+        link back to the FP32 source model version.
+
+        Failures on individual variants are non-fatal (CON-01): a warning is
+        logged and the loop continues.  The returned dict maps each export label
+        to the registered version number for all variants that succeeded.
+
+        Name sanitisation (CON-04): labels are passed through
+        ``re.sub(r"[^a-zA-Z0-9_-]", "-", label)`` before being used as a
+        registry name suffix.
+        """
+        if not params.exported_models:
+            return {}
+
+        exported_versions: dict[str, int] = {}
+
+        for label, s3_uri in params.exported_models.items():
+            safe_label = re.sub(r"[^a-zA-Z0-9_\-]", "-", label)
+            export_model_name = f"{params.registered_model_name}-{safe_label}"
+
+            try:
+                self._logger.info(
+                    "Registering exported variant %s from %s under '%s'",
+                    label,
+                    s3_uri,
+                    export_model_name,
+                )
+                version = self._register_checkpoint(
+                    client=client,
+                    model_uri=s3_uri,
+                    registered_model_name=export_model_name,
+                )
+                self._logger.info(
+                    "Registered exported variant %s as version %s", label, version
+                )
+
+                # Lineage tags linking this exported version back to the FP32 source
+                lineage_tags: dict[str, str] = {
+                    "checkpoint_type": "exported",
+                    "export_label": label,
+                    "source_model_name": params.registered_model_name,
+                    "source_model_version": str(best_version),
+                    "source_run_id": params.mlflow_run_id,
+                }
+                version_str = str(version)
+                for key, value in lineage_tags.items():
+
+                    def _set_tag(
+                        k: str = key,
+                        v: str = value,
+                        n: str = export_model_name,
+                        ver: str = version_str,
+                    ) -> None:
+                        client.set_model_version_tag(
+                            name=n, version=ver, key=k, value=v
+                        )
+
+                    try:
+                        self._with_retry(_set_tag)
+                    except ModelRegistrationError as exc:
+                        self._logger.warning(
+                            "Failed to set tag '%s' on %s v%s: %s",
+                            key,
+                            export_model_name,
+                            version_str,
+                            exc,
+                        )
+
+                exported_versions[label] = version
+
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning(
+                    "Failed to register exported variant %s (non-fatal, CON-01): %s",
+                    label,
+                    exc,
+                )
+
+        return exported_versions
 
     def _resolve_last_checkpoint(self, params: RegistrationParams) -> Optional[str]:
         """Return the last.pt S3 URI, deriving it from best.pt path if not given."""
