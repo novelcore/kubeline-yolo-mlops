@@ -29,7 +29,7 @@ from typing import Any, Callable
 
 import yaml
 
-from app.models.training import TrainingParams, TrainingResult
+from app.models.training import ExportConfig, TrainingParams, TrainingResult
 from app.services.resource_monitor import ResourceMonitor
 
 _logger = logging.getLogger(__name__)
@@ -624,6 +624,11 @@ class TrainingService:
         base_key = f"{params.checkpoint_prefix}/{params.experiment_name}"
         mlflow_run_id = self._get_mlflow_run_id()
 
+        # Log INT8 calibration params before the export loop (F-02, D-01).
+        # Only relevant when int8 precision is requested; non-fatal on error (CON-01).
+        if mlflow_run_id and "int8" in params.export.precisions:
+            self._log_export_calibration_params(mlflow_run_id, params.export)
+
         for fmt in params.export.formats:
             for precision in params.export.precisions:
                 label = f"{fmt}_{precision}"
@@ -699,6 +704,28 @@ class TrainingService:
             )
         except Exception as exc:  # noqa: BLE001
             _logger.warning("Failed to log artifact to MLflow: %s", exc)
+
+    @staticmethod
+    def _log_export_calibration_params(run_id: str, export: ExportConfig) -> None:
+        """Log INT8 TensorRT calibration params to the MLflow run (F-02, D-01).
+
+        Called before the export loop so params are visible even if a later
+        export step fails. Uses MlflowClient so it works on an already-ended run.
+        Non-fatal: any error is logged as a warning (CON-01).
+        """
+        try:
+            from mlflow.tracking import MlflowClient  # noqa: PLC0415
+
+            client = MlflowClient()
+            for key, value in {
+                "export.calibration_method": export.calibration_method,
+                "export.calibration_samples": export.calibration_samples,
+                "export.per_channel": export.per_channel,
+                "export.symmetric": export.symmetric,
+            }.items():
+                client.log_param(run_id, key, value)
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("Failed to log calibration params to MLflow: %s", exc)
 
     # ------------------------------------------------------------------
     # Post-training test-set evaluation

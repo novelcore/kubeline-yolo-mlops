@@ -1249,6 +1249,100 @@ class TestProvenanceCallback:
         mock_set_tag.assert_not_called()
 
 
+class TestLogExportCalibrationParams:
+    """Unit tests for _log_export_calibration_params (F-02)."""
+
+    def test_logs_all_four_calibration_params_when_int8(self) -> None:
+        """AC-01: calibration params are logged via MlflowClient when int8 is present."""
+        from app.models.training import ExportConfig as EC
+        from app.services.model_training import TrainingService as TS
+
+        export = EC(
+            calibration_method="minmax",
+            calibration_samples=256,
+            per_channel=False,
+            symmetric=False,
+        )
+        mock_client = MagicMock()
+        with patch("mlflow.tracking.MlflowClient", return_value=mock_client):
+            TS._log_export_calibration_params("run-abc", export)
+
+        logged = {call.args[1]: call.args[2] for call in mock_client.log_param.call_args_list}
+        assert logged["export.calibration_method"] == "minmax"
+        assert logged["export.calibration_samples"] == 256
+        assert logged["export.per_channel"] is False
+        assert logged["export.symmetric"] is False
+
+    def test_logs_four_params_total(self) -> None:
+        """Exactly four calibration params are logged — no more, no less."""
+        from app.models.training import ExportConfig as EC
+        from app.services.model_training import TrainingService as TS
+
+        mock_client = MagicMock()
+        with patch("mlflow.tracking.MlflowClient", return_value=mock_client):
+            TS._log_export_calibration_params("run-abc", EC())
+
+        assert mock_client.log_param.call_count == 4
+
+    def test_mlflow_error_is_swallowed(self) -> None:
+        """CON-01: MlflowClient error must not propagate (non-fatal)."""
+        from app.models.training import ExportConfig as EC
+        from app.services.model_training import TrainingService as TS
+
+        mock_client = MagicMock()
+        mock_client.log_param.side_effect = RuntimeError("mlflow down")
+        with patch("mlflow.tracking.MlflowClient", return_value=mock_client):
+            TS._log_export_calibration_params("run-abc", EC())  # must not raise
+
+    def test_export_models_calls_calibration_log_for_int8(self) -> None:
+        """AC-07 inverse: _log_export_calibration_params is called when int8 is requested."""
+        from app.models.training import ExportConfig as EC
+
+        service = _make_service()
+        params = MagicMock()
+        params.export = EC(enabled=True, formats=["engine"], precisions=["int8"])
+        params.checkpoint_prefix = "prefix"
+        params.experiment_name = "exp"
+        params.image_size = 640
+
+        with (
+            patch.object(service, "_get_mlflow_run_id", return_value="run-xyz"),
+            patch.object(TrainingService, "_log_export_calibration_params") as mock_log_cal,
+            patch.object(service, "_upload_to_s3"),
+            patch.object(TrainingService, "_log_mlflow_artifact"),
+        ):
+            model = MagicMock()
+            model.export.return_value = "/tmp/best.engine"
+            with patch("pathlib.Path.exists", return_value=True):
+                service._export_models(model, params, Path("/tmp"), "data.yaml")
+
+        mock_log_cal.assert_called_once()
+
+    def test_export_models_skips_calibration_log_when_no_int8(self) -> None:
+        """AC-07: no calibration params logged when int8 is not in precisions."""
+        from app.models.training import ExportConfig as EC
+
+        service = _make_service()
+        params = MagicMock()
+        params.export = EC(enabled=True, formats=["engine"], precisions=["fp16"])
+        params.checkpoint_prefix = "prefix"
+        params.experiment_name = "exp"
+        params.image_size = 640
+
+        with (
+            patch.object(service, "_get_mlflow_run_id", return_value="run-xyz"),
+            patch.object(TrainingService, "_log_export_calibration_params") as mock_log_cal,
+            patch.object(service, "_upload_to_s3"),
+            patch.object(TrainingService, "_log_mlflow_artifact"),
+        ):
+            model = MagicMock()
+            model.export.return_value = "/tmp/best.engine"
+            with patch("pathlib.Path.exists", return_value=True):
+                service._export_models(model, params, Path("/tmp"), "data.yaml")
+
+        mock_log_cal.assert_not_called()
+
+
 class TestExportConfig:
     """Validation rules for ExportConfig calibration and validation fields (F-01)."""
 
