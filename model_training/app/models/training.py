@@ -28,7 +28,9 @@ class AugmentationParams(BaseModel):
 class ExportConfig(BaseModel):
     """Post-training export and quantization configuration."""
 
-    enabled: bool = Field(default=False, description="Enable model export after training.")
+    enabled: bool = Field(
+        default=False, description="Enable model export after training."
+    )
     formats: list[str] = Field(
         default_factory=list,
         description="Export formats: 'engine' (TensorRT), 'onnx'.",
@@ -75,9 +77,7 @@ class TrainingParams(BaseModel):
     dataset_dir: str = Field(
         description="Local directory containing the downloaded YOLO dataset."
     )
-    output_dir: str = Field(
-        description="Local directory for Ultralytics runs/ output."
-    )
+    output_dir: str = Field(description="Local directory for Ultralytics runs/ output.")
 
     # ---- Dataset source ----
     source: str = Field(
@@ -209,6 +209,14 @@ class TrainingParams(BaseModel):
     config_hash: Optional[str] = Field(
         default=None,
         description="SHA-256 of the canonical pipeline config JSON (from config_validation).",
+    )
+    dataset_manifest_sha256: Optional[str] = Field(
+        default=None,
+        description=(
+            "Dataset identity recorded in run_state.json and enforced at resume "
+            "(D-04). Sourced from dataset_manifest.json's dataset_hash when present, "
+            "falling back to the lakeFS commit. Set automatically from the manifest."
+        ),
     )
 
 

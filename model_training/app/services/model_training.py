@@ -25,12 +25,21 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 import yaml
 
 from app.models.training import TrainingParams, TrainingResult
 from app.services.resource_monitor import ResourceMonitor
+from app.services.run_state import (
+    CheckpointEntry,
+    ResumeInfo,
+    RunState,
+    RunStateStore,
+    compute_sha256,
+    now_rfc3339,
+    run_state_key,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -205,6 +214,12 @@ class TrainingService:
             "s3_bucket": bucket,
             "s3_prefix": prefix,
         }
+        # Carry the dataset identity into run_state.json (F-03/D-04). The lakeFS
+        # commit is the preferred identity (see issue #21) and flows through the
+        # manifest's dataset_hash; fall back happens at run_state build time.
+        manifest_hash = raw.get("dataset_hash")
+        if manifest_hash:
+            update["dataset_manifest_sha256"] = manifest_hash
         # Signal manifest-only mode: labels must also be streamed from S3
         if label_keys:
             update["s3_stream_labels"] = True
@@ -243,9 +258,21 @@ class TrainingService:
             # 4. Register callbacks
             epoch_metrics: dict[str, float] = {}
 
+            # Run-state manifest (F-03/F-04): the holder carries the live RunState
+            # between the start, epoch-end and checkpoint callbacks. All run_state
+            # writes are best-effort and never abort training (CON-04).
+            run_state_store = self._build_run_state_store(params)
+            run_state_holder: dict[str, Optional[RunState]] = {"state": None}
+
             model.add_callback(
                 "on_train_start",
                 self._make_provenance_callback(params),
+            )
+            model.add_callback(
+                "on_train_start",
+                self._make_run_state_start_callback(
+                    params, run_state_store, run_state_holder
+                ),
             )
             model.add_callback(
                 "on_train_batch_end",
@@ -253,11 +280,15 @@ class TrainingService:
             )
             model.add_callback(
                 "on_fit_epoch_end",
-                self._make_epoch_end_callback(epoch_metrics, monitor),
+                self._make_epoch_end_callback(
+                    epoch_metrics, monitor, run_state_store, run_state_holder
+                ),
             )
             model.add_callback(
                 "on_train_epoch_end",
-                self._make_checkpoint_callback(params),
+                self._make_checkpoint_callback(
+                    params, run_state_store, run_state_holder
+                ),
             )
             model.add_callback(
                 "on_train_end",
@@ -340,7 +371,9 @@ class TrainingService:
         final_map50_95 = float(epoch_metrics.get("val/mAP50_95", 0.0))
 
         raw_epoch = getattr(trainer, "epoch", None)
-        epochs_completed: int = raw_epoch + 1 if raw_epoch is not None else params.epochs
+        epochs_completed: int = (
+            raw_epoch + 1 if raw_epoch is not None else params.epochs
+        )
 
         return TrainingResult(
             experiment_name=params.experiment_name,
@@ -419,7 +452,13 @@ class TrainingService:
                 if tloss is None:
                     return
 
-                loss_names = ["box_loss", "pose_loss", "kobj_loss", "cls_loss", "dfl_loss"]
+                loss_names = [
+                    "box_loss",
+                    "pose_loss",
+                    "kobj_loss",
+                    "cls_loss",
+                    "dfl_loss",
+                ]
                 try:
                     for idx, loss_name in enumerate(loss_names):
                         if idx < len(tloss):
@@ -440,8 +479,15 @@ class TrainingService:
     def _make_epoch_end_callback(
         epoch_metrics: dict[str, float],
         monitor: ResourceMonitor,
+        run_state_store: RunStateStore,
+        run_state_holder: dict[str, Optional[RunState]],
     ) -> Callable[[Any], None]:
-        """Return a callback that logs per-epoch validation metrics and system resources."""
+        """Return a callback that logs per-epoch validation metrics and system resources.
+
+        Also refreshes the run_state heartbeat every epoch — deliberately more
+        frequent than the checkpoint interval so the live-experiment guard (T-05)
+        can tell a running experiment from a dead one.
+        """
 
         def on_fit_epoch_end(trainer: Any) -> None:
             try:
@@ -475,6 +521,18 @@ class TrainingService:
                         "Failed to log epoch metrics to MLflow: %s", log_exc
                     )
 
+                # Heartbeat refresh (T-05) — cheap full rewrite of the small manifest.
+                state = run_state_holder.get("state")
+                if state is not None:
+                    try:
+                        state.heartbeat = now_rfc3339()
+                        run_state_store.write(state)
+                    except Exception as hb_exc:  # noqa: BLE001
+                        _logger.warning(
+                            "Failed to refresh run_state heartbeat (non-fatal): %s",
+                            hb_exc,
+                        )
+
             except Exception as cb_exc:  # noqa: BLE001
                 _logger.warning("on_fit_epoch_end callback error: %s", cb_exc)
 
@@ -483,8 +541,15 @@ class TrainingService:
     def _make_checkpoint_callback(
         self,
         params: TrainingParams,
+        run_state_store: RunStateStore,
+        run_state_holder: dict[str, Optional[RunState]],
     ) -> Callable[[Any], None]:
-        """Return a callback that uploads a checkpoint to S3 and logs it to MLflow every N epochs."""
+        """Return a callback that uploads a checkpoint to S3 and logs it to MLflow every N epochs.
+
+        After a successful upload it records the checkpoint (URI + SHA-256) in
+        run_state.json and advances ``last_completed_epoch`` so a resume can pick
+        up from this checkpoint (F-03 / CON-04).
+        """
 
         def on_train_epoch_end(trainer: Any) -> None:
             try:
@@ -528,6 +593,16 @@ class TrainingService:
                         "Failed to log checkpoint to MLflow: %s", mlflow_exc
                     )
 
+                # Record the checkpoint in run_state.json (F-03).
+                self._record_checkpoint(
+                    run_state_store,
+                    run_state_holder,
+                    epoch=epoch,
+                    local_pt=last_pt,
+                    bucket=params.checkpoint_bucket,
+                    key=s3_key,
+                )
+
             except Exception as cb_exc:  # noqa: BLE001
                 _logger.warning("S3 checkpoint upload failed: %s", cb_exc)
 
@@ -547,6 +622,202 @@ class TrainingService:
             )
 
         return on_train_end
+
+    # ------------------------------------------------------------------
+    # Run-state manifest (F-03 / F-04)
+    # ------------------------------------------------------------------
+
+    def _build_run_state_store(self, params: TrainingParams) -> RunStateStore:
+        """Construct the run_state.json store at the experiment's checkpoint path."""
+        key = run_state_key(params.checkpoint_prefix, params.experiment_name)
+        return RunStateStore(self._s3, params.checkpoint_bucket, key)
+
+    def _make_run_state_start_callback(
+        self,
+        params: TrainingParams,
+        run_state_store: RunStateStore,
+        run_state_holder: dict[str, Optional[RunState]],
+    ) -> Callable[[Any], None]:
+        """Return an on_train_start callback that writes run_state.json at run start.
+
+        Fires after the Ultralytics MLflow callback has opened the run, so the
+        active run ID is known *at start* — closing the gap where the ID was only
+        harvested after training (F-04). On a resumed run it carries forward the
+        prior checkpoint index and tags the new MLflow run with its lineage
+        (linked-run lineage, D-03 option B). All writes are best-effort.
+        """
+
+        def on_train_start(trainer: Any) -> None:  # noqa: ARG001
+            try:
+                run_id = self._active_mlflow_run_id()
+                resume_mode = bool(params.resume_from)
+
+                existing: Optional[RunState] = None
+                if resume_mode:
+                    try:
+                        existing = run_state_store.read()
+                    except Exception as read_exc:  # noqa: BLE001
+                        _logger.warning(
+                            "Could not read existing run_state for resume "
+                            "(starting a fresh lineage): %s",
+                            read_exc,
+                        )
+
+                state = self._build_initial_run_state(
+                    params, run_id, existing, resume_mode
+                )
+                run_state_holder["state"] = state
+                run_state_store.write(state)
+                _logger.info(
+                    "Wrote run_state at start | %s run_id=%s resume=%s",
+                    run_state_store.uri,
+                    run_id or "<none>",
+                    resume_mode,
+                )
+
+                if resume_mode and state.resume is not None:
+                    self._tag_resume_lineage(run_id, state)
+            except Exception as exc:  # noqa: BLE001
+                _logger.warning(
+                    "Failed to write run_state at start (non-fatal): %s", exc
+                )
+
+        return on_train_start
+
+    def _build_initial_run_state(
+        self,
+        params: TrainingParams,
+        run_id: str,
+        existing: Optional[RunState],
+        resume_mode: bool,
+    ) -> RunState:
+        """Build the run_state written at training start.
+
+        On resume the prior checkpoint index and ``last_completed_epoch`` are
+        carried forward so the checkpoint callback keeps appending, and a
+        ResumeInfo block links the new run to the original.
+        """
+        source_workflow_uid = os.environ.get("ARGO_WORKFLOW_UID", "")
+        source_workflow_name = os.environ.get("ARGO_WORKFLOW_NAME") or os.environ.get(
+            "KUBECORE_WORKFLOW_NAME", ""
+        )
+        dataset_id = params.dataset_manifest_sha256 or params.lakefs_commit or ""
+
+        last_completed_epoch = 0
+        checkpoints: list[CheckpointEntry] = []
+        resume_info: Optional[ResumeInfo] = None
+
+        if resume_mode and existing is not None:
+            last_completed_epoch = existing.last_completed_epoch
+            checkpoints = list(existing.checkpoints)
+            prior_attempt = existing.resume.attempt if existing.resume else 0
+            resumed_from = existing.mlflow_run_id or (
+                existing.resume.resumed_from if existing.resume else ""
+            )
+            resume_info = ResumeInfo(
+                resumed_from=resumed_from, attempt=prior_attempt + 1
+            )
+        elif resume_mode:
+            # Resume requested but no prior run_state found — no lineage source.
+            resume_info = ResumeInfo(resumed_from="", attempt=1)
+
+        return RunState(
+            experiment_name=params.experiment_name,
+            mlflow_run_id=run_id,
+            last_completed_epoch=last_completed_epoch,
+            checkpoints=checkpoints,
+            dataset_manifest_sha256=dataset_id,
+            config_hash=params.config_hash or "",
+            source_workflow_uid=source_workflow_uid,
+            source_workflow_name=source_workflow_name,
+            heartbeat=now_rfc3339(),
+            resume=resume_info,
+        )
+
+    def _record_checkpoint(
+        self,
+        run_state_store: RunStateStore,
+        run_state_holder: dict[str, Optional[RunState]],
+        *,
+        epoch: int,
+        local_pt: Path,
+        bucket: str,
+        key: str,
+    ) -> None:
+        """Append a checkpoint entry and advance last_completed_epoch in run_state."""
+        state = run_state_holder.get("state")
+        if state is None:
+            return
+        try:
+            entry = CheckpointEntry(
+                epoch=epoch,
+                uri=f"s3://{bucket}/{key}",
+                sha256=compute_sha256(local_pt),
+                ultralytics_version=self._ultralytics_version(),
+            )
+            state.checkpoints.append(entry)
+            state.last_completed_epoch = epoch
+            state.heartbeat = now_rfc3339()
+            run_state_store.write(state)
+            _logger.info(
+                "Updated run_state at epoch %d (%d checkpoints recorded)",
+                epoch,
+                len(state.checkpoints),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "Failed to update run_state at checkpoint (non-fatal): %s", exc
+            )
+
+    @staticmethod
+    def _active_mlflow_run_id() -> str:
+        """Return the active MLflow run ID, or '' when no run is active."""
+        try:
+            import mlflow  # noqa: PLC0415
+
+            run = mlflow.active_run()
+            if run is not None:
+                return str(run.info.run_id)
+        except Exception:  # noqa: BLE001
+            _logger.warning("Could not read the active MLflow run ID for run_state")
+        return ""
+
+    @staticmethod
+    def _tag_resume_lineage(run_id: str, state: RunState) -> None:
+        """Tag the active MLflow run with its resume lineage (D-03 option B)."""
+        if not run_id or state.resume is None:
+            return
+        try:
+            import mlflow  # noqa: PLC0415
+
+            if mlflow.active_run() is None:
+                return
+            mlflow.set_tag("resumed_from", state.resume.resumed_from)
+            mlflow.set_tag("resume.attempt", str(state.resume.attempt))
+            mlflow.set_tag("resume.source_workflow_uid", state.source_workflow_uid)
+            _logger.info(
+                "Tagged MLflow run as resume attempt %d of %s",
+                state.resume.attempt,
+                state.resume.resumed_from or "<unknown>",
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("Failed to tag resume lineage on MLflow run: %s", exc)
+
+    @staticmethod
+    def _ultralytics_version() -> str:
+        """Return the installed Ultralytics version (best-effort)."""
+        try:
+            from importlib.metadata import (  # noqa: PLC0415
+                PackageNotFoundError,
+                version,
+            )
+
+            try:
+                return version("ultralytics")
+            except PackageNotFoundError:
+                return "unknown"
+        except Exception:  # noqa: BLE001
+            return "unknown"
 
     # ------------------------------------------------------------------
     # MLflow run ID retrieval
@@ -595,7 +866,9 @@ class TrainingService:
                 client = MlflowClient()
                 for key, value in kubecore_tags.items():
                     client.set_tag(run_id, key, value)
-                _logger.info("Tagged MLflow run with %d kubecore tags", len(kubecore_tags))
+                _logger.info(
+                    "Tagged MLflow run with %d kubecore tags", len(kubecore_tags)
+                )
         except Exception:  # noqa: BLE001
             _logger.warning("Failed to tag MLflow run with kubecore metadata")
 
@@ -656,16 +929,12 @@ class TrainingService:
                     exported_path = Path(model.export(**export_kwargs))
 
                     if not exported_path.exists():
-                        self._logger.warning(
-                            "Export produced no file for %s", label
-                        )
+                        self._logger.warning("Export produced no file for %s", label)
                         continue
 
                     # Upload to S3
                     s3_key = f"{base_key}/{exported_path.name}"
-                    self._upload_to_s3(
-                        exported_path, params.checkpoint_bucket, s3_key
-                    )
+                    self._upload_to_s3(exported_path, params.checkpoint_bucket, s3_key)
                     s3_uri = f"s3://{params.checkpoint_bucket}/{s3_key}"
                     exported[label] = s3_uri
                     self._logger.info("Uploaded %s to %s", label, s3_uri)
@@ -678,16 +947,12 @@ class TrainingService:
                     )
 
                 except Exception as exc:  # noqa: BLE001
-                    self._logger.error(
-                        "Export failed for %s: %s", label, exc
-                    )
+                    self._logger.error("Export failed for %s: %s", label, exc)
 
         return exported
 
     @staticmethod
-    def _log_mlflow_artifact(
-        local_path: Path, run_id: str, artifact_path: str
-    ) -> None:
+    def _log_mlflow_artifact(local_path: Path, run_id: str, artifact_path: str) -> None:
         """Log a file as an MLflow artifact via MlflowClient (works on ended runs)."""
         if not run_id:
             return
@@ -858,9 +1123,7 @@ class TrainingService:
                 try:
                     client.log_metric(run_id, mlflow_key, float(val))
                 except Exception as exc:  # noqa: BLE001
-                    self._logger.warning(
-                        "Failed to log metric %s: %s", mlflow_key, exc
-                    )
+                    self._logger.warning("Failed to log metric %s: %s", mlflow_key, exc)
 
             save_dir = getattr(results, "save_dir", None)
             if save_dir is not None:
@@ -933,19 +1196,13 @@ class TrainingService:
 
         if params.source == "s3":
             if not params.s3_bucket:
-                raise TrainingError(
-                    "--s3-bucket is required when --source=s3"
-                )
+                raise TrainingError("--s3-bucket is required when --source=s3")
             if not params.s3_prefix:
-                raise TrainingError(
-                    "--s3-prefix is required when --source=s3"
-                )
+                raise TrainingError("--s3-prefix is required when --source=s3")
 
         dataset_path = Path(params.dataset_dir)
         if not dataset_path.exists():
-            raise TrainingError(
-                f"--dataset-dir does not exist: {params.dataset_dir}"
-            )
+            raise TrainingError(f"--dataset-dir does not exist: {params.dataset_dir}")
         if not dataset_path.is_dir():
             raise TrainingError(
                 f"--dataset-dir is not a directory: {params.dataset_dir}"
@@ -981,7 +1238,8 @@ class TrainingService:
                     f"images/{split}/ directory not found in dataset_dir: {dataset_path}"
                 )
             image_files = [
-                p for p in images_dir.iterdir()
+                p
+                for p in images_dir.iterdir()
                 if p.is_file() and p.suffix.lower() in _IMAGE_EXTENSIONS
             ]
             if not image_files:
@@ -998,7 +1256,8 @@ class TrainingService:
         test_dir = dataset_path / "images" / "test"
         if test_dir.exists():
             test_count = sum(
-                1 for p in test_dir.iterdir()
+                1
+                for p in test_dir.iterdir()
                 if p.is_file() and p.suffix.lower() in _IMAGE_EXTENSIONS
             )
             self._logger.info(
@@ -1036,9 +1295,7 @@ class TrainingService:
         # Bare variant name: Ultralytics handles CDN download
         return Path(params.model_variant)
 
-    def _maybe_download_pt(
-        self, uri_or_path: str, tmp_path: Path, label: str
-    ) -> Path:
+    def _maybe_download_pt(self, uri_or_path: str, tmp_path: Path, label: str) -> Path:
         """Download a .pt file from S3 to tmp_path if uri starts with s3://,
         otherwise treat it as an already-local path and return it directly.
         """
@@ -1060,9 +1317,7 @@ class TrainingService:
         # Local path
         local_pt = Path(uri_or_path)
         if not local_pt.exists():
-            raise TrainingError(
-                f"{label} weights path does not exist: {uri_or_path}"
-            )
+            raise TrainingError(f"{label} weights path does not exist: {uri_or_path}")
         return local_pt
 
     # ------------------------------------------------------------------
@@ -1201,9 +1456,7 @@ class TrainingService:
     # S3 checkpoint upload
     # ------------------------------------------------------------------
 
-    def _upload_final_weights(
-        self, params: TrainingParams, save_dir: Path
-    ) -> str:
+    def _upload_final_weights(self, params: TrainingParams, save_dir: Path) -> str:
         """Upload best.pt and last.pt to S3 after training completes.
 
         Returns
