@@ -87,7 +87,11 @@ class DatasetManifest(BaseModel):
     )
     dataset_hash: Optional[str] = Field(
         default=None,
-        description="SHA-256 hex digest of the sorted S3 image key list.",
+        description=(
+            "Dataset identity enforced at resume (D-04): the lakeFS commit when "
+            "available, otherwise the SHA-256 of the sorted S3 image key list. "
+            "Consumers only require equality."
+        ),
     )
 
 
@@ -121,5 +125,8 @@ class YoloDatasetStats(BaseModel):
     )
     dataset_hash: Optional[str] = Field(
         default=None,
-        description="SHA-256 hex digest of the sorted S3 image key list.",
+        description=(
+            "Dataset identity enforced at resume (D-04): the lakeFS commit when "
+            "available, otherwise the SHA-256 of the sorted S3 image key list."
+        ),
     )

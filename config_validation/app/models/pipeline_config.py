@@ -3,7 +3,6 @@ from typing import ClassVar, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-
 # Valid YOLO Pose model variants (v8–v11, sizes n/s/m/l/x)
 _YOLO_POSE_VARIANT_PATTERN = re.compile(r"^yolov(8|9|10|11)[nsmlx]-pose\.pt$")
 
@@ -37,6 +36,9 @@ class DatasetConfig(BaseModel):
     lakefs_branch: Optional[str] = None
     sample_size: Optional[int] = None
     seed: int = 42
+    # Deterministic download chunk size (D-04). Carried for chunk-aware loading;
+    # the chunk-completion markers themselves apply to full-download/local mode.
+    chunk_size: int = Field(default=500, gt=0)
     # ---- Streaming modes (mutually exclusive) ----
     # When labels_only=true the dataset_loading step downloads labels + data.yaml
     # and writes a dataset_manifest.json; images are streamed from S3 at train time.
@@ -56,9 +58,7 @@ class DatasetConfig(BaseModel):
     @classmethod
     def source_must_be_valid(cls, v: str) -> str:
         if v not in ("s3", "lakefs"):
-            raise ValueError(
-                f"dataset.source must be 's3' or 'lakefs', got: {v!r}"
-            )
+            raise ValueError(f"dataset.source must be 's3' or 'lakefs', got: {v!r}")
         return v
 
     @field_validator("lakefs_repo", mode="after")
@@ -79,9 +79,7 @@ class DatasetConfig(BaseModel):
     @classmethod
     def sample_size_must_be_positive(cls, v: Optional[int]) -> Optional[int]:
         if v is not None and v <= 0:
-            raise ValueError(
-                f"dataset.sample_size must be > 0 when set, got: {v}"
-            )
+            raise ValueError(f"dataset.sample_size must be > 0 when set, got: {v}")
         return v
 
     @model_validator(mode="after")
@@ -182,19 +180,17 @@ class TrainingConfig(BaseModel):
 
     # ---- Pose-estimation loss gains ----
     # These are the primary quality levers for object keypoint accuracy.
-    pose: float = Field(default=12.0, gt=0.0)   # keypoint regression loss
-    kobj: float = Field(default=2.0, gt=0.0)    # keypoint objectness loss
-    box: float = Field(default=7.5, gt=0.0)     # bounding-box regression loss
-    cls: float = Field(default=0.5, gt=0.0)     # classification loss
-    dfl: float = Field(default=1.5, gt=0.0)     # distribution focal loss
+    pose: float = Field(default=12.0, gt=0.0)  # keypoint regression loss
+    kobj: float = Field(default=2.0, gt=0.0)  # keypoint objectness loss
+    box: float = Field(default=7.5, gt=0.0)  # bounding-box regression loss
+    cls: float = Field(default=0.5, gt=0.0)  # classification loss
+    dfl: float = Field(default=1.5, gt=0.0)  # distribution focal loss
 
     @field_validator("image_size", mode="after")
     @classmethod
     def image_size_must_be_multiple_of_32(cls, v: int) -> int:
         if v % 32 != 0:
-            raise ValueError(
-                f"training.image_size must be a multiple of 32, got: {v}"
-            )
+            raise ValueError(f"training.image_size must be a multiple of 32, got: {v}")
         return v
 
     @field_validator("optimizer", mode="after")

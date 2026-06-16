@@ -15,6 +15,7 @@ dataset:
   path_override: null              # null = auto-construct from repo/branch/version; or full s3:// URI
   sample_size: null               # null = full dataset; integer = sampled subset
   seed: 42                        # Seed for reproducible dataset sampling
+  chunk_size: 500                 # Deterministic download chunk size for chunk-aware loading (D-04)
   # Streaming modes (mutually exclusive). Default: both false (full local download).
   labels_only: false              # true = download labels + data.yaml; stream images from S3 at train time
   manifest_only: false            # true = download only data.yaml; stream images AND labels from S3 at train time
