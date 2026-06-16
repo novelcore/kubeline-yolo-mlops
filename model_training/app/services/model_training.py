@@ -51,6 +51,11 @@ _METRIC_MAP50_95 = "metrics/mAP50-95(B)"
 # File names written by dataset_loading
 _MANIFEST_FILENAME = "dataset_manifest.json"
 
+# F-05: default mAP50 degradation threshold above which a validation warning is
+# emitted when validate_exports=True.  Applies to all export formats/precisions.
+# OQ-01 is open — this default may be tightened once production data is available.
+_EXPORT_VALIDATION_MAP50_DELTA_THRESHOLD = 0.05
+
 
 # ---------------------------------------------------------------------------
 # Custom exception
@@ -687,7 +692,7 @@ class TrainingService:
                     )
 
                     # Evaluate exported model on test split and log delta (F-03, F-04)
-                    self._evaluate_exported_model(
+                    exported_map50 = self._evaluate_exported_model(
                         yolo_cls=yolo_cls,
                         exported_path=exported_path,
                         label=label,
@@ -696,6 +701,16 @@ class TrainingService:
                         mlflow_run_id=mlflow_run_id,
                         fp32_map50=fp32_map50,
                     )
+
+                    # Optional quality gate (F-05, D-02): warn when mAP50 drop
+                    # exceeds threshold and validate_exports=True.  Non-fatal (CON-01).
+                    if params.export.validate_exports:
+                        self._validate_export_quality(
+                            label=label,
+                            fp32_map50=fp32_map50,
+                            exported_map50=exported_map50,
+                            mlflow_run_id=mlflow_run_id,
+                        )
 
                 except Exception as exc:  # noqa: BLE001
                     self._logger.error(
@@ -848,6 +863,70 @@ class TrainingService:
                 "Failed to log export eval metrics for %s: %s", label, exc
             )
         return map50
+
+    def _validate_export_quality(
+        self,
+        label: str,
+        fp32_map50: Optional[float],
+        exported_map50: Optional[float],
+        mlflow_run_id: str,
+    ) -> None:
+        """Warn when quantized mAP50 degrades beyond threshold (F-05, D-02).
+
+        Called only when ``validate_exports=True``.  Logs
+        ``export/{label}/validation_passed`` (1.0 = pass, 0.0 = fail) to
+        MLflow and emits a WARNING when the delta exceeds
+        ``_EXPORT_VALIDATION_MAP50_DELTA_THRESHOLD``.  Always non-fatal (CON-01).
+
+        When either baseline is absent (test split skipped, export eval failed)
+        the check is skipped and ``validation_passed`` is not logged — this
+        avoids false positives on runs where evaluation was not possible.
+        """
+        if fp32_map50 is None or exported_map50 is None:
+            self._logger.warning(
+                "Export quality check skipped for %s — mAP50 baseline "
+                "or exported mAP50 not available.",
+                label,
+            )
+            return
+
+        delta = fp32_map50 - exported_map50
+        passed = delta <= _EXPORT_VALIDATION_MAP50_DELTA_THRESHOLD
+
+        if not passed:
+            self._logger.warning(
+                "Export quality validation FAILED for %s: mAP50 dropped by %.4f "
+                "(fp32=%.4f, exported=%.4f, threshold=%.2f). "
+                "Check calibration settings or consider using FP16 instead of INT8.",
+                label,
+                delta,
+                fp32_map50,
+                exported_map50,
+                _EXPORT_VALIDATION_MAP50_DELTA_THRESHOLD,
+            )
+        else:
+            self._logger.info(
+                "Export quality validation passed for %s: mAP50 delta=%.4f "
+                "(fp32=%.4f, exported=%.4f).",
+                label,
+                delta,
+                fp32_map50,
+                exported_map50,
+            )
+
+        if mlflow_run_id:
+            try:
+                from mlflow.tracking import MlflowClient  # noqa: PLC0415
+
+                MlflowClient().log_metric(
+                    mlflow_run_id,
+                    f"export/{label}/validation_passed",
+                    1.0 if passed else 0.0,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning(
+                    "Failed to log validation_passed metric for %s: %s", label, exc
+                )
 
     # ------------------------------------------------------------------
     # Post-training test-set evaluation

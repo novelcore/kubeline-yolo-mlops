@@ -1542,6 +1542,191 @@ class TestExportMap50Delta:
         assert result == pytest.approx(0.78)
 
 
+class TestValidateExportQuality:
+    """Unit tests for _validate_export_quality (F-05, AC-06)."""
+
+    def test_warns_when_delta_exceeds_threshold(self) -> None:
+        """AC-06: warning logged when exported mAP50 drops more than threshold."""
+        service = _make_service()
+        mock_client = MagicMock()
+
+        with (
+            patch("mlflow.tracking.MlflowClient", return_value=mock_client),
+            patch.object(service, "_logger") as mock_log,
+        ):
+            service._validate_export_quality(
+                label="engine_int8",
+                fp32_map50=0.85,
+                exported_map50=0.75,  # delta = 0.10, exceeds 0.05 threshold
+                mlflow_run_id="run-abc",
+            )
+
+        assert mock_log.warning.called
+        warning_msg = mock_log.warning.call_args_list[-1].args[0]
+        assert "FAILED" in warning_msg
+
+    def test_no_warning_when_delta_within_threshold(self) -> None:
+        """No warning when mAP50 drop is within the acceptable threshold."""
+        service = _make_service()
+        mock_client = MagicMock()
+
+        with (
+            patch("mlflow.tracking.MlflowClient", return_value=mock_client),
+            patch.object(service, "_logger") as mock_log,
+        ):
+            service._validate_export_quality(
+                label="engine_fp16",
+                fp32_map50=0.85,
+                exported_map50=0.82,  # delta = 0.03, within 0.05 threshold
+                mlflow_run_id="run-abc",
+            )
+
+        warning_texts = [str(c) for c in mock_log.warning.call_args_list]
+        assert not any("FAILED" in t for t in warning_texts)
+
+    def test_logs_validation_passed_metric_to_mlflow(self) -> None:
+        """validation_passed=1.0 is logged to MLflow when check passes."""
+        service = _make_service()
+        mock_client = MagicMock()
+
+        with patch("mlflow.tracking.MlflowClient", return_value=mock_client):
+            service._validate_export_quality(
+                label="engine_fp16",
+                fp32_map50=0.85,
+                exported_map50=0.83,
+                mlflow_run_id="run-abc",
+            )
+
+        mock_client.log_metric.assert_called_once_with(
+            "run-abc", "export/engine_fp16/validation_passed", 1.0
+        )
+
+    def test_logs_validation_failed_metric_to_mlflow(self) -> None:
+        """validation_passed=0.0 is logged when check fails."""
+        service = _make_service()
+        mock_client = MagicMock()
+
+        with patch("mlflow.tracking.MlflowClient", return_value=mock_client):
+            service._validate_export_quality(
+                label="engine_int8",
+                fp32_map50=0.85,
+                exported_map50=0.70,  # delta = 0.15
+                mlflow_run_id="run-abc",
+            )
+
+        mock_client.log_metric.assert_called_once_with(
+            "run-abc", "export/engine_int8/validation_passed", 0.0
+        )
+
+    def test_skips_when_fp32_baseline_absent(self) -> None:
+        """No metric logged and warning emitted when fp32_map50 is None."""
+        service = _make_service()
+        mock_client = MagicMock()
+
+        with (
+            patch("mlflow.tracking.MlflowClient", return_value=mock_client),
+            patch.object(service, "_logger") as mock_log,
+        ):
+            service._validate_export_quality(
+                label="engine_int8",
+                fp32_map50=None,
+                exported_map50=0.80,
+                mlflow_run_id="run-abc",
+            )
+
+        mock_client.log_metric.assert_not_called()
+        assert mock_log.warning.called
+
+    def test_skips_when_exported_map50_absent(self) -> None:
+        """No metric logged when exported model evaluation was skipped."""
+        service = _make_service()
+        mock_client = MagicMock()
+
+        with (
+            patch("mlflow.tracking.MlflowClient", return_value=mock_client),
+            patch.object(service, "_logger") as mock_log,
+        ):
+            service._validate_export_quality(
+                label="engine_int8",
+                fp32_map50=0.85,
+                exported_map50=None,
+                mlflow_run_id="run-abc",
+            )
+
+        mock_client.log_metric.assert_not_called()
+        assert mock_log.warning.called
+
+    def test_mlflow_error_is_swallowed(self) -> None:
+        """CON-01: MLflow logging failure in quality check is non-fatal."""
+        service = _make_service()
+        mock_client = MagicMock()
+        mock_client.log_metric.side_effect = RuntimeError("MLflow down")
+
+        with patch("mlflow.tracking.MlflowClient", return_value=mock_client):
+            # must not raise
+            service._validate_export_quality(
+                label="engine_fp16",
+                fp32_map50=0.85,
+                exported_map50=0.83,
+                mlflow_run_id="run-abc",
+            )
+
+    def test_validate_exports_flag_gates_quality_check(self) -> None:
+        """_validate_export_quality is NOT called when validate_exports=False."""
+        from app.models.training import ExportConfig as EC
+
+        service = _make_service()
+        model = MagicMock()
+        model.export.return_value = "/tmp/best.engine"
+        params = MagicMock()
+        params.export = EC(enabled=True, formats=["engine"], precisions=["fp16"], validate_exports=False)
+        params.checkpoint_prefix = "prefix"
+        params.experiment_name = "exp"
+        params.image_size = 640
+
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch.object(service, "_upload_to_s3"),
+            patch.object(service, "_log_mlflow_artifact"),
+            patch.object(service, "_get_mlflow_run_id", return_value="run-abc"),
+            patch.object(service, "_evaluate_exported_model", return_value=0.80),
+            patch.object(service, "_validate_export_quality") as mock_validate,
+        ):
+            service._export_models(model, params, Path("/tmp"), "data.yaml")
+
+        mock_validate.assert_not_called()
+
+    def test_validate_exports_flag_triggers_quality_check(self) -> None:
+        """_validate_export_quality IS called when validate_exports=True."""
+        from app.models.training import ExportConfig as EC
+
+        service = _make_service()
+        model = MagicMock()
+        model.export.return_value = "/tmp/best.engine"
+        params = MagicMock()
+        params.export = EC(enabled=True, formats=["engine"], precisions=["fp16"], validate_exports=True)
+        params.checkpoint_prefix = "prefix"
+        params.experiment_name = "exp"
+        params.image_size = 640
+
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch.object(service, "_upload_to_s3"),
+            patch.object(service, "_log_mlflow_artifact"),
+            patch.object(service, "_get_mlflow_run_id", return_value="run-abc"),
+            patch.object(service, "_evaluate_exported_model", return_value=0.80),
+            patch.object(service, "_validate_export_quality") as mock_validate,
+        ):
+            service._export_models(model, params, Path("/tmp"), "data.yaml", fp32_map50=0.85)
+
+        mock_validate.assert_called_once_with(
+            label="engine_fp16",
+            fp32_map50=0.85,
+            exported_map50=0.80,
+            mlflow_run_id="run-abc",
+        )
+
+
 class TestExportConfig:
     """Validation rules for ExportConfig calibration and validation fields (F-01)."""
 
