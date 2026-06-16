@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.models.pipeline_config import PipelineConfig, RegistrationConfig
+from app.models.pipeline_config import PipelineConfig, QuantizationConfig, RegistrationConfig
 
 
 VALID_CONFIG: dict = {
@@ -330,3 +330,154 @@ class TestRegistrationConfig:
         config = PipelineConfig(**data)
         assert config.registration.registered_model_name == "my-yolo-model"
         assert config.registration.promote_to == "champion"
+
+
+class TestQuantizationConfig:
+    """Validation rules for QuantizationConfig (FR-M-10, FR-M-06)."""
+
+    # ------------------------------------------------------------------
+    # Defaults (CON from PRD-174: all fields have defaults, mode=none is safe)
+    # ------------------------------------------------------------------
+
+    def test_defaults_are_applied(self) -> None:
+        """Omitting quantization: entirely uses safe defaults."""
+        cfg = QuantizationConfig()
+        assert cfg.mode == "none"
+        assert cfg.qat_epochs == 10
+        assert cfg.qat_lr == 1e-4
+        assert cfg.calibration_frames == 512
+        assert cfg.calibration_seed == 42
+        assert cfg.parity_frames == 100
+        assert cfg.parity_max_abs_error == 0.05
+
+    def test_pipeline_config_without_quantization_section_uses_defaults(self) -> None:
+        """Existing pipeline YAMLs without quantization: parse with mode=none."""
+        config = PipelineConfig(**VALID_CONFIG)
+        assert config.quantization.mode == "none"
+
+    # ------------------------------------------------------------------
+    # Valid mode values
+    # ------------------------------------------------------------------
+
+    def test_mode_none_is_valid(self) -> None:
+        assert QuantizationConfig(mode="none").mode == "none"
+
+    def test_mode_ptq_is_valid(self) -> None:
+        assert QuantizationConfig(mode="ptq").mode == "ptq"
+
+    def test_mode_qat_is_valid(self) -> None:
+        assert QuantizationConfig(mode="qat").mode == "qat"
+
+    def test_mode_invalid_value_fails(self) -> None:
+        with pytest.raises(ValidationError, match="mode"):
+            QuantizationConfig(mode="eager")
+
+    def test_mode_uppercase_rejected(self) -> None:
+        """mode is case-sensitive — 'PTQ' is not accepted."""
+        with pytest.raises(ValidationError):
+            QuantizationConfig(mode="PTQ")
+
+    # ------------------------------------------------------------------
+    # qat_epochs bounds
+    # ------------------------------------------------------------------
+
+    def test_qat_epochs_positive_is_valid(self) -> None:
+        assert QuantizationConfig(qat_epochs=50).qat_epochs == 50
+
+    def test_qat_epochs_zero_fails(self) -> None:
+        with pytest.raises(ValidationError):
+            QuantizationConfig(qat_epochs=0)
+
+    def test_qat_epochs_negative_fails(self) -> None:
+        with pytest.raises(ValidationError):
+            QuantizationConfig(qat_epochs=-1)
+
+    # ------------------------------------------------------------------
+    # qat_lr bounds
+    # ------------------------------------------------------------------
+
+    def test_qat_lr_positive_is_valid(self) -> None:
+        assert QuantizationConfig(qat_lr=5e-5).qat_lr == 5e-5
+
+    def test_qat_lr_zero_fails(self) -> None:
+        with pytest.raises(ValidationError):
+            QuantizationConfig(qat_lr=0.0)
+
+    # ------------------------------------------------------------------
+    # calibration_frames bounds
+    # ------------------------------------------------------------------
+
+    def test_calibration_frames_lower_boundary(self) -> None:
+        assert QuantizationConfig(calibration_frames=100).calibration_frames == 100
+
+    def test_calibration_frames_upper_boundary(self) -> None:
+        assert QuantizationConfig(calibration_frames=10000).calibration_frames == 10000
+
+    def test_calibration_frames_below_minimum_fails(self) -> None:
+        with pytest.raises(ValidationError):
+            QuantizationConfig(calibration_frames=99)
+
+    def test_calibration_frames_above_maximum_fails(self) -> None:
+        with pytest.raises(ValidationError):
+            QuantizationConfig(calibration_frames=10001)
+
+    # ------------------------------------------------------------------
+    # parity_frames bounds
+    # ------------------------------------------------------------------
+
+    def test_parity_frames_minimum_one(self) -> None:
+        assert QuantizationConfig(parity_frames=1).parity_frames == 1
+
+    def test_parity_frames_zero_fails(self) -> None:
+        with pytest.raises(ValidationError):
+            QuantizationConfig(parity_frames=0)
+
+    # ------------------------------------------------------------------
+    # parity_max_abs_error bounds
+    # ------------------------------------------------------------------
+
+    def test_parity_max_abs_error_positive_is_valid(self) -> None:
+        assert QuantizationConfig(parity_max_abs_error=0.1).parity_max_abs_error == 0.1
+
+    def test_parity_max_abs_error_zero_fails(self) -> None:
+        with pytest.raises(ValidationError):
+            QuantizationConfig(parity_max_abs_error=0.0)
+
+    # ------------------------------------------------------------------
+    # Integration: full quantization section round-trips through PipelineConfig
+    # ------------------------------------------------------------------
+
+    def test_pipeline_config_with_ptq_section(self) -> None:
+        data = {**VALID_CONFIG, "quantization": {
+            "mode": "ptq",
+            "calibration_frames": 256,
+            "parity_frames": 50,
+        }}
+        config = PipelineConfig(**data)
+        assert config.quantization.mode == "ptq"
+        assert config.quantization.calibration_frames == 256
+        assert config.quantization.parity_frames == 50
+
+    def test_pipeline_config_with_qat_section(self) -> None:
+        data = {**VALID_CONFIG, "quantization": {
+            "mode": "qat",
+            "qat_epochs": 20,
+            "qat_lr": 2e-4,
+            "calibration_frames": 1024,
+            "calibration_seed": 7,
+            "parity_frames": 200,
+            "parity_max_abs_error": 0.02,
+        }}
+        config = PipelineConfig(**data)
+        assert config.quantization.mode == "qat"
+        assert config.quantization.qat_epochs == 20
+        assert config.quantization.qat_lr == 2e-4
+        assert config.quantization.calibration_seed == 7
+        assert config.quantization.parity_max_abs_error == 0.02
+
+    def test_quantization_and_export_sections_coexist(self) -> None:
+        """quantization: and export: are independent sections — both can be set."""
+        data = {**VALID_CONFIG, "export": {"enabled": True, "formats": ["engine"], "precisions": ["fp16"]}, "quantization": {"mode": "ptq"}}
+        config = PipelineConfig(**data)
+        assert config.export.enabled is True
+        assert config.quantization.mode == "ptq"

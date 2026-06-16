@@ -345,6 +345,63 @@ class RegistrationConfig(BaseModel):
         return v
 
 
+class QuantizationConfig(BaseModel):
+    """Pipeline quantization configuration (PTQ / QAT → INT8 TFLite).
+
+    ``mode: none`` (default) skips all quantization steps.
+    ``mode: ptq`` runs the ``model-quantization`` step only (Ultralytics PTQ export).
+    ``mode: qat`` runs ``qat-finetune`` (PT2E QAT) followed by ``model-quantization``.
+
+    Per-channel quantization is NOT exposed here — it is hardcoded to per-tensor
+    inside the ``qat-finetune`` service (CON-02: only scheme that clears
+    litert-torch's final conversion pass on YOLOv8-pose).
+    """
+
+    mode: Literal["none", "ptq", "qat"] = Field(
+        default="none",
+        description="Quantization mode: none | ptq | qat",
+    )
+
+    # ---- QAT fine-tune controls (used only when mode=qat) ----
+    qat_epochs: int = Field(
+        default=10,
+        gt=0,
+        description="Number of QAT fine-tune epochs (mode=qat only)",
+    )
+    qat_lr: float = Field(
+        default=1e-4,
+        gt=0.0,
+        description="Learning rate for QAT fine-tune pass (mode=qat only)",
+    )
+
+    # ---- Calibration (used for PTQ and as the QAT calibration subset) ----
+    calibration_frames: int = Field(
+        default=512,
+        ge=100,
+        le=10000,
+        description="Number of frames used for INT8 calibration",
+    )
+    calibration_seed: int = Field(
+        default=42,
+        description="RNG seed for calibration subset selection (reproducibility)",
+    )
+
+    # ---- Parity test ----
+    parity_frames: int = Field(
+        default=100,
+        ge=1,
+        description="Number of frames for the INT8 TFLite vs FP32 parity check",
+    )
+    parity_max_abs_error: float = Field(
+        default=0.05,
+        gt=0.0,
+        description=(
+            "Maximum allowed absolute error between INT8 TFLite and FP32 outputs "
+            "on the parity frames. Exceeding this threshold fails the parity test."
+        ),
+    )
+
+
 class PipelineConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")  # silently drops resources section
 
@@ -357,3 +414,4 @@ class PipelineConfig(BaseModel):
     augmentation: AugmentationConfig = Field(default_factory=AugmentationConfig)
     export: ExportConfig = Field(default_factory=ExportConfig)
     registration: RegistrationConfig = Field(default_factory=RegistrationConfig)
+    quantization: QuantizationConfig = Field(default_factory=QuantizationConfig)
