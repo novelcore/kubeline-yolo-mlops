@@ -281,6 +281,44 @@ pipeline:
       default: "fp16"
       description: "Comma-separated precisions: 'fp16' and/or 'int8'. Only used when export-enabled=true."
 
+    # ── Quantization ──────────────────────────────────────────────────────────
+    - name: quantization-mode
+      default: "none"
+      enum: ["none", "ptq", "qat"]
+      description: "Quantization mode: 'none' skips both qat-finetune and model-quantization; 'ptq' runs Ultralytics INT8 export; 'qat' runs PT2E QAT fine-tune then model-quantization."
+
+    - name: quantization-image-size
+      default: "640"
+      description: "Input image size for quantization. Must match training image-size."
+
+    - name: quantization-calibration-frames
+      default: "512"
+      description: "Number of calibration frames sampled from the dataset for PTQ/QAT calibration."
+
+    - name: quantization-calibration-seed
+      default: "42"
+      description: "RNG seed for deterministic calibration frame sampling (FR-M-04)."
+
+    - name: quantization-parity-frames
+      default: "100"
+      description: "Number of frames for the INT8 vs FP32 parity check."
+
+    - name: quantization-parity-max-abs-error
+      default: "0.05"
+      description: "Maximum allowed max-absolute-error in the parity check. Run fails if this threshold is exceeded."
+
+    - name: quantization-output-prefix
+      default: "quantization"
+      description: "S3 key prefix for quantized TFLite artifacts (e.g. 'quantization/exp-001')."
+
+    - name: qat-epochs
+      default: "10"
+      description: "Number of QAT fine-tune epochs. Only used when quantization-mode=qat."
+
+    - name: qat-lr
+      default: "0.0001"
+      description: "Learning rate for QAT fine-tuning. Only used when quantization-mode=qat."
+
     # ── Model registration ─────────────────────────────────────────────────────
     - name: registered-model-name
       default: ""
@@ -903,15 +941,367 @@ steps:
         ephemeral-storage: "30Gi"
 
   # ──────────────────────────────────────────────────────────────────────────
-  # Step 4 — model-registration
+  # Step 4 — qat-finetune  [CONDITIONAL — runs only when quantization-mode=qat]
+  #
+  # Runs PT2E QAT fine-tuning on the FP32 checkpoint produced by model-training
+  # and exports an INT8 TFLite artifact to S3 and MLflow.
+  #
+  # Gating: the `when` condition causes this step to be SKIPPED when mode is
+  # 'ptq' or 'none'. model-quantization (step 5) uses an Argo `depends`
+  # expression that tolerates this skip, so the pipeline continues cleanly.
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: qat-finetune
+    path: qat_finetune
+    compute: gpu
+    when: "{{workflow.parameters.quantization-mode}} == qat"
+    dependencies:
+      - model-training
+    env:
+      - name: TRAINING_RESULT
+        value: "{{inputs.parameters.training-result}}"
+      - name: PARAMS_YAML
+        value: |
+          experiment:
+            name: "{{workflow.parameters.experiment-name}}"
+          quantization:
+            mode: "{{workflow.parameters.quantization-mode}}"
+            image_size: {{workflow.parameters.quantization-image-size}}
+            calibration_frames: {{workflow.parameters.quantization-calibration-frames}}
+            calibration_seed: {{workflow.parameters.quantization-calibration-seed}}
+            parity_frames: {{workflow.parameters.quantization-parity-frames}}
+            parity_max_abs_error: {{workflow.parameters.quantization-parity-max-abs-error}}
+            output_prefix: "{{workflow.parameters.quantization-output-prefix}}/qat"
+            qat_epochs: {{workflow.parameters.qat-epochs}}
+            qat_lr: {{workflow.parameters.qat-lr}}
+    inputs:
+      parameters:
+        - name: training-result
+          from: model-training
+    command: ["python", "-c"]
+    args:
+      - |
+        import os, sys, subprocess, json, yaml
+
+        # Config resolution: PIPELINE_CONFIG (platform-injected) overrides PARAMS_YAML.
+        pipeline_config = os.environ.get("PIPELINE_CONFIG", "")
+        params_yaml = os.environ.get("PARAMS_YAML", "")
+        raw = pipeline_config.strip() if pipeline_config.strip() else params_yaml
+
+        if not raw.strip():
+            print("ERROR: Neither PIPELINE_CONFIG nor PARAMS_YAML is set.", flush=True)
+            sys.exit(1)
+        try:
+            cfg = yaml.safe_load(raw)
+        except yaml.YAMLError as e:
+            print(f"ERROR: Config is not valid YAML: {e}", flush=True)
+            sys.exit(1)
+
+        tr_raw = os.environ.get("TRAINING_RESULT", "")
+        if not tr_raw.strip():
+            print("ERROR: TRAINING_RESULT input parameter is empty.", flush=True)
+            sys.exit(1)
+        try:
+            tr = json.loads(tr_raw)
+        except json.JSONDecodeError as e:
+            print(f"ERROR: TRAINING_RESULT is not valid JSON: {e}", flush=True)
+            sys.exit(1)
+
+        mlflow_run_id = tr.get("mlflow_run_id")
+        best_checkpoint_s3 = tr.get("best_checkpoint_s3")
+        if not mlflow_run_id or not best_checkpoint_s3:
+            print(f"ERROR: training_result missing mlflow_run_id or best_checkpoint_s3: {tr}", flush=True)
+            sys.exit(1)
+
+        exp = cfg.get("experiment") or {}
+        quant = cfg.get("quantization") or {}
+
+        # Derive output bucket from checkpoint URI (same bucket as training artifacts)
+        # Format: s3://<bucket>/<prefix>/...
+        checkpoint_uri = best_checkpoint_s3
+        if checkpoint_uri.startswith("s3://"):
+            output_bucket = checkpoint_uri[5:].split("/")[0]
+        else:
+            output_bucket = os.environ.get("CHECKPOINT_BUCKET", "")
+        if not output_bucket:
+            print("ERROR: cannot derive output bucket from checkpoint URI and CHECKPOINT_BUCKET is unset.", flush=True)
+            sys.exit(1)
+
+        os.makedirs("/work/qat_output", exist_ok=True)
+
+        flags = [
+            "--fp32-checkpoint-path", best_checkpoint_s3,
+            "--source-mlflow-run-id", mlflow_run_id,
+            "--dataset-dir", "/work/dataset",
+            "--output-dir", "/work/qat_output",
+            "--output-bucket", output_bucket,
+            "--output-prefix", str(quant.get("output_prefix", "quantization/qat")),
+            "--experiment-name", str(exp.get("name", "quantization")),
+            "--image-size", str(quant.get("image_size", 640)),
+            "--qat-epochs", str(quant.get("qat_epochs", 10)),
+            "--qat-lr", str(quant.get("qat_lr", 1e-4)),
+            "--calibration-frames", str(quant.get("calibration_frames", 512)),
+            "--calibration-seed", str(quant.get("calibration_seed", 42)),
+            "--parity-frames", str(quant.get("parity_frames", 100)),
+            "--parity-max-abs-error", str(quant.get("parity_max_abs_error", 0.05)),
+        ]
+
+        print(f"[qat-finetune] Running: qat-finetune run {' '.join(flags)}", flush=True)
+        result = subprocess.run(["qat-finetune", "run"] + flags)
+        sys.exit(result.returncode)
+
+    outputs:
+      parameters:
+        - name: qat-result
+          path: /work/qat_output/qat_result.json
+    resources:
+      requests:
+        cpu: "4"
+        memory: "16Gi"
+        ephemeral-storage: "20Gi"
+      limits:
+        cpu: "8"
+        memory: "32Gi"
+        ephemeral-storage: "50Gi"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Step 5 — model-quantization  [CONDITIONAL — skipped when mode=none]
+  #
+  # Shared export tail for both PTQ and QAT paths:
+  #   PTQ: runs Ultralytics export(int8=True) on the FP32 checkpoint
+  #   QAT: receives INT8 TFLite URI from qat-finetune; runs parity test
+  #
+  # Dependency: uses Argo `depends` expression (not `dependencies` list) so
+  # this step runs when either qat-finetune succeeded (mode=qat) OR was
+  # skipped (mode=ptq). Simple `dependencies: [qat-finetune]` would propagate
+  # the skip incorrectly in ptq mode.
+  #
+  # NOTE: The generator must emit `depends` as an Argo DAG expression, not as
+  # a simple dependency list, for this step.
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: model-quantization
+    path: model_quantization
+    compute: cpu
+    when: "{{workflow.parameters.quantization-mode}} != none"
+    depends: "model-training && (qat-finetune || qat-finetune.Skipped)"
+    env:
+      - name: TRAINING_RESULT
+        value: "{{inputs.parameters.training-result}}"
+      - name: QAT_RESULT
+        value: "{{inputs.parameters.qat-result}}"
+      - name: DATA_YAML
+        value: "{{inputs.parameters.data-yaml}}"
+      - name: MANIFEST_SUMMARY
+        value: "{{inputs.parameters.manifest-summary}}"
+      - name: PARAMS_YAML
+        value: |
+          experiment:
+            name: "{{workflow.parameters.experiment-name}}"
+          quantization:
+            mode: "{{workflow.parameters.quantization-mode}}"
+            image_size: {{workflow.parameters.quantization-image-size}}
+            calibration_frames: {{workflow.parameters.quantization-calibration-frames}}
+            calibration_seed: {{workflow.parameters.quantization-calibration-seed}}
+            parity_frames: {{workflow.parameters.quantization-parity-frames}}
+            parity_max_abs_error: {{workflow.parameters.quantization-parity-max-abs-error}}
+            output_prefix: "{{workflow.parameters.quantization-output-prefix}}/model"
+    inputs:
+      parameters:
+        - name: training-result
+          from: model-training
+        - name: qat-result
+          from: qat-finetune
+          default: ""
+        - name: data-yaml
+          from: dataset-loading
+        - name: manifest-summary
+          from: dataset-loading
+    command: ["python", "-c"]
+    args:
+      - |
+        import os, sys, subprocess, json, yaml, importlib
+
+        # Config resolution: PIPELINE_CONFIG (platform-injected) overrides PARAMS_YAML.
+        pipeline_config = os.environ.get("PIPELINE_CONFIG", "")
+        params_yaml = os.environ.get("PARAMS_YAML", "")
+        raw = pipeline_config.strip() if pipeline_config.strip() else params_yaml
+
+        if not raw.strip():
+            print("ERROR: Neither PIPELINE_CONFIG nor PARAMS_YAML is set.", flush=True)
+            sys.exit(1)
+        try:
+            cfg = yaml.safe_load(raw)
+        except yaml.YAMLError as e:
+            print(f"ERROR: Config is not valid YAML: {e}", flush=True)
+            sys.exit(1)
+
+        tr_raw = os.environ.get("TRAINING_RESULT", "")
+        if not tr_raw.strip():
+            print("ERROR: TRAINING_RESULT input parameter is empty.", flush=True)
+            sys.exit(1)
+        try:
+            tr = json.loads(tr_raw)
+        except json.JSONDecodeError as e:
+            print(f"ERROR: TRAINING_RESULT is not valid JSON: {e}", flush=True)
+            sys.exit(1)
+
+        exp = cfg.get("experiment") or {}
+        quant = cfg.get("quantization") or {}
+        mode = str(quant.get("mode", "ptq"))
+
+        mlflow_run_id = tr.get("mlflow_run_id")
+        best_checkpoint_s3 = tr.get("best_checkpoint_s3")
+        if not mlflow_run_id:
+            print(f"ERROR: training_result missing mlflow_run_id: {tr}", flush=True)
+            sys.exit(1)
+
+        # Derive output bucket from checkpoint URI.
+        if best_checkpoint_s3 and best_checkpoint_s3.startswith("s3://"):
+            output_bucket = best_checkpoint_s3[5:].split("/")[0]
+        else:
+            output_bucket = os.environ.get("CHECKPOINT_BUCKET", "")
+        if not output_bucket:
+            print("ERROR: cannot derive output bucket from checkpoint URI and CHECKPOINT_BUCKET is unset.", flush=True)
+            sys.exit(1)
+
+        # Reconstruct /work/dataset so model-quantization can discover data.yaml
+        # and download calibration/parity frames from S3.
+        os.makedirs("/work/dataset", exist_ok=True)
+        data_yaml_content = os.environ.get("DATA_YAML", "")
+        if data_yaml_content.strip():
+            with open("/work/dataset/data.yaml", "w") as fh:
+                fh.write(data_yaml_content)
+        manifest_summary = os.environ.get("MANIFEST_SUMMARY", "")
+        if manifest_summary.strip():
+            with open("/work/dataset/dataset_manifest.json", "w") as fh:
+                fh.write(manifest_summary)
+
+        # Download calibration + parity frames from S3 to /work/dataset/images/val/.
+        # The manifest_summary contains bucket and prefix; we list image keys and
+        # download the first calibration_frames + parity_frames files.
+        try:
+            import boto3
+            from botocore.config import Config as BotoConfig
+            boto_cfg = BotoConfig(retries={"max_attempts": 3, "mode": "adaptive"})
+
+            lakefs_endpoint = os.environ.get("LAKEFS_ENDPOINT", "")
+            lakefs_key = os.environ.get("LAKEFS_ACCESS_KEY_ID", "")
+            lakefs_secret = os.environ.get("LAKEFS_SECRET_ACCESS_KEY", "")
+
+            if lakefs_endpoint and lakefs_key and lakefs_secret:
+                s3 = boto3.client("s3", endpoint_url=lakefs_endpoint,
+                                  aws_access_key_id=lakefs_key,
+                                  aws_secret_access_key=lakefs_secret,
+                                  region_name=None, config=boto_cfg)
+            else:
+                s3 = boto3.client("s3",
+                                  endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
+                                  aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+                                  aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+                                  region_name=os.environ.get("AWS_DEFAULT_REGION"),
+                                  config=boto_cfg)
+
+            ms = json.loads(manifest_summary) if manifest_summary.strip() else {}
+            ds_bucket = ms.get("bucket", "")
+            ds_prefix = ms.get("prefix", "").rstrip("/")
+
+            if ds_bucket and ds_prefix:
+                max_download = int(quant.get("calibration_frames", 512)) + int(quant.get("parity_frames", 100))
+                images_dir = "/work/dataset/images/val"
+                os.makedirs(images_dir, exist_ok=True)
+
+                paginator = s3.get_paginator("list_objects_v2")
+                image_exts = {".jpg", ".jpeg", ".png", ".bmp"}
+                downloaded = 0
+                for page in paginator.paginate(Bucket=ds_bucket, Prefix=f"{ds_prefix}/images/"):
+                    for obj in page.get("Contents", []):
+                        key = obj["Key"]
+                        ext = os.path.splitext(key)[1].lower()
+                        if ext not in image_exts:
+                            continue
+                        local_path = os.path.join(images_dir, os.path.basename(key))
+                        s3.download_file(ds_bucket, key, local_path)
+                        downloaded += 1
+                        if downloaded >= max_download:
+                            break
+                    if downloaded >= max_download:
+                        break
+                print(f"[model-quantization] Downloaded {downloaded} calibration/parity frames.", flush=True)
+            else:
+                print("[model-quantization] WARNING: manifest_summary missing bucket/prefix — calibration frames not downloaded.", flush=True)
+        except Exception as e:
+            print(f"[model-quantization] WARNING: frame download failed: {e}. Proceeding — CLI will fail if dataset is needed.", flush=True)
+
+        os.makedirs("/work/quant_output", exist_ok=True)
+
+        flags = [
+            "--mode", mode,
+            "--source-mlflow-run-id", mlflow_run_id,
+            "--dataset-dir", "/work/dataset",
+            "--output-dir", "/work/quant_output",
+            "--output-bucket", output_bucket,
+            "--output-prefix", str(quant.get("output_prefix", "quantization/model")),
+            "--experiment-name", str(exp.get("name", "quantization")),
+            "--image-size", str(quant.get("image_size", 640)),
+            "--calibration-frames", str(quant.get("calibration_frames", 512)),
+            "--calibration-seed", str(quant.get("calibration_seed", 42)),
+            "--parity-frames", str(quant.get("parity_frames", 100)),
+            "--parity-max-abs-error", str(quant.get("parity_max_abs_error", 0.05)),
+        ]
+
+        if mode == "ptq":
+            if not best_checkpoint_s3:
+                print("ERROR: best_checkpoint_s3 missing in training_result for PTQ mode.", flush=True)
+                sys.exit(1)
+            flags += ["--fp32-checkpoint-path", best_checkpoint_s3]
+
+        elif mode == "qat":
+            qat_raw = os.environ.get("QAT_RESULT", "")
+            if not qat_raw.strip():
+                print("ERROR: QAT_RESULT is empty but mode=qat — qat-finetune must have run.", flush=True)
+                sys.exit(1)
+            try:
+                qr = json.loads(qat_raw)
+            except json.JSONDecodeError as e:
+                print(f"ERROR: QAT_RESULT is not valid JSON: {e}", flush=True)
+                sys.exit(1)
+            tflite_uri = qr.get("tflite_s3_uri")
+            qat_run_id = qr.get("mlflow_run_id")
+            if not tflite_uri:
+                print(f"ERROR: qat_result missing tflite_s3_uri: {qr}", flush=True)
+                sys.exit(1)
+            flags += ["--tflite-s3-uri", tflite_uri]
+            if qat_run_id:
+                flags += ["--qat-run-id", qat_run_id]
+            if best_checkpoint_s3:
+                flags += ["--fp32-checkpoint-path", best_checkpoint_s3]
+
+        print(f"[model-quantization] Running: model-quantization run {' '.join(flags)}", flush=True)
+        result = subprocess.run(["model-quantization", "run"] + flags)
+        sys.exit(result.returncode)
+
+    outputs:
+      parameters:
+        - name: quantization-result
+          path: /work/quant_output/quantization_result.json
+    resources:
+      requests:
+        cpu: "2"
+        memory: "8Gi"
+        ephemeral-storage: "10Gi"
+      limits:
+        cpu: "4"
+        memory: "16Gi"
+        ephemeral-storage: "20Gi"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Step 6 — model-registration
   # Reads training_result.json (passed as TRAINING_RESULT env) and registers
   # the best checkpoint in the MLflow model registry with full lineage tags.
   # ──────────────────────────────────────────────────────────────────────────
   - name: model-registration
     path: model_registration
     compute: cpu
-    dependencies:
-      - model-training
+    depends: "model-training && (model-quantization || model-quantization.Skipped)"
     env:
       - name: TRAINING_RESULT
         value: "{{inputs.parameters.training-result}}"
