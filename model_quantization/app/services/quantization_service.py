@@ -129,6 +129,8 @@ class QuantizationService:
             ("calibration_frames", str(params.calibration_frames)),
             ("calibration_seed", str(params.calibration_seed)),
             ("image_size", str(params.image_size)),
+            ("parity_frames", str(params.parity_frames)),
+            ("parity_max_abs_error_threshold", str(params.parity_max_abs_error)),
             ("source_run_id", params.source_mlflow_run_id),
             ("tflite_s3_uri", s3_uri),
         ]
@@ -187,6 +189,12 @@ class QuantizationService:
         client = MlflowClient()
         items: list[tuple[str, str]] = [
             ("quantization_mode", "qat"),
+            ("quantization_scheme", "per_tensor_int8"),
+            ("calibration_frames", str(params.calibration_frames)),
+            ("calibration_seed", str(params.calibration_seed)),
+            ("image_size", str(params.image_size)),
+            ("parity_frames", str(params.parity_frames)),
+            ("parity_max_abs_error_threshold", str(params.parity_max_abs_error)),
             ("source_run_id", params.source_mlflow_run_id),
             ("tflite_s3_uri", params.tflite_s3_uri or ""),
         ]

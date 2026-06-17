@@ -272,6 +272,22 @@ class TestMLflowLoggingPTQ:
         param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
         assert param_map["tflite_s3_uri"] == uri
 
+    def test_parity_frames_logged(
+        self, service: QuantizationService, ptq_params: QuantizationParams
+    ) -> None:
+        with patch("app.services.quantization_service.MlflowClient") as mock_cls:
+            service._log_ptq_run("run-001", ptq_params, "s3://b/k.tflite")
+        param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
+        assert param_map["parity_frames"] == str(ptq_params.parity_frames)
+
+    def test_parity_threshold_logged(
+        self, service: QuantizationService, ptq_params: QuantizationParams
+    ) -> None:
+        with patch("app.services.quantization_service.MlflowClient") as mock_cls:
+            service._log_ptq_run("run-001", ptq_params, "s3://b/k.tflite")
+        param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
+        assert param_map["parity_max_abs_error_threshold"] == str(ptq_params.parity_max_abs_error)
+
     def test_mlflow_error_swallowed(
         self, service: QuantizationService, ptq_params: QuantizationParams
     ) -> None:
@@ -290,6 +306,33 @@ class TestMLflowLoggingQAT:
             service._log_qat_passthrough_run("run-002", qat_params)
         param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
         assert param_map["quantization_mode"] == "qat"
+
+    def test_quantization_scheme_logged(
+        self, service: QuantizationService, qat_params: QuantizationParams
+    ) -> None:
+        with patch("app.services.quantization_service.MlflowClient") as mock_cls:
+            service._log_qat_passthrough_run("run-002", qat_params)
+        param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
+        assert param_map["quantization_scheme"] == "per_tensor_int8"
+
+    def test_calibration_params_logged(
+        self, service: QuantizationService, qat_params: QuantizationParams
+    ) -> None:
+        with patch("app.services.quantization_service.MlflowClient") as mock_cls:
+            service._log_qat_passthrough_run("run-002", qat_params)
+        param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
+        assert param_map["calibration_frames"] == str(qat_params.calibration_frames)
+        assert param_map["calibration_seed"] == str(qat_params.calibration_seed)
+        assert param_map["image_size"] == str(qat_params.image_size)
+
+    def test_parity_config_logged(
+        self, service: QuantizationService, qat_params: QuantizationParams
+    ) -> None:
+        with patch("app.services.quantization_service.MlflowClient") as mock_cls:
+            service._log_qat_passthrough_run("run-002", qat_params)
+        param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
+        assert param_map["parity_frames"] == str(qat_params.parity_frames)
+        assert param_map["parity_max_abs_error_threshold"] == str(qat_params.parity_max_abs_error)
 
     def test_qat_run_id_logged_when_present(
         self, service: QuantizationService, qat_params: QuantizationParams
