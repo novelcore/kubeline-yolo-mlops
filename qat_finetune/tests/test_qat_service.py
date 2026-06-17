@@ -544,6 +544,7 @@ class TestRunOrchestration:
             patch.object(service, "_load_headless_module", side_effect=lambda *a, **kw: call_order.append("load") or MagicMock()),
             patch.object(service, "_capture_graph", side_effect=lambda *a, **kw: call_order.append("capture") or MagicMock()),
             patch.object(service, "_prepare_qat", side_effect=lambda *a, **kw: call_order.append("prepare") or MagicMock()),
+            patch.object(service, "_seed_rng", side_effect=lambda *a, **kw: call_order.append("seed_rng")),
             patch.object(service, "_finetune", side_effect=lambda *a, **kw: call_order.append("finetune")),
             patch.object(service, "_convert", side_effect=lambda *a, **kw: call_order.append("convert") or MagicMock()),
             patch.object(service, "_export_tflite", side_effect=lambda *a, **kw: call_order.append("export_tflite") or "/tmp/m.tflite"),
@@ -566,9 +567,70 @@ class TestRunOrchestration:
             "load",
             "capture",
             "prepare",
+            "seed_rng",
             "finetune",
             "convert",
             "export_tflite",
             "upload",
             "log",
         ]
+
+
+class TestDeterminismControls:
+    """FR-M-04: torch RNG is seeded before the QAT fine-tune loop (AC-05)."""
+
+    def test_manual_seed_called_with_calibration_seed(
+        self, service: QATService, params: QATParams
+    ) -> None:
+        with patch("app.services.qat_service.torch") as mock_torch:
+            service._seed_rng(params.calibration_seed, "cpu")
+        mock_torch.manual_seed.assert_called_once_with(params.calibration_seed)
+
+    def test_use_deterministic_algorithms_warn_only(
+        self, service: QATService, params: QATParams
+    ) -> None:
+        with patch("app.services.qat_service.torch") as mock_torch:
+            service._seed_rng(params.calibration_seed, "cpu")
+        mock_torch.use_deterministic_algorithms.assert_called_once_with(True, warn_only=True)
+
+    def test_cuda_manual_seed_all_called_on_cuda_device(
+        self, service: QATService, params: QATParams
+    ) -> None:
+        with patch("app.services.qat_service.torch") as mock_torch:
+            service._seed_rng(params.calibration_seed, "cuda")
+        mock_torch.cuda.manual_seed_all.assert_called_once_with(params.calibration_seed)
+
+    def test_cuda_manual_seed_all_not_called_on_cpu(
+        self, service: QATService, params: QATParams
+    ) -> None:
+        with patch("app.services.qat_service.torch") as mock_torch:
+            service._seed_rng(params.calibration_seed, "cpu")
+        mock_torch.cuda.manual_seed_all.assert_not_called()
+
+    def test_seed_rng_called_before_finetune(
+        self, service: QATService, params: QATParams
+    ) -> None:
+        call_order: list[str] = []
+        with (
+            patch.object(service, "_resolve_checkpoint", return_value="/local/best.pt"),
+            patch.object(service, "_load_headless_module", return_value=MagicMock()),
+            patch.object(service, "_capture_graph", return_value=MagicMock()),
+            patch.object(service, "_prepare_qat", return_value=MagicMock()),
+            patch.object(service, "_seed_rng", side_effect=lambda *a, **kw: call_order.append("seed_rng")),
+            patch.object(service, "_finetune", side_effect=lambda *a, **kw: call_order.append("finetune")),
+            patch.object(service, "_convert", return_value=MagicMock()),
+            patch.object(service, "_export_tflite", return_value="/tmp/m.tflite"),
+            patch.object(service, "_upload_tflite", return_value="s3://b/k"),
+            patch.object(service, "_log_run"),
+            patch("app.services.qat_service.mlflow") as mock_mlflow,
+            patch("app.services.qat_service.torch") as mock_torch,
+        ):
+            mock_torch.cuda.is_available.return_value = False
+            mock_torch.zeros.return_value = MagicMock()
+            active_run = MagicMock()
+            active_run.info.run_id = "r"
+            mock_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=active_run)
+            mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
+            service.run(params)
+
+        assert call_order.index("seed_rng") < call_order.index("finetune")

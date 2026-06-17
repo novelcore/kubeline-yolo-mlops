@@ -497,3 +497,42 @@ class TestRunQATPassthroughOrchestration:
             service._run_qat_passthrough(qat_params)
 
         s3.upload_file.assert_not_called()
+
+
+class TestDeterminismControlsPTQ:
+    """FR-M-04: torch RNG is seeded before PTQ calibration export (AC-05)."""
+
+    def test_seed_torch_calls_manual_seed(
+        self, service: QuantizationService, ptq_params: QuantizationParams
+    ) -> None:
+        with patch("app.services.quantization_service.torch") as mock_torch:
+            service._seed_torch(ptq_params.calibration_seed)
+        mock_torch.manual_seed.assert_called_once_with(ptq_params.calibration_seed)
+
+    def test_seed_torch_called_before_export_ptq(
+        self, service: QuantizationService, ptq_params: QuantizationParams
+    ) -> None:
+        from app.models.quantization import ParityReport
+
+        call_order: list[str] = []
+        mock_parity = ParityReport(
+            parity_passed=True, max_abs_error=0.01, threshold=0.05, frames_tested=4
+        )
+
+        with (
+            patch.object(service, "_resolve_checkpoint", return_value="/local/best.pt"),
+            patch.object(service, "_find_data_yaml", return_value="/data/data.yaml"),
+            patch.object(service, "_seed_torch", side_effect=lambda *a, **kw: call_order.append("seed_torch")),
+            patch.object(service, "_export_ptq", side_effect=lambda *a, **kw: call_order.append("export_ptq") or "/tmp/m.tflite"),
+            patch.object(service, "_upload_tflite", return_value="s3://b/k"),
+            patch.object(service, "_run_parity_and_log", return_value=mock_parity),
+            patch.object(service, "_log_ptq_run"),
+            patch("app.services.quantization_service.mlflow") as mock_mlflow,
+        ):
+            active_run = MagicMock()
+            active_run.info.run_id = "r"
+            mock_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=active_run)
+            mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
+            service._run_ptq(ptq_params)
+
+        assert call_order.index("seed_torch") < call_order.index("export_ptq")

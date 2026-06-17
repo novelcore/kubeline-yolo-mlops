@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import mlflow
+import torch
 from mlflow.tracking import MlflowClient
 from ultralytics import YOLO
 
@@ -74,6 +75,7 @@ class QuantizationService:
                 local_ckpt,
             )
 
+            self._seed_torch(params.calibration_seed)  # FR-M-04
             tflite_path = self._export_ptq(local_ckpt, data_yaml, params)
             s3_uri = self._upload_tflite(tflite_path, params)
             parity = self._run_parity_and_log(
@@ -245,6 +247,15 @@ class QuantizationService:
         self._logger.info("Downloading TFLite: %s → %s", s3_uri, local_path)
         self._s3.download_file(bucket, key, local_path)
         return local_path
+
+    def _seed_torch(self, seed: int) -> None:
+        """Seed PyTorch RNG before PTQ calibration export (FR-M-04).
+
+        Ultralytics export(int8=True) calls torch ops internally during
+        calibration; seeding here gives best-effort reproducibility.
+        """
+        torch.manual_seed(seed)
+        self._logger.info("PyTorch RNG seed fixed | seed=%d", seed)
 
     def _run_parity_and_log(
         self,

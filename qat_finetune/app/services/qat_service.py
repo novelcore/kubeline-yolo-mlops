@@ -86,6 +86,7 @@ class QATService:
 
             exported = self._capture_graph(fp32_module, sample)
             prepared = self._prepare_qat(exported)
+            self._seed_rng(params.calibration_seed, device)  # FR-M-04
             self._finetune(prepared, fp32_module, params, device)
             quantized = self._convert(prepared)
             tflite_path = self._export_tflite(quantized, sample, params.output_dir)
@@ -406,6 +407,23 @@ class QATService:
     # ------------------------------------------------------------------
     # Utilities
     # ------------------------------------------------------------------
+
+    def _seed_rng(self, seed: int, device: str) -> None:
+        """Fix all RNG seeds for reproducibility (FR-M-04).
+
+        Called immediately before the QAT fine-tune loop so that weight
+        updates and fake-quantize scale updates are deterministic.
+        warn_only=True: some CUDA ops have no deterministic implementation;
+        strict mode would abort the pipeline on those ops.
+        """
+        random.seed(seed)
+        torch.manual_seed(seed)
+        if "cuda" in device:
+            torch.cuda.manual_seed_all(seed)
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        self._logger.info(
+            "RNG seeds fixed | seed=%d device=%s deterministic=warn_only", seed, device
+        )
 
     @staticmethod
     def _resolve_device(device: Optional[str]) -> str:
