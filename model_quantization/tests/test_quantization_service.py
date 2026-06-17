@@ -340,14 +340,18 @@ class TestRunPTQOrchestration:
         params: QuantizationParams,
         run_id: str = "quant-run-001",
     ) -> QuantizationResult:
+        from app.models.quantization import ParityReport
+
         tflite_path = os.path.join(params.output_dir, "model_int8.tflite")
         s3_uri = f"s3://{OUTPUT_BUCKET}/{OUTPUT_PREFIX}/model_int8.tflite"
+        mock_parity = ParityReport(parity_passed=True, max_abs_error=0.01, threshold=0.05, frames_tested=4)
 
         with (
             patch.object(service, "_resolve_checkpoint", return_value="/local/best.pt"),
             patch.object(service, "_find_data_yaml", return_value="/data/data.yaml"),
             patch.object(service, "_export_ptq", return_value=tflite_path),
             patch.object(service, "_upload_tflite", return_value=s3_uri),
+            patch.object(service, "_run_parity_and_log", return_value=mock_parity),
             patch.object(service, "_log_ptq_run"),
             patch("app.services.quantization_service.mlflow") as mock_mlflow,
         ):
@@ -384,11 +388,16 @@ class TestRunPTQOrchestration:
     def test_mlflow_start_run_tags_source_run_id(
         self, service: QuantizationService, ptq_params: QuantizationParams
     ) -> None:
+        from app.models.quantization import ParityReport
+
+        mock_parity = ParityReport(parity_passed=True, max_abs_error=0.01, threshold=0.05, frames_tested=4)
+
         with (
             patch.object(service, "_resolve_checkpoint", return_value="/local/best.pt"),
             patch.object(service, "_find_data_yaml", return_value="/data/data.yaml"),
             patch.object(service, "_export_ptq", return_value="/tmp/m.tflite"),
             patch.object(service, "_upload_tflite", return_value="s3://b/k"),
+            patch.object(service, "_run_parity_and_log", return_value=mock_parity),
             patch.object(service, "_log_ptq_run"),
             patch("app.services.quantization_service.mlflow") as mock_mlflow,
         ):
@@ -410,7 +419,13 @@ class TestRunQATPassthroughOrchestration:
         params: QuantizationParams,
         run_id: str = "quant-run-002",
     ) -> QuantizationResult:
+        from app.models.quantization import ParityReport
+
+        mock_parity = ParityReport(parity_passed=True, max_abs_error=0.0, threshold=0.05, frames_tested=0)
+
         with (
+            patch.object(service, "_download_tflite", return_value="/tmp/model_int8.tflite"),
+            patch.object(service, "_run_parity_and_log", return_value=mock_parity),
             patch.object(service, "_log_qat_passthrough_run"),
             patch("app.services.quantization_service.mlflow") as mock_mlflow,
         ):
@@ -441,7 +456,13 @@ class TestRunQATPassthroughOrchestration:
     def test_mlflow_tags_include_qat_run_id(
         self, service: QuantizationService, qat_params: QuantizationParams
     ) -> None:
+        from app.models.quantization import ParityReport
+
+        mock_parity = ParityReport(parity_passed=True, max_abs_error=0.0, threshold=0.05, frames_tested=0)
+
         with (
+            patch.object(service, "_download_tflite", return_value="/tmp/model_int8.tflite"),
+            patch.object(service, "_run_parity_and_log", return_value=mock_parity),
             patch.object(service, "_log_qat_passthrough_run"),
             patch("app.services.quantization_service.mlflow") as mock_mlflow,
         ):
@@ -459,7 +480,13 @@ class TestRunQATPassthroughOrchestration:
         self, service: QuantizationService, s3: MagicMock, qat_params: QuantizationParams
     ) -> None:
         """QAT TFLite is already on S3 from qat-finetune — no re-upload."""
+        from app.models.quantization import ParityReport
+
+        mock_parity = ParityReport(parity_passed=True, max_abs_error=0.0, threshold=0.05, frames_tested=0)
+
         with (
+            patch.object(service, "_download_tflite", return_value="/tmp/model_int8.tflite"),
+            patch.object(service, "_run_parity_and_log", return_value=mock_parity),
             patch.object(service, "_log_qat_passthrough_run"),
             patch("app.services.quantization_service.mlflow") as mock_mlflow,
         ):

@@ -58,6 +58,15 @@ class QuantizationParams(BaseModel):
         return self
 
 
+class ParityReport(BaseModel):
+    """Result of the FP32 vs INT8 parity check (FR-M-03)."""
+
+    parity_passed: bool
+    max_abs_error: float
+    threshold: float
+    frames_tested: int
+
+
 class QuantizationResult(BaseModel):
     """Result of a model-quantization run."""
 
@@ -67,9 +76,9 @@ class QuantizationResult(BaseModel):
     tflite_s3_uri: str
     parity_passed: bool = Field(
         default=True,
-        description="Parity check result. Placeholder True until FR-M-03 is implemented.",
+        description="Parity check result.",
     )
     parity_max_abs_error: float = Field(
         default=0.0,
-        description="Observed max-abs-error. Placeholder 0.0 until FR-M-03 is implemented.",
+        description="Observed max-abs-error from parity check.",
     )

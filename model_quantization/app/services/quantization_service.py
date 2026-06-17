@@ -21,7 +21,8 @@ import mlflow
 from mlflow.tracking import MlflowClient
 from ultralytics import YOLO
 
-from app.models.quantization import QuantizationParams, QuantizationResult
+from app.models.quantization import ParityReport, QuantizationParams, QuantizationResult
+from app.services.parity_test import ParityTestService
 
 
 class QuantizationError(Exception):
@@ -35,6 +36,7 @@ class QuantizationService:
         self._s3 = s3_client
         self._mlflow_uri = mlflow_tracking_uri
         self._logger = logging.getLogger(__name__)
+        self._parity = ParityTestService()
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -74,6 +76,12 @@ class QuantizationService:
 
             tflite_path = self._export_ptq(local_ckpt, data_yaml, params)
             s3_uri = self._upload_tflite(tflite_path, params)
+            parity = self._run_parity_and_log(
+                run_id=run_id,
+                tflite_path=tflite_path,
+                fp32_checkpoint_path=local_ckpt,
+                params=params,
+            )
             self._log_ptq_run(run_id, params, s3_uri)
 
         self._logger.info("PTQ complete | run_id=%s tflite=%s", run_id, s3_uri)
@@ -83,8 +91,8 @@ class QuantizationService:
             source_run_id=params.source_mlflow_run_id,
             mode="ptq",
             tflite_s3_uri=s3_uri,
-            parity_passed=True,      # placeholder — FR-M-03
-            parity_max_abs_error=0.0,
+            parity_passed=parity.parity_passed,
+            parity_max_abs_error=parity.max_abs_error,
         )
 
     def _export_ptq(
@@ -148,11 +156,13 @@ class QuantizationService:
                 params.tflite_s3_uri,
             )
 
-            # FR-M-03 placeholder — parity test runs here once implemented
-            self._logger.info(
-                "Parity test skipped — FR-M-03 not yet implemented"
+            local_tflite = self._download_tflite(params.tflite_s3_uri, params.output_dir)
+            parity = self._run_parity_and_log(
+                run_id=run_id,
+                tflite_path=local_tflite,
+                fp32_checkpoint_path=params.fp32_checkpoint_path,
+                params=params,
             )
-
             self._log_qat_passthrough_run(run_id, params)
 
         self._logger.info(
@@ -164,8 +174,8 @@ class QuantizationService:
             source_run_id=params.source_mlflow_run_id,
             mode="qat",
             tflite_s3_uri=params.tflite_s3_uri,
-            parity_passed=True,      # placeholder — FR-M-03
-            parity_max_abs_error=0.0,
+            parity_passed=parity.parity_passed,
+            parity_max_abs_error=parity.max_abs_error,
         )
 
     def _log_qat_passthrough_run(
@@ -226,3 +236,57 @@ class QuantizationService:
         )
         self._s3.upload_file(local_path, params.output_bucket, key)
         return f"s3://{params.output_bucket}/{key}"
+
+    def _download_tflite(self, s3_uri: str, output_dir: str) -> str:
+        """Download TFLite from an s3:// URI. Returns local path."""
+        without_scheme = s3_uri[len("s3://"):]
+        bucket, _, key = without_scheme.partition("/")
+        local_path = os.path.join(output_dir, Path(key).name)
+        self._logger.info("Downloading TFLite: %s → %s", s3_uri, local_path)
+        self._s3.download_file(bucket, key, local_path)
+        return local_path
+
+    def _run_parity_and_log(
+        self,
+        run_id: str,
+        tflite_path: str,
+        fp32_checkpoint_path: Optional[str],
+        params: QuantizationParams,
+    ) -> ParityReport:
+        """Run parity test, save report, and log metrics/artifact to MLflow.
+
+        If fp32_checkpoint_path is None (QAT passthrough without a checkpoint),
+        parity is skipped and a passing report with zero error is returned.
+        """
+        if fp32_checkpoint_path is None:
+            self._logger.info(
+                "Parity test skipped — no FP32 checkpoint provided (QAT without checkpoint)"
+            )
+            return ParityReport(
+                parity_passed=True,
+                max_abs_error=0.0,
+                threshold=params.parity_max_abs_error,
+                frames_tested=0,
+            )
+
+        parity = self._parity.run(
+            tflite_path=tflite_path,
+            fp32_checkpoint_path=fp32_checkpoint_path,
+            dataset_dir=params.dataset_dir,
+            image_size=params.image_size,
+            parity_frames=params.parity_frames,
+            seed=params.calibration_seed,
+            max_abs_error_threshold=params.parity_max_abs_error,
+        )
+
+        report_path = self._parity.save_report(parity, params.output_dir)
+
+        client = MlflowClient()
+        try:
+            client.log_metric(run_id, "parity_max_abs_error", parity.max_abs_error)
+            client.log_metric(run_id, "parity_passed", float(parity.parity_passed))
+            client.log_artifact(run_id, report_path)
+        except Exception as exc:
+            self._logger.warning("Failed to log parity metrics to MLflow: %s", exc)
+
+        return parity
