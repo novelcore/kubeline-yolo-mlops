@@ -31,23 +31,30 @@ COPY app/ ./app/
 RUN poetry config virtualenvs.create false \
     && poetry install --only=main --no-interaction --no-ansi
 
-# Install pinned QAT stack via pip (CUDA cu121 wheel index).
-# These are not in Poetry because torch CUDA wheels require a custom index.
-# Versions must match pyproject.toml [tool.poetry.dependencies] pins exactly.
-RUN pip install --no-cache-dir \
-    torch==2.11.0 torchvision==0.26.0 \
-    --index-url https://download.pytorch.org/whl/cu121
+# Install pinned QAT stack via pip (CON-01 — exact versions, no ranges).
+# Versions are locked in requirements-cuda.txt and requirements-qat.txt.
+# Bump only after re-running the spike suite (see docs/qat-finetune-version-policy.md).
+COPY requirements-cuda.txt requirements-qat.txt ./
+RUN pip install --no-cache-dir -r requirements-cuda.txt
+RUN pip install --no-cache-dir -r requirements-qat.txt
 
-RUN pip install --no-cache-dir \
-    torchao==0.17.0 \
-    litert-torch==0.9.1 \
-    ultralytics==8.4.19
+# Build-time import verification (CPU — no GPU required).
+# Catches broken .so links, missing symbols, and version conflicts at build time.
+RUN python -c "\
+import torch; \
+import torchvision; \
+import torchao; \
+import litert_torch; \
+from ultralytics import YOLO; \
+print('torch', torch.__version__); \
+print('torchao', torchao.__version__); \
+print('litert_torch', getattr(litert_torch, '__version__', 'ok')); \
+print('import verification passed')"
 
-# CUDA smoke-test (FR-M-09): verify torch + torchao + litert_torch import
-# and CUDA is visible at container build time (requires --gpus all during build).
-# Uncomment in final production image validation:
-# COPY tools/qat_gpu_smoketest.py /tmp/
-# RUN python /tmp/qat_gpu_smoketest.py
+# GPU smoke-test (FR-M-09): run once inside the production image before final lock.
+# Requires --gpus all; NOT run automatically during docker build.
+# Run manually: docker run --gpus all io-qat-finetune python tools/qat_gpu_smoketest.py
+COPY tools/ ./tools/
 
 # Usage:
 #   docker run --gpus all io-qat-finetune run \
