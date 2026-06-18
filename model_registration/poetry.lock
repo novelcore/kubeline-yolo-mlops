@@ -64,6 +64,22 @@ typing_extensions = {version = ">=4.5", markers = "python_version < \"3.13\""}
 trio = ["trio (>=0.31.0) ; python_version < \"3.10\"", "trio (>=0.32.0) ; python_version >= \"3.10\""]
 
 [[package]]
+name = "authlib"
+version = "1.7.2"
+description = "The ultimate Python library in building OAuth and OpenID Connect servers and clients."
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "authlib-1.7.2-py2.py3-none-any.whl", hash = "sha256:3e1faedc9d87e7d56a164eca3ccb6ace0d61b94abe83e92242f8dc8bba9b4a9f"},
+    {file = "authlib-1.7.2.tar.gz", hash = "sha256:2cea25fefcd4e7173bdf1372c0afc265c8034b23a8cd5dcb6a9164b826c64231"},
+]
+
+[package.dependencies]
+cryptography = "*"
+joserfc = ">=1.6.0"
+
+[[package]]
 name = "black"
 version = "25.12.0"
 description = "The uncompromising code formatter."
@@ -1282,6 +1298,24 @@ files = [
     {file = "joblib-1.5.3-py3-none-any.whl", hash = "sha256:5fc3c5039fc5ca8c0276333a188bbd59d6b7ab37fe6632daa76bc7f9ec18e713"},
     {file = "joblib-1.5.3.tar.gz", hash = "sha256:8561a3269e6801106863fd0d6d84bb737be9e7631e33aaed3fb9ce5953688da3"},
 ]
+
+[[package]]
+name = "joserfc"
+version = "1.7.1"
+description = "The ultimate Python library for JOSE RFCs, including JWS, JWE, JWK, JWA, JWT"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "joserfc-1.7.1-py3-none-any.whl", hash = "sha256:b3e3d655612e2e1ef67b2600f2f420e12e537b020208fab1761fad647319c164"},
+    {file = "joserfc-1.7.1.tar.gz", hash = "sha256:77d0b76514879c68c6f433bc5b7357a4ab72008ff1e33d8379fd11d72bd8ca81"},
+]
+
+[package.dependencies]
+cryptography = ">=45.0.1"
+
+[package.extras]
+drafts = ["pycryptodome"]
 
 [[package]]
 name = "kiwisolver"
@@ -3514,4 +3548,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<=3.14"
-content-hash = "edb28abd95b6b1f1e959f8d2b8e82f0a43ebea23d61c02f257b153bd2e9d9689"
+content-hash = "8a7cc308a141669cbb4f4887df4ee54fb1b200f6ec3aab2db7b247598c4645b0"
