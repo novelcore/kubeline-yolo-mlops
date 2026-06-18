@@ -22,6 +22,9 @@ pynvml = ">=11.5"
 boto3 = ">=1.34"
 torch = ">=2.3"
 pyyaml = ">=6.0"
+# Zitadel machine-identity auth for MLflow (bearer JWT, no basic-auth).
+authlib = "^1.3.0"
+requests = "^2.31.0"
 
 [tool.poetry.group.dev.dependencies]
 black = "^25.1.0"
@@ -34,6 +37,11 @@ types-psutil = ">=5.9"
 
 [tool.poetry.scripts]
 model-training = "app.cli:main"
+
+# MLflow request-auth provider plugin: MLflow loads this entrypoint and selects it
+# when MLFLOW_TRACKING_AUTH=zitadel. Mints/refreshes a Zitadel bearer JWT per request.
+[tool.poetry.plugins."mlflow.request_auth_provider"]
+zitadel = "app.mlflow_zitadel_auth:ZitadelRequestAuthProvider"
 
 [build-system]
 requires = ["poetry-core"]
