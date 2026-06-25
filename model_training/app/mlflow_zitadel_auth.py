@@ -90,9 +90,15 @@ class _ZitadelTokenSource:
         key = self._key()
         assertion = self._build_assertion(key)
         # Request the project audience scope so the access token carries the
-        # group claims the mlflow-oidc-auth plugin maps to RBAC.
+        # group claims the mlflow-oidc-auth plugin maps to RBAC, AND the `email`
+        # scope so the token carries the email claim the plugin uses as the
+        # username. The MLflow server is configured OIDC_SCOPE="openid email
+        # profile"; minting without `email` produced an access token with no
+        # username claim → the plugin rejected it "Invalid token payload" → 401
+        # (observed live on yolo-e2e-smoke, 2026-06-25).
         scope = os.environ.get(
-            "ZITADEL_SCOPE", "openid profile urn:zitadel:iam:org:projects:roles"
+            "ZITADEL_SCOPE",
+            "openid email profile urn:zitadel:iam:org:projects:roles",
         )
         resp = requests.post(
             self._token_endpoint(),
