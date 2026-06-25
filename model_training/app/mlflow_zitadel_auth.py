@@ -89,17 +89,31 @@ class _ZitadelTokenSource:
     def _mint(self) -> None:
         key = self._key()
         assertion = self._build_assertion(key)
-        # Request the project audience scope so the access token carries the
-        # group claims the mlflow-oidc-auth plugin maps to RBAC, AND the `email`
-        # scope so the token carries the email claim the plugin uses as the
-        # username. The MLflow server is configured OIDC_SCOPE="openid email
-        # profile"; minting without `email` produced an access token with no
-        # username claim → the plugin rejected it "Invalid token payload" → 401
-        # (observed live on yolo-e2e-smoke, 2026-06-25).
-        scope = os.environ.get(
-            "ZITADEL_SCOPE",
-            "openid email profile urn:zitadel:iam:org:projects:roles",
+        # Scope construction is what makes the access token ACCEPTABLE to the
+        # mlflow-oidc-auth plugin. Decoding a previously-minted token showed it
+        # carried only [aud, client_id, exp, iat, iss, jti, nbf, sub] with
+        # aud = the machine user's OWN client_id — no email, no groups, and the
+        # wrong audience for the MLflow OIDC app → plugin rejected it
+        # "Invalid token payload" → 401 (yolo-final2, 2026-06-26).
+        #
+        # The fix is the Zitadel project-audience scope
+        #   urn:zitadel:iam:org:project:id:{projectId}:aud
+        # which (a) ADDS the MLflow app's project client to the token aud so the
+        # plugin's audience check passes, and (b) triggers project-role assertion
+        # so the addGroupsClaim Action emits the `groups` claim for RBAC. The
+        # project id is injected by the operator as ZITADEL_MLFLOW_PROJECT_ID
+        # (derived from KubeProject.status.mlStack.mlflowOIDC.projectId). The
+        # `:roles` scope keeps role assertion; `email profile` are harmless for a
+        # machine token (no such claims) but kept for parity with human logins.
+        project_id = (
+            os.environ.get("ZITADEL_MLFLOW_PROJECT_ID")
+            or os.environ.get("ZITADEL_PROJECT_ID")
+            or ""
         )
+        base_scope = "openid email profile urn:zitadel:iam:org:projects:roles"
+        if project_id:
+            base_scope += f" urn:zitadel:iam:org:project:id:{project_id}:aud"
+        scope = os.environ.get("ZITADEL_SCOPE", base_scope)
         resp = requests.post(
             self._token_endpoint(),
             data={
