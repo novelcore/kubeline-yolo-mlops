@@ -1123,6 +1123,33 @@ class TrainingService:
     # train() kwargs
     # ------------------------------------------------------------------
 
+    def _resolve_device(self, device: "str | None") -> "str | int | None":
+        """Resolve the training device, defaulting to GPU when one is present.
+
+        Ultralytics' ``model.train(device=None)`` does NOT auto-select a GPU — it
+        silently falls back to CPU. On a GPU node that means we provision a T4,
+        allocate ``nvidia.com/gpu: 1`` to the pod, then train on the CPU anyway
+        (observed live: trainer logged ``device=cpu`` despite the GPU being bound).
+        So when the caller leaves device unset, pick GPU 0 if CUDA is actually
+        available and fall back to CPU otherwise — an explicit choice, logged.
+        An explicit ``--device`` (including ``"cpu"``) is always honoured.
+        """
+        if device is not None and str(device).strip() != "":
+            return device
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                self._logger.info(
+                    "device unset and CUDA available — selecting GPU 0 "
+                    "(Ultralytics device=None would otherwise train on CPU)"
+                )
+                return "0"
+        except Exception as exc:  # torch import / CUDA probe failure → CPU
+            self._logger.warning("CUDA probe failed (%s); training on CPU", exc)
+        self._logger.info("device unset and no CUDA — training on CPU")
+        return "cpu"
+
     def _build_train_kwargs(
         self,
         params: TrainingParams,
@@ -1139,7 +1166,7 @@ class TrainingService:
         kwargs: dict[str, Any] = {
             "data": data_yaml_path,
             "epochs": params.epochs,
-            "device": params.device,
+            "device": self._resolve_device(params.device),
             "batch": params.batch_size,
             "imgsz": params.image_size,
             "lr0": params.learning_rate,
