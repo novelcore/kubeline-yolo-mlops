@@ -16,12 +16,20 @@ RUN pip install --no-cache-dir poetry
 # Copy poetry files and README
 COPY pyproject.toml poetry.lock* README.md ./
 
-# Copy source code
+# Configure poetry: no virtualenv inside container
+RUN poetry config virtualenvs.create false
+
+# Install ONLY third-party dependencies first (no app code yet) so this
+# expensive layer — torch + the full CUDA stack (~3GB) — is cached on
+# poetry.lock and is NOT re-downloaded when only app/ source changes.
+# --no-root skips installing the local package itself (needs app/).
+RUN poetry install --only=main --no-root --no-interaction --no-ansi
+
+# Copy source code (cheap layer — changes often, installs fast below)
 COPY app/ ./app/
 
-# Configure poetry: no virtualenv inside container, install main deps only
-RUN poetry config virtualenvs.create false \
-    && poetry install --only=main --no-interaction --no-ansi
+# Install the local package itself (fast — heavy deps already present above)
+RUN poetry install --only=main --no-interaction --no-ansi
 
 # GPU runtime: this image is python:3.12-slim (no CUDA base), so it does NOT put
 # the host NVIDIA driver libs on the library path. GKE mounts the driver into the

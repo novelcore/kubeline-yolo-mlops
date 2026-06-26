@@ -15,14 +15,19 @@ RUN pip install poetry
 # Copy poetry files and README
 COPY pyproject.toml poetry.lock* README.md ./
 
-# Copy source code
-COPY app/ ./app/
-
 # Configure poetry
 RUN poetry config virtualenvs.create false
 
-# Install dependencies and package
-RUN poetry install --only=main
+# Install ONLY third-party dependencies first (no app code yet) so this
+# expensive layer is cached on poetry.lock and is NOT invalidated when only
+# app/ source changes. --no-root skips installing the local package itself.
+RUN poetry install --only=main --no-root --no-interaction --no-ansi
+
+# Copy source code (cheap layer — changes often, installs fast below)
+COPY app/ ./app/
+
+# Install the local package itself (fast — deps already present above)
+RUN poetry install --only=main --no-interaction --no-ansi
 
 # Example usage: docker run io-config-validation run --config-path /data/pipeline_config.yaml
 ENTRYPOINT ["config-validation"]
