@@ -20,6 +20,7 @@ mlflow = ">=3.0,<4"
 psutil = ">=5.9"
 pynvml = ">=11.5"
 boto3 = ">=1.34"
+google-cloud-storage = ">=2.10"  # MLflow GCS artifact-store upload (gs:// artifactRoot)
 torch = ">=2.3"
 pyyaml = ">=6.0"
 # Zitadel machine-identity auth for MLflow (bearer JWT, no basic-auth).
