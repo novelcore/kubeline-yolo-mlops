@@ -23,6 +23,19 @@ COPY app/ ./app/
 RUN poetry config virtualenvs.create false \
     && poetry install --only=main --no-interaction --no-ansi
 
+# GPU runtime: this image is python:3.12-slim (no CUDA base), so it does NOT put
+# the host NVIDIA driver libs on the library path. GKE mounts the driver into the
+# container at /usr/local/nvidia/lib64 (libcuda.so etc.), but without it on
+# LD_LIBRARY_PATH torch (cu128 build) cannot find libcuda.so → torch.cuda.is_available()
+# returns False and training silently falls back to CPU even on a T4 node (observed
+# yolo-green3, 2026-06-26 — nvidia-smi worked in a cuda-base sibling pod but this
+# slim image trained on cpu). Add the driver lib path + standard NVIDIA container env
+# so the GPU is usable.
+ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/nvidia/lib:${LD_LIBRARY_PATH}
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV PATH=/usr/local/nvidia/bin:${PATH}
+
 # Usage:
 #   docker run io-model-training run \
 #     --model-variant yolov8n-pose.pt \
