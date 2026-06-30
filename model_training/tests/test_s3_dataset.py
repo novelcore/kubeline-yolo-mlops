@@ -86,6 +86,14 @@ def _make_dataset(
                 self._local_labels_root = Path(str(kw["local_labels_root"]))
                 self._split = kw["split"]
                 self.imgsz = 64  # small size for tests
+                # RAM-cache attrs that Ultralytics' __init__ would normally set;
+                # load_image() reads these (single-image tests use index 0).
+                self.ims = [None]
+                self.im_hw0 = [None]
+                self.im_hw = [None]
+                self.augment = False
+                # Disk cache off by default; cache-specific tests set their own.
+                self._disk_cache = kw.get("disk_cache")
 
         return _TestableDataset(
             s3_client=s3_client,
@@ -189,3 +197,71 @@ class TestLoadImage:
 
         with pytest.raises(OSError, match="cv2.imdecode returned None"):
             dataset.load_image(0)
+
+
+class TestCacheEvictionResilience:
+    """Issue #175 A1: an evicted/missing cached file must not crash load_image."""
+
+    def test_evicted_cache_file_refetches_instead_of_crashing(
+        self,
+        mock_s3_client: MagicMock,
+        tiny_jpeg_bytes: bytes,
+        tmp_path: Path,
+    ) -> None:
+        from app.services.lru_disk_cache import LruDiskCache
+
+        body_mock = MagicMock()
+        body_mock.read.return_value = tiny_jpeg_bytes
+        mock_s3_client.get_object.return_value = {"Body": body_mock}
+
+        cache = LruDiskCache(tmp_path / "cache", max_bytes=10 * 1024**2)
+        dataset = _make_dataset(mock_s3_client, str(tmp_path))
+        dataset._disk_cache = cache
+        dataset.im_files = ["s3://test-bucket/datasets/v1/images/train/img001.jpg"]
+
+        # First load: cache miss -> S3 fetch -> cached on disk.
+        dataset.load_image(0)
+        assert mock_s3_client.get_object.call_count == 1
+
+        # Simulate eviction by another worker: the index still points at a file
+        # that no longer exists on disk.
+        dataset.ims = [None]  # clear RAM cache to force the disk path
+        key = dataset.im_files[0][len("s3://test-bucket/") :]
+        cached = cache.get(key)
+        assert cached is not None and cached.exists()
+        cached.unlink()
+
+        # Old code raised an unhandled FileNotFoundError here; the fix re-fetches.
+        img, _, _ = dataset.load_image(0)
+        assert img is not None
+        assert mock_s3_client.get_object.call_count == 2
+
+
+class TestForkSafeClient:
+    """Issue #175 A2: a forked worker (new PID) must build its own boto3 client."""
+
+    def test_get_s3_rebuilds_client_on_pid_change(
+        self, mock_s3_client: MagicMock, tmp_path: Path
+    ) -> None:
+        built: list[MagicMock] = []
+
+        def factory() -> MagicMock:
+            c = MagicMock(name=f"client{len(built)}")
+            built.append(c)
+            return c
+
+        dataset = _make_dataset(mock_s3_client, str(tmp_path))
+        dataset._s3_client_factory = factory
+        dataset._s3_client_cached = None
+        dataset._s3_client_pid = None
+
+        first = dataset._get_s3()
+        again = dataset._get_s3()
+        assert first is again, "same process must reuse one client"
+        assert len(built) == 1
+
+        # Simulate the fork: the cached client now belongs to a different PID.
+        dataset._s3_client_pid = -1
+        after_fork = dataset._get_s3()
+        assert after_fork is not first, "forked worker must build its own client"
+        assert len(built) == 2

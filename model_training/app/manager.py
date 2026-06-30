@@ -48,6 +48,9 @@ class Manager:
         self._service = TrainingService(
             s3_client=self._s3_client,
             mlflow_tracking_uri=self._config.mlflow_tracking_uri,
+            # Per-process client factory for forked DataLoader workers
+            # (botocore clients are not fork-safe).
+            s3_client_factory=self._build_s3_client,
         )
 
     # ------------------------------------------------------------------
