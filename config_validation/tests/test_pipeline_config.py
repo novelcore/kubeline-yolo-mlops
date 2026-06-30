@@ -3,7 +3,6 @@ from pydantic import ValidationError
 
 from app.models.pipeline_config import PipelineConfig, RegistrationConfig
 
-
 VALID_CONFIG: dict = {
     "experiment": {
         "name": "object-pose-v1-yolov8n",
@@ -43,6 +42,7 @@ VALID_CONFIG: dict = {
 # Happy paths
 # ---------------------------------------------------------------------------
 
+
 def test_valid_config_parses_successfully():
     config = PipelineConfig(**VALID_CONFIG)
     assert config.experiment.name == "object-pose-v1-yolov8n"
@@ -61,7 +61,10 @@ def test_scheduler_sub_object_is_now_rejected():
     # A legacy training.scheduler sub-object must raise ValidationError instead of
     # being silently dropped as it was in the previous schema.
     data = dict(VALID_CONFIG)
-    data["training"] = {**VALID_CONFIG["training"], "scheduler": {"cos_lr": True, "lrf": 0.01}}
+    data["training"] = {
+        **VALID_CONFIG["training"],
+        "scheduler": {"cos_lr": True, "lrf": 0.01},
+    }
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         PipelineConfig(**data)
 
@@ -93,6 +96,25 @@ def test_sample_size_positive_integer_is_valid():
     data["dataset"] = {**VALID_CONFIG["dataset"], "sample_size": 1000}
     config = PipelineConfig(**data)
     assert config.dataset.sample_size == 1000
+
+
+def test_chunk_size_defaults_to_500():
+    config = PipelineConfig(**dict(VALID_CONFIG))
+    assert config.dataset.chunk_size == 500
+
+
+def test_chunk_size_custom_value_is_valid():
+    data = dict(VALID_CONFIG)
+    data["dataset"] = {**VALID_CONFIG["dataset"], "chunk_size": 1000}
+    config = PipelineConfig(**data)
+    assert config.dataset.chunk_size == 1000
+
+
+def test_chunk_size_zero_fails():
+    data = dict(VALID_CONFIG)
+    data["dataset"] = {**VALID_CONFIG["dataset"], "chunk_size": 0}
+    with pytest.raises(ValidationError):
+        PipelineConfig(**data)
 
 
 def test_resume_from_null_is_valid():
@@ -131,6 +153,7 @@ def test_all_yolo_pose_variants_are_valid():
 # Schema failures — experiment
 # ---------------------------------------------------------------------------
 
+
 def test_missing_experiment_name_fails():
     data = dict(VALID_CONFIG)
     data["experiment"] = {"description": "no name"}
@@ -156,6 +179,7 @@ def test_invalid_experiment_name_characters_fails():
 # Schema failures — model
 # ---------------------------------------------------------------------------
 
+
 def test_invalid_model_variant_not_pose_fails():
     data = dict(VALID_CONFIG)
     data["model"] = {**VALID_CONFIG["model"], "variant": "yolov8n.pt"}
@@ -173,6 +197,7 @@ def test_invalid_model_variant_unknown_version_fails():
 # ---------------------------------------------------------------------------
 # Schema failures — training
 # ---------------------------------------------------------------------------
+
 
 def test_epochs_zero_fails():
     data = dict(VALID_CONFIG)
@@ -219,6 +244,7 @@ def test_learning_rate_zero_fails():
 # Schema failures — checkpointing
 # ---------------------------------------------------------------------------
 
+
 def test_checkpointing_interval_zero_fails():
     data = dict(VALID_CONFIG)
     data["checkpointing"] = {**VALID_CONFIG["checkpointing"], "interval_epochs": 0}
@@ -228,14 +254,20 @@ def test_checkpointing_interval_zero_fails():
 
 def test_invalid_storage_path_no_scheme_fails():
     data = dict(VALID_CONFIG)
-    data["checkpointing"] = {**VALID_CONFIG["checkpointing"], "storage_path": "/local/path"}
+    data["checkpointing"] = {
+        **VALID_CONFIG["checkpointing"],
+        "storage_path": "/local/path",
+    }
     with pytest.raises(ValidationError, match="s3://"):
         PipelineConfig(**data)
 
 
 def test_invalid_resume_from_local_path_fails():
     data = dict(VALID_CONFIG)
-    data["checkpointing"] = {**VALID_CONFIG["checkpointing"], "resume_from": "local/path.pt"}
+    data["checkpointing"] = {
+        **VALID_CONFIG["checkpointing"],
+        "resume_from": "local/path.pt",
+    }
     with pytest.raises(ValidationError, match="resume_from"):
         PipelineConfig(**data)
 
@@ -243,6 +275,7 @@ def test_invalid_resume_from_local_path_fails():
 # ---------------------------------------------------------------------------
 # Schema failures — early stopping
 # ---------------------------------------------------------------------------
+
 
 def test_early_stopping_patience_zero_fails():
     data = dict(VALID_CONFIG)
@@ -254,6 +287,7 @@ def test_early_stopping_patience_zero_fails():
 # ---------------------------------------------------------------------------
 # Schema failures — dataset
 # ---------------------------------------------------------------------------
+
 
 def test_dataset_sample_size_zero_fails():
     data = dict(VALID_CONFIG)
@@ -271,7 +305,9 @@ def test_invalid_dataset_source_fails():
 
 def test_missing_dataset_version_fails():
     data = dict(VALID_CONFIG)
-    data["dataset"] = {k: v for k, v in VALID_CONFIG["dataset"].items() if k != "version"}
+    data["dataset"] = {
+        k: v for k, v in VALID_CONFIG["dataset"].items() if k != "version"
+    }
     with pytest.raises(ValidationError):
         PipelineConfig(**data)
 
@@ -279,6 +315,7 @@ def test_missing_dataset_version_fails():
 # ---------------------------------------------------------------------------
 # RegistrationConfig — model-level validation (F-01, F-02, F-03)
 # ---------------------------------------------------------------------------
+
 
 class TestRegistrationConfig:
     """Validation rules for RegistrationConfig and its integration with PipelineConfig."""
@@ -323,10 +360,13 @@ class TestRegistrationConfig:
         assert config.registration.promote_to is None
 
     def test_pipeline_config_with_full_registration_section(self) -> None:
-        data = {**VALID_CONFIG, "registration": {
-            "registered_model_name": "my-yolo-model",
-            "promote_to": "champion",
-        }}
+        data = {
+            **VALID_CONFIG,
+            "registration": {
+                "registered_model_name": "my-yolo-model",
+                "promote_to": "champion",
+            },
+        }
         config = PipelineConfig(**data)
         assert config.registration.registered_model_name == "my-yolo-model"
         assert config.registration.promote_to == "champion"

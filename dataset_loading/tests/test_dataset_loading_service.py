@@ -1365,6 +1365,29 @@ class TestDatasetLineage:
         h_shuffled = service._compute_dataset_hash(list(reversed(keys)))
         assert h_orig == h_shuffled
 
+    def test_resolve_identity_prefers_lakefs_commit(self) -> None:
+        """The lakeFS commit is the identity when available — no key-list hashing."""
+        service = DatasetLoadingService(s3_client=MagicMock())
+        keys = ["a/img1.jpg", "a/img2.jpg"]
+        assert (
+            service._resolve_dataset_identity(keys, "commit-abc123") == "commit-abc123"
+        )
+
+    def test_resolve_identity_falls_back_to_hash_for_plain_s3(self) -> None:
+        """Without a commit (plain S3) the identity is the sorted key-list SHA-256."""
+        service = DatasetLoadingService(s3_client=MagicMock())
+        keys = ["a/img1.jpg", "a/img2.jpg"]
+        identity = service._resolve_dataset_identity(keys, None)
+        assert identity == service._compute_dataset_hash(keys)
+        assert len(identity) == 64
+
+    def test_resolve_identity_ignores_keys_when_commit_present(self) -> None:
+        """A present commit wins regardless of the key list (different keys, same id)."""
+        service = DatasetLoadingService(s3_client=MagicMock())
+        assert service._resolve_dataset_identity(
+            ["x.jpg"], "c1"
+        ) == service._resolve_dataset_identity(["y.jpg", "z.jpg"], "c1")
+
     def test_fetch_lakefs_commit_success(self) -> None:
         """_fetch_lakefs_commit returns the commit id on a successful API response."""
         service = DatasetLoadingService(
@@ -1379,13 +1402,18 @@ class TestDatasetLineage:
         }
         fake_response.raise_for_status.return_value = None
 
-        with patch("app.services.dataset_loading.requests.get", return_value=fake_response) as mock_get:
+        with patch(
+            "app.services.dataset_loading.requests.get", return_value=fake_response
+        ) as mock_get:
             commit = service._fetch_lakefs_commit("my-repo", "main")
 
         assert commit == "abc123def456"
         # Assert the correct lakeFS API endpoint is used: branch is in the path, not a query param.
         call_url = mock_get.call_args[0][0]
-        assert call_url == "https://lakefs.example.com/api/v1/repositories/my-repo/refs/main/commits"
+        assert (
+            call_url
+            == "https://lakefs.example.com/api/v1/repositories/my-repo/refs/main/commits"
+        )
         call_params = mock_get.call_args[1].get("params", {})
         assert "branch" not in call_params
 
@@ -1424,7 +1452,9 @@ class TestDatasetLineage:
         fake_response.json.return_value = {"results": []}
         fake_response.raise_for_status.return_value = None
 
-        with patch("app.services.dataset_loading.requests.get", return_value=fake_response):
+        with patch(
+            "app.services.dataset_loading.requests.get", return_value=fake_response
+        ):
             commit = service._fetch_lakefs_commit("my-repo", "main")
 
         assert commit is None
@@ -1450,7 +1480,9 @@ class TestDatasetLineage:
         self, valid_source: Path, tmp_path: Path
     ) -> None:
         """dataset_hash appears in both stats and manifest in manifest-only mode."""
-        from tests.test_dataset_loading_service import _make_mock_s3_with_listing  # noqa: PLC0415
+        from tests.test_dataset_loading_service import (  # noqa: PLC0415
+            _make_mock_s3_with_listing,
+        )
 
         src = tmp_path / "source"
         _build_yolo_tree(src)

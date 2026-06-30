@@ -169,10 +169,16 @@ class DatasetLoadingService:
             )
 
         if params.manifest_only:
-            return self._run_manifest_only(params, bucket, prefix, output_path, lakefs_commit)
+            return self._run_manifest_only(
+                params, bucket, prefix, output_path, lakefs_commit
+            )
         if params.labels_only:
-            return self._run_labels_only(params, bucket, prefix, output_path, lakefs_commit)
-        return self._run_full_download(params, bucket, prefix, output_path, lakefs_commit)
+            return self._run_labels_only(
+                params, bucket, prefix, output_path, lakefs_commit
+            )
+        return self._run_full_download(
+            params, bucket, prefix, output_path, lakefs_commit
+        )
 
     # ------------------------------------------------------------------
     # Full download mode
@@ -225,7 +231,7 @@ class DatasetLoadingService:
             sampled = True
 
         # Compute dataset hash from the final (possibly sampled) image key list
-        dataset_hash = self._compute_dataset_hash(image_keys)
+        dataset_hash = self._resolve_dataset_identity(image_keys, lakefs_commit)
 
         # 6. Download all remaining files (images + labels) with inline label validation
         remaining_keys = [
@@ -325,7 +331,7 @@ class DatasetLoadingService:
             sampled = True
 
         # Compute dataset hash from the final (possibly sampled) image key list
-        dataset_hash = self._compute_dataset_hash(image_keys)
+        dataset_hash = self._resolve_dataset_identity(image_keys, lakefs_commit)
 
         # 6. Download labels + other non-image files (skip data.yaml — already done)
         non_image_keys = [
@@ -346,7 +352,9 @@ class DatasetLoadingService:
 
         # 8. Build and write manifest
         manifest = self._build_manifest(
-            bucket, prefix, image_keys,
+            bucket,
+            prefix,
+            image_keys,
             lakefs_commit=lakefs_commit,
             dataset_hash=dataset_hash,
         )
@@ -426,7 +434,7 @@ class DatasetLoadingService:
             sampled = True
 
         # Compute dataset hash from the final (possibly sampled) image key list
-        dataset_hash = self._compute_dataset_hash(image_keys)
+        dataset_hash = self._resolve_dataset_identity(image_keys, lakefs_commit)
 
         # 5. Build manifest with both image splits and label_keys
         splits: dict[str, list[str]] = {}
@@ -1175,10 +1183,34 @@ class DatasetLoadingService:
             )
             return None
 
+    def _resolve_dataset_identity(
+        self, image_keys: list[str], lakefs_commit: Optional[str]
+    ) -> str:
+        """Return the dataset identity recorded for resume validation (D-04).
+
+        Prefer the lakeFS commit when available: it is an immutable,
+        content-addressed identity for the whole dataset version that the lakeFS
+        API already hands us, so resume validation (F-02, on a cheap CPU pod)
+        can prove "same data" with a single string compare instead of
+        re-listing and hashing the entire key set — which does not scale to
+        multi-TB datasets with millions of objects. Fall back to the sorted
+        key-list SHA-256 only for plain S3, where no commit exists.
+
+        The value is opaque to consumers; they only require equality.
+        """
+        if lakefs_commit:
+            self._logger.info(
+                "Dataset identity = lakeFS commit %s (skipping key-list hash)",
+                lakefs_commit,
+            )
+            return lakefs_commit
+        return self._compute_dataset_hash(image_keys)
+
     def _compute_dataset_hash(self, image_keys: list[str]) -> str:
         """Return a SHA-256 hex digest of the sorted S3 image key list.
 
-        Sorting provides determinism regardless of S3 listing order.
+        Sorting provides determinism regardless of S3 listing order. Used as the
+        dataset identity only for plain S3 (no lakeFS commit available).
         """
         key_list = "\n".join(sorted(image_keys))
         return hashlib.sha256(key_list.encode()).hexdigest()
