@@ -1,0 +1,13 @@
+# CON-01: PyTorch CUDA wheel lockfile — pinned exact versions.
+# Install via: pip install --no-cache-dir -r requirements-cuda.txt
+#
+# DO NOT EDIT without re-running the validation spike suite on Linux
+# and updating requirements-qat.txt accordingly.
+# See docs/qat-finetune-version-policy.md for the full procedure.
+# NOTE: torch 2.11.0 / torchvision 0.26.0 are NOT published on the cu121 index
+# (cu121 tops out at torch 2.5.1) — they exist on cu126+. Index corrected to cu126;
+# cu126 is already proven on the T4 node (model-training runs the PyPI-default cu126
+# torch wheel there).
+--index-url https://download.pytorch.org/whl/cu126
+torch==2.11.0
+torchvision==0.26.0

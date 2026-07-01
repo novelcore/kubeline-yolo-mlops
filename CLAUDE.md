@@ -4,9 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-An Argo Workflows-based MLOps pipeline for the KAOS YOLO project. The pipeline consists of four sequential steps, each packaged as an independent containerized Python application following the **Kubestep Python Template** pattern.
+An Argo Workflows-based MLOps pipeline for the KAOS YOLO project. The pipeline consists of six sequential steps, each packaged as an independent containerized Python application following the **Kubestep Python Template** pattern.
 
-Steps run in order: `config_validation` → `dataset_loading` → `model_training` → `model_registration`.
+Steps run in order: `config_validation` → `dataset_loading` → `model_training` → `qat_finetune` → `model_quantization` → `model_registration`.
+
+Steps 4–5 are the quantization steps (PRD-174), driven by `quantization-mode` (`none`/`ptq`/`qat`): `qat_finetune` (GPU, QAT → INT8 TFLite) and `model_quantization` (PTQ export or QAT pass-through + FP32-vs-INT8 parity).
 
 ## Commands
 

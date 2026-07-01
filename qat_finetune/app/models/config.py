@@ -1,0 +1,73 @@
+"""Application configuration for the QAT fine-tune step.
+
+All values are read from environment variables (or a .env file).
+See env.example for the full list of supported variables.
+"""
+
+from typing import Optional
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Config(BaseSettings):
+    """Step-level runtime settings loaded from environment variables."""
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+    app_name: str = Field(default="io-qat-finetune", description="Application name.")
+    log_level: str = Field(
+        default="INFO", description="Logging level (DEBUG/INFO/WARNING/ERROR)."
+    )
+
+    # -------------------------------------------------------------------------
+    # MLflow settings
+    # -------------------------------------------------------------------------
+    mlflow_tracking_uri: str = Field(
+        default="http://localhost:5000",
+        description="MLflow tracking server URI.",
+    )
+    mlflow_tracking_username: Optional[str] = Field(
+        default=None,
+        description="MLflow tracking server username.",
+    )
+    mlflow_tracking_password: Optional[str] = Field(
+        default=None,
+        description="MLflow tracking server password.",
+    )
+
+    # -------------------------------------------------------------------------
+    # AWS / S3 connection settings
+    # -------------------------------------------------------------------------
+    aws_default_region: Optional[str] = Field(
+        default=None,
+        description="AWS region. Omit to use the instance role region.",
+    )
+    aws_access_key_id: Optional[str] = Field(
+        default=None,
+        description="AWS access key ID. Omit to use IAM role credentials.",
+    )
+    aws_secret_access_key: Optional[str] = Field(
+        default=None,
+        description="AWS secret access key. Omit to use IAM role credentials.",
+    )
+    s3_endpoint_url: Optional[str] = Field(
+        default=None,
+        description="Custom S3 endpoint URL (e.g. for MinIO). Leave unset for AWS.",
+    )
+
+    # -------------------------------------------------------------------------
+    # LakeFS connection settings (S3-compatible API)
+    # -------------------------------------------------------------------------
+    lakefs_endpoint: Optional[str] = Field(
+        default=None,
+        description="LakeFS server base URL.",
+    )
+    lakefs_access_key: Optional[str] = Field(
+        default=None,
+        description="LakeFS access key ID.",
+    )
+    lakefs_secret_key: Optional[str] = Field(
+        default=None,
+        description="LakeFS secret access key.",
+    )

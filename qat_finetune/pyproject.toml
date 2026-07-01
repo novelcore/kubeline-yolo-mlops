@@ -1,0 +1,68 @@
+[project]
+name = "qat-finetune"
+version = "0.1.0"
+description = "PT2E QAT fine-tune step — INT8 TFLite export for edge deployment."
+authors = [
+    { name = "Example Org", email = "dev@example.org" }
+]
+readme = "README.md"
+
+[tool.poetry]
+packages = [{include = "app"}]
+
+[tool.poetry.dependencies]
+# Python 3.11 required — torch 2.11.0 + torchao 0.17.0 do not support 3.12 (CON-01)
+python = ">=3.11,<3.12"
+pydantic = "^2.11.5"
+typer = "^0.16.0"
+pydantic-settings = "^2.10.1"
+mlflow = ">=3.0,<4"
+boto3 = ">=1.34"
+pyyaml = ">=6.0"
+Pillow = ">=10.0"
+# ── Pinned version matrix ─────────────────────────────────────────────────────
+# DO NOT change these pins without re-running the full spike validation suite on
+# Linux (CPU + CUDA) and updating qat-finetune-version-policy.md.
+# See CON-01 in knowledge/prds/174-yolov8-pose-quantization-pipeline.md.
+# Five spike runs confirmed only torch==2.11.0 + torchao==0.17.0 + per-tensor
+# + fold_quantize=False produces a valid INT8 TFLite.
+torch = {version = "==2.11.0", optional = true}
+torchvision = {version = "==0.26.0", optional = true}
+torchao = {version = "==0.17.0", optional = true}
+litert-torch = {version = "==0.9.1", optional = true}
+ultralytics = {version = "==8.4.19", optional = true}
+
+[tool.poetry.extras]
+# Install the full QAT stack:  poetry install -E qat
+# (CI and the container install these; dev without GPU can omit them)
+qat = ["torch", "torchvision", "torchao", "litert-torch", "ultralytics"]
+
+[tool.poetry.group.dev.dependencies]
+black = "^25.1.0"
+isort = "^6.0.1"
+mypy = "^1.15.0"
+pytest = "^8.4.1"
+pytest-cov = "^6.2.1"
+types-pyyaml = ">=6.0"
+
+[tool.poetry.scripts]
+qat-finetune = "app.cli:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+plugins = ["pydantic.mypy"]
