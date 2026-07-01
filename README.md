@@ -4,12 +4,14 @@ An Argo Workflows-based MLOps pipeline for the KAOS YOLO project, built with the
 
 ## Pipeline Steps
 
-The pipeline consists of four sequential steps, each packaged as an independent containerized application:
+The pipeline consists of six sequential steps, each packaged as an independent containerized application. Steps 4–5 are the quantization steps (PRD-174) and are driven by the `quantization-mode` parameter (`none` / `ptq` / `qat`):
 
 1. **config_validation** — Validates the pipeline configuration (hyperparameters, paths, model settings) before any work begins.
 2. **dataset_loading** — Loads and preprocesses the dataset from the configured source, applies splits, and persists artifacts.
 3. **model_training** — Trains the model using the validated configuration and loaded dataset, tracks metrics, and saves checkpoints.
-4. **model_registration** — Registers the trained model to the model registry with metadata, versioning, and promotion tags.
+4. **qat_finetune** — (GPU) Quantization-Aware Training fine-tune of the FP32 checkpoint (PT2E / torchao) → INT8 TFLite. Runs the QAT path.
+5. **model_quantization** — Post-Training Quantization (Ultralytics INT8 TFLite export) **or** QAT pass-through, plus the FP32-vs-INT8 parity check (FR-M-03).
+6. **model_registration** — Registers the trained model to the model registry with metadata, versioning, and promotion tags.
 
 ## Project Structure
 
@@ -30,7 +32,17 @@ kubeline-yolo-mlops/
 │   ├── tests/
 │   ├── Dockerfile
 │   └── pyproject.toml
-├── model_registration/     # Step 4: Register the model
+├── qat_finetune/           # Step 4: QAT fine-tune → INT8 TFLite (GPU)
+│   ├── app/
+│   ├── tests/
+│   ├── Dockerfile
+│   └── pyproject.toml
+├── model_quantization/     # Step 5: PTQ / QAT pass-through + parity
+│   ├── app/
+│   ├── tests/
+│   ├── Dockerfile
+│   └── pyproject.toml
+├── model_registration/     # Step 6: Register the model
 │   ├── app/
 │   ├── tests/
 │   ├── Dockerfile
