@@ -311,6 +311,9 @@ steps:
           dataset:
             version: "{{workflow.parameters.dataset-version}}"
             source: "{{workflow.parameters.dataset-source}}"
+            lakefs_repo: "{{workflow.parameters.lakefs-repo}}"
+            lakefs_branch: "{{workflow.parameters.lakefs-branch}}"
+            lakefs_endpoint: "{{workflow.parameters.lakefs-endpoint}}"
             path_override: "{{workflow.parameters.dataset-path-override}}"
             sample_size: {{workflow.parameters.dataset-sample-size}}
             seed: {{workflow.parameters.dataset-seed}}
