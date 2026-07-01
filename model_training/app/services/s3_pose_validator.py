@@ -45,6 +45,49 @@ class S3PoseValidator(_PoseValidator):  # type: ignore[misc]
     _cache_dir: str | None = None
     _cache_max_bytes: int = 2 * 1024**3
 
+    def init_metrics(self, model: Any) -> None:
+        """Initialise pose metrics, optionally overriding OKS sigmas from data.yaml.
+
+        OKS (Object Keypoint Similarity) is the keypoint analogue of box IoU: it
+        scores how close predicted keypoints are to ground truth, and pose-mAP is
+        built by thresholding it. Each keypoint has a ``sigma`` (its tolerance —
+        how much positional error is acceptable). Ultralytics' ``PoseValidator``
+        defaults to COCO's 17 hand-tuned sigmas when there are 17 keypoints, else
+        a uniform ``np.ones(nkpt)/nkpt``. For a custom keypoint set (e.g. our 11
+        spacecraft keypoints) a uniform sigma treats every point as equally easy
+        to localise.
+
+        If ``data.yaml`` provides a ``kpt_sigmas`` list (one value per keypoint),
+        we use it so pose-mAP reflects per-keypoint tolerance. When absent or the
+        length does not match the keypoint count, the Ultralytics default is kept
+        (no behaviour change). Note: this affects *measurement only*, not training.
+        """
+        super().init_metrics(model)
+        sigmas = (self.data or {}).get("kpt_sigmas")
+        if not sigmas:
+            return
+        import numpy as np  # noqa: PLC0415
+
+        try:
+            arr = np.array(sigmas, dtype=float)
+        except (TypeError, ValueError):
+            _logger.warning(
+                "data.yaml 'kpt_sigmas' is not numeric — keeping default OKS sigmas"
+            )
+            return
+        if arr.shape == np.shape(self.sigma):
+            self.sigma = arr
+            _logger.info(
+                "OKS sigmas overridden from data.yaml kpt_sigmas (%d values)", arr.size
+            )
+        else:
+            _logger.warning(
+                "data.yaml 'kpt_sigmas' has %d values but the model has %d "
+                "keypoints — keeping default OKS sigmas",
+                arr.size,
+                np.size(self.sigma),
+            )
+
     def build_dataset(self, img_path: str, mode: str = "val", batch: int | None = None) -> Any:
         """Override to return an :class:`S3YoloDataset` for validation.
 

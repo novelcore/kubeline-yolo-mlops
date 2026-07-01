@@ -953,12 +953,18 @@ steps:
   - name: qat-finetune
     path: qat_finetune
     compute: gpu
-    when: "{{workflow.parameters.quantization-mode}} == qat"
+    # render-wft (kubecore-ci-workflows 0.10.6) ignores `when:`/`depends:` — only
+    # `dependencies:` lists are honored. Conditional run (mode==qat) must be a no-op
+    # INSIDE the step (still emit outputs so downstream `from:` selectors resolve) — TODO.
     dependencies:
       - model-training
     env:
       - name: TRAINING_RESULT
         value: "{{inputs.parameters.training-result}}"
+      - name: DATA_YAML
+        value: "{{inputs.parameters.data-yaml}}"
+      - name: MANIFEST_SUMMARY
+        value: "{{inputs.parameters.manifest-summary}}"
       - name: PARAMS_YAML
         value: |
           experiment:
@@ -977,6 +983,10 @@ steps:
       parameters:
         - name: training-result
           from: model-training
+        - name: data-yaml
+          from: dataset-loading
+        - name: manifest-summary
+          from: dataset-loading
     command: ["python", "-c"]
     args:
       - |
@@ -1025,6 +1035,63 @@ steps:
         if not output_bucket:
             print("ERROR: cannot derive output bucket from checkpoint URI and CHECKPOINT_BUCKET is unset.", flush=True)
             sys.exit(1)
+
+        # Reconstruct /work/dataset and download TRAIN frames from S3 — the QAT
+        # calibration/distillation loop reads images/train (no shared FS across pods).
+        os.makedirs("/work/dataset", exist_ok=True)
+        data_yaml_content = os.environ.get("DATA_YAML", "")
+        if data_yaml_content.strip():
+            with open("/work/dataset/data.yaml", "w") as fh:
+                fh.write(data_yaml_content)
+        manifest_summary = os.environ.get("MANIFEST_SUMMARY", "")
+        if manifest_summary.strip():
+            with open("/work/dataset/dataset_manifest.json", "w") as fh:
+                fh.write(manifest_summary)
+        try:
+            import boto3
+            from botocore.config import Config as BotoConfig
+            boto_cfg = BotoConfig(retries={"max_attempts": 3, "mode": "adaptive"})
+            lakefs_endpoint = os.environ.get("LAKEFS_ENDPOINT", "")
+            lakefs_key = os.environ.get("LAKEFS_ACCESS_KEY", "")
+            lakefs_secret = os.environ.get("LAKEFS_SECRET_KEY", "")
+            if lakefs_endpoint and lakefs_key and lakefs_secret:
+                s3 = boto3.client("s3", endpoint_url=lakefs_endpoint,
+                                  aws_access_key_id=lakefs_key,
+                                  aws_secret_access_key=lakefs_secret,
+                                  region_name=None, config=boto_cfg)
+            else:
+                s3 = boto3.client("s3",
+                                  endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
+                                  aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+                                  aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+                                  region_name=os.environ.get("AWS_DEFAULT_REGION"),
+                                  config=boto_cfg)
+            ms = json.loads(manifest_summary) if manifest_summary.strip() else {}
+            ds_bucket = ms.get("bucket", "")
+            ds_prefix = ms.get("prefix", "").rstrip("/")
+            if ds_bucket and ds_prefix:
+                max_download = int(quant.get("calibration_frames", 512))
+                images_dir = "/work/dataset/images/train"
+                os.makedirs(images_dir, exist_ok=True)
+                paginator = s3.get_paginator("list_objects_v2")
+                image_exts = {".jpg", ".jpeg", ".png", ".bmp"}
+                downloaded = 0
+                for page in paginator.paginate(Bucket=ds_bucket, Prefix=f"{ds_prefix}/images/train/"):
+                    for obj in page.get("Contents", []):
+                        key = obj["Key"]
+                        if os.path.splitext(key)[1].lower() not in image_exts:
+                            continue
+                        s3.download_file(ds_bucket, key, os.path.join(images_dir, os.path.basename(key)))
+                        downloaded += 1
+                        if downloaded >= max_download:
+                            break
+                    if downloaded >= max_download:
+                        break
+                print(f"[qat-finetune] Downloaded {downloaded} train frames for calibration.", flush=True)
+            else:
+                print("[qat-finetune] WARNING: manifest_summary missing bucket/prefix — no frames downloaded.", flush=True)
+        except Exception as e:
+            print(f"[qat-finetune] WARNING: frame download failed: {e}.", flush=True)
 
         os.makedirs("/work/qat_output", exist_ok=True)
 
@@ -1081,8 +1148,10 @@ steps:
   - name: model-quantization
     path: model_quantization
     compute: cpu
-    when: "{{workflow.parameters.quantization-mode}} != none"
-    depends: "model-training && (qat-finetune || qat-finetune.Skipped)"
+    # render-wft ignores when:/depends:; ordering via dependencies: only (see qat-finetune note).
+    dependencies:
+      - model-training
+      - qat-finetune
     env:
       - name: TRAINING_RESULT
         value: "{{inputs.parameters.training-result}}"
@@ -1184,8 +1253,8 @@ steps:
             boto_cfg = BotoConfig(retries={"max_attempts": 3, "mode": "adaptive"})
 
             lakefs_endpoint = os.environ.get("LAKEFS_ENDPOINT", "")
-            lakefs_key = os.environ.get("LAKEFS_ACCESS_KEY_ID", "")
-            lakefs_secret = os.environ.get("LAKEFS_SECRET_ACCESS_KEY", "")
+            lakefs_key = os.environ.get("LAKEFS_ACCESS_KEY", "")
+            lakefs_secret = os.environ.get("LAKEFS_SECRET_KEY", "")
 
             if lakefs_endpoint and lakefs_key and lakefs_secret:
                 s3 = boto3.client("s3", endpoint_url=lakefs_endpoint,
@@ -1301,7 +1370,10 @@ steps:
   - name: model-registration
     path: model_registration
     compute: cpu
-    depends: "model-training && (model-quantization || model-quantization.Skipped)"
+    # render-wft ignores depends:; ordering via dependencies: only.
+    dependencies:
+      - model-training
+      - model-quantization
     env:
       - name: TRAINING_RESULT
         value: "{{inputs.parameters.training-result}}"

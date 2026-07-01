@@ -1,4 +1,4 @@
-# qat-finetune container — Python 3.11 + CUDA 12.1 + pinned QAT stack
+# qat-finetune container — Python 3.11 + CUDA 12.6 + pinned QAT stack
 #
 # Base image: python:3.11-slim (CUDA torch installed via pip index below).
 # All dep versions are pinned ==; bump only after re-running the spike suite
@@ -21,8 +21,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install Poetry
 RUN pip install --no-cache-dir poetry
 
-# Copy project files first (layer-cache friendly)
-COPY pyproject.toml poetry.lock* ./
+# Copy project files first (layer-cache friendly).
+# README.md is required by pyproject's `readme = "README.md"`; poetry install
+# (root package build) fails without it.
+COPY pyproject.toml poetry.lock* README.md ./
 
 # Copy source
 COPY app/ ./app/

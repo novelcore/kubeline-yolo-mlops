@@ -216,8 +216,8 @@ class QATService:
         This fine-tunes quantization scale parameters without requiring the
         original YOLO loss on a graph module (which is non-trivial to compute).
 
-        CON-04: accuracy outcomes are IO's concern. This step delivers the
-        mechanism; convergence depends on calibration data quality and LR.
+        Accuracy outcomes are out of scope for this step: it delivers the
+        quantization mechanism; convergence depends on calibration data quality and LR.
         """
         loader = self._build_calibration_loader(
             params.dataset_dir,

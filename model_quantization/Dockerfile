@@ -11,7 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install --no-cache-dir poetry
 
-COPY pyproject.toml poetry.lock* ./
+# README.md is required by pyproject's `readme = "README.md"`; poetry install fails without it.
+COPY pyproject.toml poetry.lock* README.md ./
 COPY app/ ./app/
 
 RUN poetry config virtualenvs.create false \
