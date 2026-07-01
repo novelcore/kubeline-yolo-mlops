@@ -53,9 +53,8 @@ class S3PoseValidator(_PoseValidator):  # type: ignore[misc]
         built by thresholding it. Each keypoint has a ``sigma`` (its tolerance —
         how much positional error is acceptable). Ultralytics' ``PoseValidator``
         defaults to COCO's 17 hand-tuned sigmas when there are 17 keypoints, else
-        a uniform ``np.ones(nkpt)/nkpt``. For a custom keypoint set (e.g. our 11
-        spacecraft keypoints) a uniform sigma treats every point as equally easy
-        to localise.
+        a uniform ``np.ones(nkpt)/nkpt``. For a non-17 custom keypoint set a
+        uniform sigma treats every keypoint as equally easy to localise.
 
         If ``data.yaml`` provides a ``kpt_sigmas`` list (one value per keypoint),
         we use it so pose-mAP reflects per-keypoint tolerance. When absent or the
