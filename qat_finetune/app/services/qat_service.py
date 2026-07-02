@@ -22,7 +22,7 @@ import mlflow
 import torch
 import torch.nn as nn
 from mlflow.tracking import MlflowClient
-from torchao.quantization.pt2e import convert_pt2e, prepare_qat_pt2e
+from torchao.quantization.pt2e.quantize_pt2e import convert_pt2e, prepare_qat_pt2e
 from ultralytics import YOLO
 
 from app.models.quantization import QATParams, QATResult
