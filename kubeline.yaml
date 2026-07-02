@@ -1132,7 +1132,7 @@ steps:
         ]
 
         print(f"[qat-finetune] Running: qat-finetune run {' '.join(flags)}", flush=True)
-        result = subprocess.run(["qat-finetune", "run"] + flags)
+        result = subprocess.run(["qat-finetune"] + flags)
         sys.exit(result.returncode)
 
     outputs:
@@ -1364,7 +1364,7 @@ steps:
                 flags += ["--fp32-checkpoint-path", best_checkpoint_s3]
 
         print(f"[model-quantization] Running: model-quantization run {' '.join(flags)}", flush=True)
-        result = subprocess.run(["model-quantization", "run"] + flags)
+        result = subprocess.run(["model-quantization"] + flags)
         sys.exit(result.returncode)
 
     outputs:
