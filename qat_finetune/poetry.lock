@@ -326,6 +326,22 @@ files = [
 ]
 
 [[package]]
+name = "authlib"
+version = "1.7.2"
+description = "The ultimate Python library in building OAuth and OpenID Connect servers and clients."
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "authlib-1.7.2-py2.py3-none-any.whl", hash = "sha256:3e1faedc9d87e7d56a164eca3ccb6ace0d61b94abe83e92242f8dc8bba9b4a9f"},
+    {file = "authlib-1.7.2.tar.gz", hash = "sha256:2cea25fefcd4e7173bdf1372c0afc265c8034b23a8cd5dcb6a9164b826c64231"},
+]
+
+[package.dependencies]
+cryptography = "*"
+joserfc = ">=1.6.0"
+
+[[package]]
 name = "backports-strenum"
 version = "1.2.8"
 description = "Base class for creating enumerated constants that are also subclasses of str"
@@ -2143,6 +2159,24 @@ files = [
     {file = "joblib-1.5.3-py3-none-any.whl", hash = "sha256:5fc3c5039fc5ca8c0276333a188bbd59d6b7ab37fe6632daa76bc7f9ec18e713"},
     {file = "joblib-1.5.3.tar.gz", hash = "sha256:8561a3269e6801106863fd0d6d84bb737be9e7631e33aaed3fb9ce5953688da3"},
 ]
+
+[[package]]
+name = "joserfc"
+version = "1.7.2"
+description = "The ultimate Python library for JOSE RFCs, including JWS, JWE, JWK, JWA, JWT"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "joserfc-1.7.2-py3-none-any.whl", hash = "sha256:ddd818c0ca9b4f17bbc2d72cb3966e6ded7502be089316c62c3cc64ae86132b5"},
+    {file = "joserfc-1.7.2.tar.gz", hash = "sha256:537ffb8888b2df039cb5b6d017d7cff6f09d521ce65d89cc9b8ab752b1cff947"},
+]
+
+[package.dependencies]
+cryptography = ">=45.0.1"
+
+[package.extras]
+drafts = ["pycryptodome"]
 
 [[package]]
 name = "kagglehub"
@@ -6173,4 +6207,4 @@ qat = ["litert-torch", "torch", "torchao", "torchvision", "ultralytics"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.12"
-content-hash = "c87ad9e6dabee1cb2b01cc66c0bc3ffb4ba6a65e642987d9bb960af5256e0e8a"
+content-hash = "1f19d0e134bcb28acc4cda76dd694e022ecd9691f3fa22d356797d9a64d22df8"
