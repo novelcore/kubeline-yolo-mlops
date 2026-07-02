@@ -187,7 +187,7 @@ class QATService:
         litert_torch's converter final pass on YOLOv8-pose. Per-tensor is
         the only scheme that produces a valid TFLite (confirmed over 5 spikes).
         """
-        from litert_torch.quantization.pt2e import (  # type: ignore[import]
+        from litert_torch.quantize.pt2e_quantizer import (  # type: ignore[import]
             PT2EQuantizer,
             get_symmetric_quantization_config,
         )
