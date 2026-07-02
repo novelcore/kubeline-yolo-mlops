@@ -1182,6 +1182,7 @@ class TrainingService:
             "nbs": params.nbs,
             "amp": params.amp,
             "close_mosaic": params.close_mosaic,
+            "workers": params.workers,
             "seed": params.seed,
             "deterministic": params.deterministic,
             "patience": params.patience,

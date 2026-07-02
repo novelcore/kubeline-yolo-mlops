@@ -152,6 +152,17 @@ class TrainingParams(BaseModel):
     # ---- Training efficiency ----
     amp: bool = Field(default=True)
     close_mosaic: int = Field(default=10, ge=0)
+    workers: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "DataLoader worker processes passed to model.train(). 0 = single-process "
+            "loading, which structurally avoids the Ultralytics persistent_workers / "
+            "close_mosaic deadlock that intermittently hangs small-dataset runs at the "
+            "mosaic-close epoch (GPU 0%, no error). Raise for large datasets where "
+            "parallel prefetch pays off."
+        ),
+    )
     seed: int = Field(default=0, ge=0)
     deterministic: bool = Field(default=True)
 

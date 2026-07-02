@@ -1031,6 +1031,19 @@ steps:
         exp = cfg.get("experiment") or {}
         quant = cfg.get("quantization") or {}
 
+        # Self-gate: qat-finetune fine-tunes ONLY in qat mode. The platform gates
+        # this step on quantization-mode != 'none', so it ALSO fires in ptq mode,
+        # where it must be a no-op. Write a stub result so model-quantization's
+        # qat-result input param still resolves, then exit success.
+        mode = str(quant.get("mode", "none")).lower()
+        if mode != "qat":
+            os.makedirs("/work/qat_output", exist_ok=True)
+            with open("/work/qat_output/qat_result.json", "w") as fh:
+                json.dump({"mode": mode, "skipped": True,
+                           "reason": "qat-finetune runs only when quantization-mode=qat"}, fh)
+            print(f"[qat-finetune] mode={mode} (not qat) - no-op; wrote stub qat_result.json.", flush=True)
+            sys.exit(0)
+
         # Derive output bucket from checkpoint URI (same bucket as training artifacts)
         # Format: s3://<bucket>/<prefix>/...
         checkpoint_uri = best_checkpoint_s3
