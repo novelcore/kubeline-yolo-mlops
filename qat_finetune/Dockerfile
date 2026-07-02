@@ -41,17 +41,17 @@ RUN pip install --no-cache-dir -r requirements-cuda.txt
 RUN pip install --no-cache-dir -r requirements-qat.txt
 
 # Build-time import verification (CPU — no GPU required).
-# Catches broken .so links, missing symbols, and version conflicts at build time.
+# Imports the ACTUAL symbols the service uses (mirroring qat_service.py:25 and
+# the litert quantizer import) so a broken import path / missing symbol / ABI
+# fault fails `docker build` in minutes — not 1-2h into a pipeline run.
 RUN python -c "\
-import torch; \
-import torchvision; \
-import torchao; \
-import litert_torch; \
+import torch, torchvision, torchao; \
 from ultralytics import YOLO; \
-print('torch', torch.__version__); \
-print('torchao', torchao.__version__); \
-print('litert_torch', getattr(litert_torch, '__version__', 'ok')); \
-print('import verification passed')"
+from torchao.quantization.pt2e.quantize_pt2e import prepare_qat_pt2e, convert_pt2e; \
+from litert_torch.quantization.pt2e import PT2EQuantizer, get_symmetric_quantization_config; \
+import inspect; assert 'fold_quantize' in inspect.signature(convert_pt2e).parameters, 'convert_pt2e lost fold_quantize (CON-01)'; \
+print('torch', torch.__version__, '| torchao', torchao.__version__); \
+print('import verification passed: prepare_qat_pt2e, convert_pt2e, PT2EQuantizer all importable')"
 
 # GPU smoke-test (FR-M-09): run once inside the production image before final lock.
 # Requires --gpus all; NOT run automatically during docker build.
