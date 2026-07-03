@@ -3,6 +3,28 @@
 Compares INT8 TFLite outputs against FP32 YOLO reference outputs on a sample
 of calibration frames. Reports max-absolute-error and pass/fail against a
 configurable threshold.
+
+The comparison is **mode-aware** (headless flag) so that BOTH sides emit the
+same tensor as the TFLite under test:
+
+* PTQ  (``headless=False``) — Ultralytics ``model.export(int8=True)`` exports
+  the FULL model (detection head included), emitting the pre-NMS
+  ``(1, 38, 8400)`` prediction tensor. BOTH the FP32 ``.pt`` reference and the
+  INT8 ``.tflite`` are run through ``ultralytics.nn.autobackend.AutoBackend``
+  so that identical preprocessing, int8 (de)quantization AND **coordinate
+  denormalization** are applied, landing both sides in the same pixel-coord
+  space (see ``_run_autobackend_inference``).
+* QAT  (``headless=True``)  — ``qat_service`` exports the backbone+neck only
+  (CON-03 head exclusion), emitting raw multi-scale features. The FP32
+  reference forwards through every layer except the detection head, and the
+  headless litert TFLite is dequantized by hand (AutoBackend does not apply to
+  the headless export — it has no detection head / task metadata).
+
+INT8 I/O (de)quantization on the headless path mirrors Ultralytics'
+AutoBackend TFLite path (``ultralytics/nn/autobackend.py``,
+``AutoBackend.forward``, v8.3.x): inputs are quantized with
+``im / scale + zero_point`` and outputs dequantized with
+``(x - zero_point) * scale`` using each tensor's own quantization params.
 """
 
 import json
@@ -37,21 +59,49 @@ class ParityTestService:
         parity_frames: int,
         seed: int,
         max_abs_error_threshold: float,
+        headless: bool = True,
     ) -> ParityReport:
+        """Run the FP32-vs-INT8 parity check.
+
+        Parameters
+        ----------
+        headless:
+            Selects which comparison to run so that both sides emit the SAME
+            tensor space. ``True`` for the QAT path (backbone+neck only,
+            CON-03) — a hand-rolled headless forward vs a hand-dequantized
+            litert output. ``False`` for the PTQ path (full model,
+            ``(1, 38, 8400)``) — both ``.pt`` and ``.tflite`` are run through
+            AutoBackend so int8 dequant AND coordinate denorm land both sides
+            in pixel-coord space. Comparing a headless FP32 reference against a
+            full-model TFLite (or vice versa) compares different tensors and
+            yields a meaningless error (historically a spurious shape-mismatch
+            → 1.0, or — for PTQ without denorm — a ~640x coordinate error).
+        """
         logger.info(
-            "Parity test | tflite=%s checkpoint=%s frames=%d seed=%d threshold=%.4f",
+            "Parity test | tflite=%s checkpoint=%s frames=%d seed=%d "
+            "threshold=%.4f headless=%s",
             tflite_path,
             fp32_checkpoint_path,
             parity_frames,
             seed,
             max_abs_error_threshold,
+            headless,
         )
 
         frames = self._load_frames(dataset_dir, image_size, parity_frames, seed)
         logger.info("Loaded %d frames for parity test", len(frames))
 
-        fp32_outputs = self._run_fp32_inference(fp32_checkpoint_path, frames)
-        tflite_outputs = self._run_tflite_inference(tflite_path, frames, image_size)
+        if headless:
+            fp32_outputs = self._run_fp32_inference(
+                fp32_checkpoint_path, frames, headless=True
+            )
+            tflite_outputs = self._run_tflite_inference(tflite_path, frames, image_size)
+        else:
+            # PTQ: run BOTH the .pt and the full-model .tflite through
+            # AutoBackend for identical preprocessing, int8 dequant and
+            # coordinate denormalization (pixel-coord space on both sides).
+            fp32_outputs = self._run_autobackend_inference(fp32_checkpoint_path, frames)
+            tflite_outputs = self._run_autobackend_inference(tflite_path, frames)
 
         max_err = self._compute_max_abs_error(fp32_outputs, tflite_outputs)
         passed = max_err <= max_abs_error_threshold
@@ -126,30 +176,105 @@ class ParityTestService:
             if os.path.isdir(candidate):
                 return candidate
         raise ParityTestError(
-            f"No images directory found in {dataset_dir!r}. "
-            f"Searched: {candidates}"
+            f"No images directory found in {dataset_dir!r}. " f"Searched: {candidates}"
         )
+
+    def _run_autobackend_inference(
+        self,
+        weights_path: str,
+        frames: list[np.ndarray],
+    ) -> list[np.ndarray]:
+        """Run inference on a ``.pt`` or ``.tflite`` via Ultralytics AutoBackend.
+
+        AutoBackend applies identical preprocessing for both weight types and,
+        for the INT8 TFLite, both int8 dequantization (``(x - zp) * scale``)
+        AND coordinate denormalization (box channels ``[0,2]*=w`` / ``[1,3]*=h``
+        and, for pose, keypoint channels ``5::3*=w`` / ``6::3*=h`` on the
+        ``(1, 38, 8400)`` tensor) — see ``ultralytics/nn/autobackend.py``
+        ``AutoBackend.forward`` lines 807-836 (v8.3.x). Running the FP32 ``.pt``
+        through the SAME entry point (line 657-658 → native model forward, which
+        is already in pixel coords) puts both sides in the same pixel-coord
+        space, so the parity error reflects only quantization noise — not the
+        ~640x coordinate-scale artefact of comparing normalized vs pixel coords.
+        """
+        from ultralytics.nn.autobackend import AutoBackend
+
+        backend = AutoBackend(
+            weights=weights_path, device=torch.device("cpu"), fp16=False
+        )
+        backend.eval() if hasattr(backend, "eval") else None
+
+        outputs = []
+        with torch.no_grad():
+            for frame in frames:
+                # frame: NCHW float32 [0,1] — AutoBackend handles NHWC transpose,
+                # int8 (de)quant, and coordinate denorm internally.
+                tensor = torch.from_numpy(frame).to(torch.float32)
+                out = backend(tensor)
+                pred = self._extract_prediction(out)
+                outputs.append(pred.cpu().numpy().astype(np.float32).flatten())
+
+        return outputs
 
     def _run_fp32_inference(
         self,
         checkpoint_path: str,
         frames: list[np.ndarray],
+        headless: bool = True,
     ) -> list[np.ndarray]:
-        """Run YOLO FP32 headless inference, return raw backbone+neck outputs."""
+        """Run the FP32 YOLO reference forward on each frame.
+
+        ``headless=True``  → backbone+neck only (QAT parity, matches CON-03).
+        ``headless=False`` → full model forward (PTQ parity, matches the
+        Ultralytics ``export(int8=True)`` full-model TFLite). NOTE: the PTQ path
+        normally routes through :meth:`_run_autobackend_inference` instead; this
+        branch is retained for direct/unit use.
+        """
         yolo = YOLO(checkpoint_path)
         module = yolo.model.eval()
-        module.model[-1].training = True  # CON-03: head exclusion
+
+        if headless:
+            module.model[-1].training = True  # CON-03: head exclusion
 
         outputs = []
         with torch.no_grad():
             for frame in frames:
                 # frame: NCHW float32 ndarray
                 tensor = torch.from_numpy(frame)
-                # Run forward through all layers except the final detection head
-                out = self._forward_headless(module, tensor)
-                outputs.append(out.numpy())
+                if headless:
+                    out = self._forward_headless(module, tensor)
+                else:
+                    out = self._forward_full(module, tensor)
+                outputs.append(out.cpu().numpy())
 
         return outputs
+
+    def _forward_full(self, module: Any, tensor: Any) -> Any:
+        """Full-model forward — returns the raw pre-NMS prediction tensor.
+
+        In eval mode (and not export mode), the YOLOv8 Detect/Pose head returns
+        ``(prediction, extras)`` where ``prediction`` is the decoded
+        ``(1, no, 8400)`` tensor (``no = 38`` for the pose model under test).
+        This matches the FULL-model TFLite produced by
+        ``model.export(format='tflite', int8=True)``.
+        """
+        out = module(tensor)
+        return self._extract_prediction(out)
+
+    def _extract_prediction(self, out: Any) -> "torch.Tensor":
+        """Extract the primary ``(1, no, 8400)`` prediction tensor.
+
+        The head/backend may return a bare tensor, a ``(tensor, extras)`` tuple,
+        or — for segment/pose — a ``((tensor, proto), preds)`` nested tuple.
+        Peel the leading element(s) until a torch.Tensor is reached.
+        """
+        while isinstance(out, (tuple, list)):
+            if not out:
+                raise ParityTestError("FP32 full-model forward returned empty output")
+            out = out[0]
+        if not isinstance(out, torch.Tensor):
+            raise ParityTestError(f"Unexpected FP32 forward output type: {type(out)!r}")
+        return out
 
     def _forward_headless(self, module: Any, tensor: Any) -> Any:
         """Forward pass up to (not including) the detection head."""
@@ -180,7 +305,23 @@ class ParityTestService:
         frames: list[np.ndarray],
         image_size: int,
     ) -> list[np.ndarray]:
-        """Run INT8 TFLite inference via ai-edge-litert."""
+        """Run INT8 TFLite inference via ai-edge-litert (headless/QAT path).
+
+        Mirrors Ultralytics AutoBackend (``nn/autobackend.py``,
+        ``AutoBackend.forward``, v8.3.x):
+
+        * Input in NHWC float [0, 1]. If the input tensor is int-typed,
+          quantize with ``im / scale + zero_point`` using the input tensor's
+          own quantization params.
+        * If an output tensor is int-typed, dequantize with
+          ``(x - zero_point) * scale`` using that output's own params.
+
+        No coordinate denormalization is applied here — the headless litert
+        export has no detection head, so its outputs are raw feature maps (not
+        box/keypoint coords) and the FP32 headless reference is likewise raw.
+        The full-model PTQ path uses :meth:`_run_autobackend_inference`, which
+        DOES denormalize.
+        """
         from ai_edge_litert.interpreter import Interpreter
 
         interpreter = Interpreter(model_path=tflite_path)
@@ -189,30 +330,29 @@ class ParityTestService:
         input_details = interpreter.get_input_details()
         output_details = interpreter.get_output_details()
 
-        # INT8 TFLite expects NHWC uint8 or float32 depending on quantization
-        input_dtype = input_details[0]["dtype"]
-        input_shape = input_details[0]["shape"]  # [1, H, W, C] for NHWC
+        in_detail = input_details[0]
+        input_dtype = in_detail["dtype"]
+        input_is_int = input_dtype in (np.int8, np.int16, np.uint8)
 
         outputs = []
         for frame in frames:
-            # frame: NCHW float32 — convert to NHWC
-            nhwc = np.transpose(frame[0], (1, 2, 0))[np.newaxis]  # NHWC
+            # frame: NCHW float32 [0,1] — convert to NHWC to match the TFLite.
+            nhwc = np.transpose(frame[0], (1, 2, 0))[np.newaxis].astype(np.float32)
 
-            if input_dtype == np.uint8:
-                nhwc = (nhwc * 255).clip(0, 255).astype(np.uint8)
-            elif input_dtype == np.int8:
-                nhwc = (nhwc * 255 - 128).clip(-128, 127).astype(np.int8)
-            else:
-                nhwc = nhwc.astype(np.float32)
+            if input_is_int:
+                scale, zero_point = in_detail["quantization"]
+                nhwc = (nhwc / scale + zero_point).astype(input_dtype)
 
-            interpreter.set_tensor(input_details[0]["index"], nhwc)
+            interpreter.set_tensor(in_detail["index"], nhwc)
             interpreter.invoke()
 
-            # Concatenate all output tensors into a single flat vector
-            out_parts = [
-                interpreter.get_tensor(d["index"]).astype(np.float32).flatten()
-                for d in output_details
-            ]
+            out_parts = []
+            for d in output_details:
+                x = interpreter.get_tensor(d["index"])
+                if d["dtype"] in (np.int8, np.int16, np.uint8):
+                    scale, zero_point = d["quantization"]
+                    x = (x.astype(np.float32) - zero_point) * scale
+                out_parts.append(x.astype(np.float32).flatten())
             outputs.append(np.concatenate(out_parts))
 
         return outputs
@@ -222,7 +362,13 @@ class ParityTestService:
         fp32_outputs: list[np.ndarray],
         tflite_outputs: list[np.ndarray],
     ) -> float:
-        """Return the frame-wise max absolute error across all frames."""
+        """Return the frame-wise max absolute error across all frames.
+
+        Both sides are compared as flat vectors of the same length. A genuine
+        length mismatch (which, once the parity mode is correct, indicates a
+        real model/tflite mismatch rather than a headless-vs-full artefact) is
+        reported as the maximum possible error (1.0).
+        """
         if len(fp32_outputs) != len(tflite_outputs):
             raise ParityTestError(
                 f"Output count mismatch: FP32={len(fp32_outputs)}, "
@@ -231,9 +377,11 @@ class ParityTestService:
 
         max_err = 0.0
         for i, (fp32, tfl) in enumerate(zip(fp32_outputs, tflite_outputs)):
+            fp32 = np.asarray(fp32).flatten()
+            tfl = np.asarray(tfl).flatten()
             if fp32.shape != tfl.shape:
                 logger.warning(
-                    "Shape mismatch at frame %d: FP32=%s TFLite=%s — "
+                    "Length mismatch at frame %d: FP32=%s TFLite=%s — "
                     "returning max error 1.0",
                     i,
                     fp32.shape,
