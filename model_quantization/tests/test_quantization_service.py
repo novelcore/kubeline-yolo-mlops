@@ -32,6 +32,7 @@ OUTPUT_DIR = "/tmp/quant_out"
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def s3() -> MagicMock:
     return MagicMock(name="s3_client")
@@ -82,6 +83,7 @@ def _mock_mlflow_ctx(run_id: str = "quant-run-001") -> MagicMock:
 
 # ── QuantizationParams validation ─────────────────────────────────────────────
 
+
 class TestQuantizationParamsValidation:
     def _base(self, **kwargs) -> dict:
         return {
@@ -103,11 +105,15 @@ class TestQuantizationParamsValidation:
             QuantizationParams(**self._base(mode="qat"))
 
     def test_ptq_with_checkpoint_accepted(self) -> None:
-        p = QuantizationParams(**self._base(mode="ptq", fp32_checkpoint_path="/local/best.pt"))
+        p = QuantizationParams(
+            **self._base(mode="ptq", fp32_checkpoint_path="/local/best.pt")
+        )
         assert p.mode == "ptq"
 
     def test_qat_with_tflite_uri_accepted(self) -> None:
-        p = QuantizationParams(**self._base(mode="qat", tflite_s3_uri="s3://b/k.tflite"))
+        p = QuantizationParams(
+            **self._base(mode="qat", tflite_s3_uri="s3://b/k.tflite")
+        )
         assert p.mode == "qat"
 
     def test_mode_none_rejected(self) -> None:
@@ -117,17 +123,26 @@ class TestQuantizationParamsValidation:
 
 # ── CheckpointResolution ──────────────────────────────────────────────────────
 
+
 class TestCheckpointResolution:
-    def test_local_path_returned_unchanged(self, service: QuantizationService, s3: MagicMock) -> None:
+    def test_local_path_returned_unchanged(
+        self, service: QuantizationService, s3: MagicMock
+    ) -> None:
         result = service._resolve_checkpoint("/data/best.pt", "/tmp/out")
         assert result == "/data/best.pt"
         s3.download_file.assert_not_called()
 
-    def test_s3_path_triggers_download(self, service: QuantizationService, s3: MagicMock) -> None:
+    def test_s3_path_triggers_download(
+        self, service: QuantizationService, s3: MagicMock
+    ) -> None:
         service._resolve_checkpoint("s3://my-bucket/checkpoints/best.pt", "/tmp/out")
-        s3.download_file.assert_called_once_with("my-bucket", "checkpoints/best.pt", ANY)
+        s3.download_file.assert_called_once_with(
+            "my-bucket", "checkpoints/best.pt", ANY
+        )
 
-    def test_s3_path_returns_local_path(self, service: QuantizationService, s3: MagicMock) -> None:
+    def test_s3_path_returns_local_path(
+        self, service: QuantizationService, s3: MagicMock
+    ) -> None:
         local = service._resolve_checkpoint("s3://bucket/a/b/model.pt", "/tmp/out")
         assert local.startswith("/tmp/out")
         assert local.endswith("model.pt")
@@ -135,26 +150,35 @@ class TestCheckpointResolution:
 
 # ── DataYamlDiscovery ─────────────────────────────────────────────────────────
 
+
 class TestDataYamlDiscovery:
-    def test_finds_data_yaml(self, service: QuantizationService, tmp_path: Path) -> None:
+    def test_finds_data_yaml(
+        self, service: QuantizationService, tmp_path: Path
+    ) -> None:
         yaml = tmp_path / "data.yaml"
         yaml.write_text("nc: 1")
         result = service._find_data_yaml(str(tmp_path))
         assert result == str(yaml)
 
-    def test_finds_dataset_yaml(self, service: QuantizationService, tmp_path: Path) -> None:
+    def test_finds_dataset_yaml(
+        self, service: QuantizationService, tmp_path: Path
+    ) -> None:
         yaml = tmp_path / "dataset.yaml"
         yaml.write_text("nc: 1")
         result = service._find_data_yaml(str(tmp_path))
         assert result == str(yaml)
 
-    def test_finds_config_yaml(self, service: QuantizationService, tmp_path: Path) -> None:
+    def test_finds_config_yaml(
+        self, service: QuantizationService, tmp_path: Path
+    ) -> None:
         yaml = tmp_path / "config.yaml"
         yaml.write_text("nc: 1")
         result = service._find_data_yaml(str(tmp_path))
         assert result == str(yaml)
 
-    def test_raises_when_no_yaml_found(self, service: QuantizationService, tmp_path: Path) -> None:
+    def test_raises_when_no_yaml_found(
+        self, service: QuantizationService, tmp_path: Path
+    ) -> None:
         with pytest.raises(QuantizationError, match="No YOLO data YAML"):
             service._find_data_yaml(str(tmp_path))
 
@@ -168,6 +192,7 @@ class TestDataYamlDiscovery:
 
 
 # ── PTQ Export ────────────────────────────────────────────────────────────────
+
 
 class TestPTQExport:
     def test_yolo_export_called_with_tflite_format(
@@ -196,7 +221,9 @@ class TestPTQExport:
         mock_model.export.return_value = expected
 
         with patch("app.services.quantization_service.YOLO", return_value=mock_model):
-            result = service._export_ptq("/local/best.pt", "/data/data.yaml", MagicMock(image_size=320))
+            result = service._export_ptq(
+                "/local/best.pt", "/data/data.yaml", MagicMock(image_size=320)
+            )
 
         assert result == expected
 
@@ -206,31 +233,45 @@ class TestPTQExport:
         mock_model = MagicMock()
         mock_model.export.return_value = "/out/model_int8.tflite"
 
-        with patch("app.services.quantization_service.YOLO", return_value=mock_model) as mock_yolo:
-            service._export_ptq("/local/best.pt", "/data.yaml", MagicMock(image_size=640))
+        with patch(
+            "app.services.quantization_service.YOLO", return_value=mock_model
+        ) as mock_yolo:
+            service._export_ptq(
+                "/local/best.pt", "/data.yaml", MagicMock(image_size=640)
+            )
 
         mock_yolo.assert_called_once_with("/local/best.pt")
 
 
 # ── S3 Upload ─────────────────────────────────────────────────────────────────
 
+
 class TestS3Upload:
     def test_upload_called_with_correct_bucket(
-        self, service: QuantizationService, s3: MagicMock, ptq_params: QuantizationParams
+        self,
+        service: QuantizationService,
+        s3: MagicMock,
+        ptq_params: QuantizationParams,
     ) -> None:
         service._upload_tflite("/tmp/model_int8.tflite", ptq_params)
         _, pos_args, _ = s3.upload_file.mock_calls[0]
         assert pos_args[1] == OUTPUT_BUCKET
 
     def test_upload_called_with_correct_key(
-        self, service: QuantizationService, s3: MagicMock, ptq_params: QuantizationParams
+        self,
+        service: QuantizationService,
+        s3: MagicMock,
+        ptq_params: QuantizationParams,
     ) -> None:
         service._upload_tflite("/tmp/model_int8.tflite", ptq_params)
         _, pos_args, _ = s3.upload_file.mock_calls[0]
         assert pos_args[2] == f"{OUTPUT_PREFIX}/model_int8.tflite"
 
     def test_s3_uri_format(
-        self, service: QuantizationService, s3: MagicMock, ptq_params: QuantizationParams
+        self,
+        service: QuantizationService,
+        s3: MagicMock,
+        ptq_params: QuantizationParams,
     ) -> None:
         uri = service._upload_tflite("/tmp/model_int8.tflite", ptq_params)
         assert uri == f"s3://{OUTPUT_BUCKET}/{OUTPUT_PREFIX}/model_int8.tflite"
@@ -238,13 +279,16 @@ class TestS3Upload:
 
 # ── MLflow Logging — PTQ ──────────────────────────────────────────────────────
 
+
 class TestMLflowLoggingPTQ:
     def test_quantization_mode_ptq_logged(
         self, service: QuantizationService, ptq_params: QuantizationParams
     ) -> None:
         with patch("app.services.quantization_service.MlflowClient") as mock_cls:
             service._log_ptq_run("run-001", ptq_params, "s3://b/k.tflite")
-        param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
+        param_map = {
+            c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list
+        }
         assert param_map["quantization_mode"] == "ptq"
 
     def test_quantization_scheme_logged(
@@ -252,7 +296,9 @@ class TestMLflowLoggingPTQ:
     ) -> None:
         with patch("app.services.quantization_service.MlflowClient") as mock_cls:
             service._log_ptq_run("run-001", ptq_params, "s3://b/k.tflite")
-        param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
+        param_map = {
+            c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list
+        }
         assert param_map["quantization_scheme"] == "per_tensor_int8"
 
     def test_source_run_id_logged(
@@ -260,7 +306,9 @@ class TestMLflowLoggingPTQ:
     ) -> None:
         with patch("app.services.quantization_service.MlflowClient") as mock_cls:
             service._log_ptq_run("run-001", ptq_params, "s3://b/k.tflite")
-        param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
+        param_map = {
+            c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list
+        }
         assert param_map["source_run_id"] == SOURCE_RUN_ID
 
     def test_tflite_uri_logged(
@@ -269,7 +317,9 @@ class TestMLflowLoggingPTQ:
         uri = "s3://bucket/quant/model_int8.tflite"
         with patch("app.services.quantization_service.MlflowClient") as mock_cls:
             service._log_ptq_run("run-001", ptq_params, uri)
-        param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
+        param_map = {
+            c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list
+        }
         assert param_map["tflite_s3_uri"] == uri
 
     def test_parity_frames_logged(
@@ -277,7 +327,9 @@ class TestMLflowLoggingPTQ:
     ) -> None:
         with patch("app.services.quantization_service.MlflowClient") as mock_cls:
             service._log_ptq_run("run-001", ptq_params, "s3://b/k.tflite")
-        param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
+        param_map = {
+            c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list
+        }
         assert param_map["parity_frames"] == str(ptq_params.parity_frames)
 
     def test_parity_threshold_logged(
@@ -285,18 +337,25 @@ class TestMLflowLoggingPTQ:
     ) -> None:
         with patch("app.services.quantization_service.MlflowClient") as mock_cls:
             service._log_ptq_run("run-001", ptq_params, "s3://b/k.tflite")
-        param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
-        assert param_map["parity_max_abs_error_threshold"] == str(ptq_params.parity_max_abs_error)
+        param_map = {
+            c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list
+        }
+        assert param_map["parity_max_abs_error_threshold"] == str(
+            ptq_params.parity_max_abs_error
+        )
 
     def test_mlflow_error_swallowed(
         self, service: QuantizationService, ptq_params: QuantizationParams
     ) -> None:
         with patch("app.services.quantization_service.MlflowClient") as mock_cls:
             mock_cls.return_value.log_param.side_effect = Exception("MLflow down")
-            service._log_ptq_run("run-001", ptq_params, "s3://b/k.tflite")  # must not raise
+            service._log_ptq_run(
+                "run-001", ptq_params, "s3://b/k.tflite"
+            )  # must not raise
 
 
 # ── MLflow Logging — QAT passthrough ─────────────────────────────────────────
+
 
 class TestMLflowLoggingQAT:
     def test_quantization_mode_qat_logged(
@@ -304,7 +363,9 @@ class TestMLflowLoggingQAT:
     ) -> None:
         with patch("app.services.quantization_service.MlflowClient") as mock_cls:
             service._log_qat_passthrough_run("run-002", qat_params)
-        param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
+        param_map = {
+            c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list
+        }
         assert param_map["quantization_mode"] == "qat"
 
     def test_quantization_scheme_logged(
@@ -312,7 +373,9 @@ class TestMLflowLoggingQAT:
     ) -> None:
         with patch("app.services.quantization_service.MlflowClient") as mock_cls:
             service._log_qat_passthrough_run("run-002", qat_params)
-        param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
+        param_map = {
+            c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list
+        }
         assert param_map["quantization_scheme"] == "per_tensor_int8"
 
     def test_calibration_params_logged(
@@ -320,7 +383,9 @@ class TestMLflowLoggingQAT:
     ) -> None:
         with patch("app.services.quantization_service.MlflowClient") as mock_cls:
             service._log_qat_passthrough_run("run-002", qat_params)
-        param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
+        param_map = {
+            c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list
+        }
         assert param_map["calibration_frames"] == str(qat_params.calibration_frames)
         assert param_map["calibration_seed"] == str(qat_params.calibration_seed)
         assert param_map["image_size"] == str(qat_params.image_size)
@@ -330,16 +395,22 @@ class TestMLflowLoggingQAT:
     ) -> None:
         with patch("app.services.quantization_service.MlflowClient") as mock_cls:
             service._log_qat_passthrough_run("run-002", qat_params)
-        param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
+        param_map = {
+            c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list
+        }
         assert param_map["parity_frames"] == str(qat_params.parity_frames)
-        assert param_map["parity_max_abs_error_threshold"] == str(qat_params.parity_max_abs_error)
+        assert param_map["parity_max_abs_error_threshold"] == str(
+            qat_params.parity_max_abs_error
+        )
 
     def test_qat_run_id_logged_when_present(
         self, service: QuantizationService, qat_params: QuantizationParams
     ) -> None:
         with patch("app.services.quantization_service.MlflowClient") as mock_cls:
             service._log_qat_passthrough_run("run-002", qat_params)
-        param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
+        param_map = {
+            c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list
+        }
         assert param_map.get("qat_run_id") == QAT_RUN_ID
 
     def test_qat_run_id_omitted_when_none(
@@ -348,18 +419,25 @@ class TestMLflowLoggingQAT:
         qat_params.qat_run_id = None
         with patch("app.services.quantization_service.MlflowClient") as mock_cls:
             service._log_qat_passthrough_run("run-002", qat_params)
-        param_map = {c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list}
+        param_map = {
+            c.args[1]: c.args[2] for c in mock_cls.return_value.log_param.call_args_list
+        }
         assert "qat_run_id" not in param_map
 
 
 # ── Mode dispatch and run() integration ───────────────────────────────────────
 
+
 class TestModeDispatch:
     def test_ptq_mode_dispatches_to_run_ptq(
         self, service: QuantizationService, ptq_params: QuantizationParams
     ) -> None:
-        with patch.object(service, "_run_ptq", return_value=MagicMock(spec=QuantizationResult)) as mock_ptq, \
-             patch("app.services.quantization_service.mlflow") as mock_mlflow:
+        with (
+            patch.object(
+                service, "_run_ptq", return_value=MagicMock(spec=QuantizationResult)
+            ) as mock_ptq,
+            patch("app.services.quantization_service.mlflow") as mock_mlflow,
+        ):
             mock_mlflow.set_tracking_uri = MagicMock()
             mock_mlflow.set_experiment = MagicMock()
             service.run(ptq_params)
@@ -368,8 +446,14 @@ class TestModeDispatch:
     def test_qat_mode_dispatches_to_run_qat_passthrough(
         self, service: QuantizationService, qat_params: QuantizationParams
     ) -> None:
-        with patch.object(service, "_run_qat_passthrough", return_value=MagicMock(spec=QuantizationResult)) as mock_qat, \
-             patch("app.services.quantization_service.mlflow") as mock_mlflow:
+        with (
+            patch.object(
+                service,
+                "_run_qat_passthrough",
+                return_value=MagicMock(spec=QuantizationResult),
+            ) as mock_qat,
+            patch("app.services.quantization_service.mlflow") as mock_mlflow,
+        ):
             mock_mlflow.set_tracking_uri = MagicMock()
             mock_mlflow.set_experiment = MagicMock()
             service.run(qat_params)
@@ -387,7 +471,9 @@ class TestRunPTQOrchestration:
 
         tflite_path = os.path.join(params.output_dir, "model_int8.tflite")
         s3_uri = f"s3://{OUTPUT_BUCKET}/{OUTPUT_PREFIX}/model_int8.tflite"
-        mock_parity = ParityReport(parity_passed=True, max_abs_error=0.01, threshold=0.05, frames_tested=4)
+        mock_parity = ParityReport(
+            parity_passed=True, max_abs_error=0.01, threshold=0.05, frames_tested=4
+        )
 
         with (
             patch.object(service, "_resolve_checkpoint", return_value="/local/best.pt"),
@@ -395,12 +481,15 @@ class TestRunPTQOrchestration:
             patch.object(service, "_export_ptq", return_value=tflite_path),
             patch.object(service, "_upload_tflite", return_value=s3_uri),
             patch.object(service, "_run_parity_and_log", return_value=mock_parity),
+            patch.object(service, "_log_tflite_artifact"),
             patch.object(service, "_log_ptq_run"),
             patch("app.services.quantization_service.mlflow") as mock_mlflow,
         ):
             active_run = MagicMock()
             active_run.info.run_id = run_id
-            mock_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=active_run)
+            mock_mlflow.start_run.return_value.__enter__ = MagicMock(
+                return_value=active_run
+            )
             mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
             return service._run_ptq(params)
 
@@ -433,7 +522,9 @@ class TestRunPTQOrchestration:
     ) -> None:
         from app.models.quantization import ParityReport
 
-        mock_parity = ParityReport(parity_passed=True, max_abs_error=0.01, threshold=0.05, frames_tested=4)
+        mock_parity = ParityReport(
+            parity_passed=True, max_abs_error=0.01, threshold=0.05, frames_tested=4
+        )
 
         with (
             patch.object(service, "_resolve_checkpoint", return_value="/local/best.pt"),
@@ -441,12 +532,15 @@ class TestRunPTQOrchestration:
             patch.object(service, "_export_ptq", return_value="/tmp/m.tflite"),
             patch.object(service, "_upload_tflite", return_value="s3://b/k"),
             patch.object(service, "_run_parity_and_log", return_value=mock_parity),
+            patch.object(service, "_log_tflite_artifact"),
             patch.object(service, "_log_ptq_run"),
             patch("app.services.quantization_service.mlflow") as mock_mlflow,
         ):
             active_run = MagicMock()
             active_run.info.run_id = "r"
-            mock_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=active_run)
+            mock_mlflow.start_run.return_value.__enter__ = MagicMock(
+                return_value=active_run
+            )
             mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
             service._run_ptq(ptq_params)
 
@@ -464,17 +558,24 @@ class TestRunQATPassthroughOrchestration:
     ) -> QuantizationResult:
         from app.models.quantization import ParityReport
 
-        mock_parity = ParityReport(parity_passed=True, max_abs_error=0.0, threshold=0.05, frames_tested=0)
+        mock_parity = ParityReport(
+            parity_passed=True, max_abs_error=0.0, threshold=0.05, frames_tested=0
+        )
 
         with (
-            patch.object(service, "_download_tflite", return_value="/tmp/model_int8.tflite"),
+            patch.object(
+                service, "_download_tflite", return_value="/tmp/model_int8.tflite"
+            ),
             patch.object(service, "_run_parity_and_log", return_value=mock_parity),
+            patch.object(service, "_log_tflite_artifact"),
             patch.object(service, "_log_qat_passthrough_run"),
             patch("app.services.quantization_service.mlflow") as mock_mlflow,
         ):
             active_run = MagicMock()
             active_run.info.run_id = run_id
-            mock_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=active_run)
+            mock_mlflow.start_run.return_value.__enter__ = MagicMock(
+                return_value=active_run
+            )
             mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
             return service._run_qat_passthrough(params)
 
@@ -501,17 +602,24 @@ class TestRunQATPassthroughOrchestration:
     ) -> None:
         from app.models.quantization import ParityReport
 
-        mock_parity = ParityReport(parity_passed=True, max_abs_error=0.0, threshold=0.05, frames_tested=0)
+        mock_parity = ParityReport(
+            parity_passed=True, max_abs_error=0.0, threshold=0.05, frames_tested=0
+        )
 
         with (
-            patch.object(service, "_download_tflite", return_value="/tmp/model_int8.tflite"),
+            patch.object(
+                service, "_download_tflite", return_value="/tmp/model_int8.tflite"
+            ),
             patch.object(service, "_run_parity_and_log", return_value=mock_parity),
+            patch.object(service, "_log_tflite_artifact"),
             patch.object(service, "_log_qat_passthrough_run"),
             patch("app.services.quantization_service.mlflow") as mock_mlflow,
         ):
             active_run = MagicMock()
             active_run.info.run_id = "r"
-            mock_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=active_run)
+            mock_mlflow.start_run.return_value.__enter__ = MagicMock(
+                return_value=active_run
+            )
             mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
             service._run_qat_passthrough(qat_params)
 
@@ -520,26 +628,118 @@ class TestRunQATPassthroughOrchestration:
         assert kwargs["tags"]["source_run_id"] == SOURCE_RUN_ID
 
     def test_no_upload_called_for_qat_passthrough(
-        self, service: QuantizationService, s3: MagicMock, qat_params: QuantizationParams
+        self,
+        service: QuantizationService,
+        s3: MagicMock,
+        qat_params: QuantizationParams,
     ) -> None:
         """QAT TFLite is already on S3 from qat-finetune — no re-upload."""
         from app.models.quantization import ParityReport
 
-        mock_parity = ParityReport(parity_passed=True, max_abs_error=0.0, threshold=0.05, frames_tested=0)
+        mock_parity = ParityReport(
+            parity_passed=True, max_abs_error=0.0, threshold=0.05, frames_tested=0
+        )
 
         with (
-            patch.object(service, "_download_tflite", return_value="/tmp/model_int8.tflite"),
+            patch.object(
+                service, "_download_tflite", return_value="/tmp/model_int8.tflite"
+            ),
             patch.object(service, "_run_parity_and_log", return_value=mock_parity),
+            patch.object(service, "_log_tflite_artifact"),
             patch.object(service, "_log_qat_passthrough_run"),
             patch("app.services.quantization_service.mlflow") as mock_mlflow,
         ):
             active_run = MagicMock()
             active_run.info.run_id = "r"
-            mock_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=active_run)
+            mock_mlflow.start_run.return_value.__enter__ = MagicMock(
+                return_value=active_run
+            )
             mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
             service._run_qat_passthrough(qat_params)
 
         s3.upload_file.assert_not_called()
+
+
+class TestLogTFLiteArtifact:
+    """The quantized .tflite is logged to MLflow (in addition to the S3 upload)."""
+
+    def test_log_artifact_called_with_tflite_path(
+        self, service: QuantizationService
+    ) -> None:
+        with patch("app.services.quantization_service.MlflowClient") as mock_client_cls:
+            client = mock_client_cls.return_value
+            service._log_tflite_artifact("run-1", "/tmp/model_int8.tflite")
+        client.log_artifact.assert_called_once_with("run-1", "/tmp/model_int8.tflite")
+
+    def test_log_artifact_failure_is_non_fatal(
+        self, service: QuantizationService
+    ) -> None:
+        with patch("app.services.quantization_service.MlflowClient") as mock_client_cls:
+            mock_client_cls.return_value.log_artifact.side_effect = RuntimeError("boom")
+            # Must not raise.
+            service._log_tflite_artifact("run-1", "/tmp/model_int8.tflite")
+
+    def test_ptq_logs_tflite_and_uses_full_model_parity(
+        self, service: QuantizationService, ptq_params: QuantizationParams
+    ) -> None:
+        from app.models.quantization import ParityReport
+
+        tflite_path = os.path.join(ptq_params.output_dir, "model_int8.tflite")
+        mock_parity = ParityReport(
+            parity_passed=True, max_abs_error=0.01, threshold=0.05, frames_tested=4
+        )
+        with (
+            patch.object(service, "_resolve_checkpoint", return_value="/local/best.pt"),
+            patch.object(service, "_find_data_yaml", return_value="/data/data.yaml"),
+            patch.object(service, "_export_ptq", return_value=tflite_path),
+            patch.object(service, "_upload_tflite", return_value="s3://b/k"),
+            patch.object(service, "_log_tflite_artifact") as mock_log_art,
+            patch.object(
+                service, "_run_parity_and_log", return_value=mock_parity
+            ) as mock_parity_call,
+            patch.object(service, "_log_ptq_run"),
+            patch("app.services.quantization_service.mlflow") as mock_mlflow,
+        ):
+            active_run = MagicMock()
+            active_run.info.run_id = "r"
+            mock_mlflow.start_run.return_value.__enter__ = MagicMock(
+                return_value=active_run
+            )
+            mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
+            service._run_ptq(ptq_params)
+
+        mock_log_art.assert_called_once_with("r", tflite_path)
+        assert mock_parity_call.call_args.kwargs["headless"] is False
+
+    def test_qat_logs_tflite_and_uses_headless_parity(
+        self, service: QuantizationService, qat_params: QuantizationParams
+    ) -> None:
+        from app.models.quantization import ParityReport
+
+        mock_parity = ParityReport(
+            parity_passed=True, max_abs_error=0.0, threshold=0.05, frames_tested=0
+        )
+        with (
+            patch.object(
+                service, "_download_tflite", return_value="/tmp/model_int8.tflite"
+            ),
+            patch.object(service, "_log_tflite_artifact") as mock_log_art,
+            patch.object(
+                service, "_run_parity_and_log", return_value=mock_parity
+            ) as mock_parity_call,
+            patch.object(service, "_log_qat_passthrough_run"),
+            patch("app.services.quantization_service.mlflow") as mock_mlflow,
+        ):
+            active_run = MagicMock()
+            active_run.info.run_id = "r"
+            mock_mlflow.start_run.return_value.__enter__ = MagicMock(
+                return_value=active_run
+            )
+            mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
+            service._run_qat_passthrough(qat_params)
+
+        mock_log_art.assert_called_once_with("r", "/tmp/model_int8.tflite")
+        assert mock_parity_call.call_args.kwargs["headless"] is True
 
 
 class TestDeterminismControlsPTQ:
@@ -565,16 +765,28 @@ class TestDeterminismControlsPTQ:
         with (
             patch.object(service, "_resolve_checkpoint", return_value="/local/best.pt"),
             patch.object(service, "_find_data_yaml", return_value="/data/data.yaml"),
-            patch.object(service, "_seed_torch", side_effect=lambda *a, **kw: call_order.append("seed_torch")),
-            patch.object(service, "_export_ptq", side_effect=lambda *a, **kw: call_order.append("export_ptq") or "/tmp/m.tflite"),
+            patch.object(
+                service,
+                "_seed_torch",
+                side_effect=lambda *a, **kw: call_order.append("seed_torch"),
+            ),
+            patch.object(
+                service,
+                "_export_ptq",
+                side_effect=lambda *a, **kw: call_order.append("export_ptq")
+                or "/tmp/m.tflite",
+            ),
             patch.object(service, "_upload_tflite", return_value="s3://b/k"),
             patch.object(service, "_run_parity_and_log", return_value=mock_parity),
+            patch.object(service, "_log_tflite_artifact"),
             patch.object(service, "_log_ptq_run"),
             patch("app.services.quantization_service.mlflow") as mock_mlflow,
         ):
             active_run = MagicMock()
             active_run.info.run_id = "r"
-            mock_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=active_run)
+            mock_mlflow.start_run.return_value.__enter__ = MagicMock(
+                return_value=active_run
+            )
             mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
             service._run_ptq(ptq_params)
 

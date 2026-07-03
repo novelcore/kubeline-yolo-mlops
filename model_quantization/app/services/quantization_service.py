@@ -78,11 +78,14 @@ class QuantizationService:
             self._seed_torch(params.calibration_seed)  # FR-M-04
             tflite_path = self._export_ptq(local_ckpt, data_yaml, params)
             s3_uri = self._upload_tflite(tflite_path, params)
+            self._log_tflite_artifact(run_id, tflite_path)
+            # PTQ exports the FULL model → compare against full-model FP32.
             parity = self._run_parity_and_log(
                 run_id=run_id,
                 tflite_path=tflite_path,
                 fp32_checkpoint_path=local_ckpt,
                 params=params,
+                headless=False,
             )
             self._log_ptq_run(run_id, params, s3_uri)
 
@@ -160,18 +163,21 @@ class QuantizationService:
                 params.tflite_s3_uri,
             )
 
-            local_tflite = self._download_tflite(params.tflite_s3_uri, params.output_dir)
+            local_tflite = self._download_tflite(
+                params.tflite_s3_uri, params.output_dir
+            )
+            self._log_tflite_artifact(run_id, local_tflite)
+            # QAT exports the backbone+neck only (CON-03) → headless FP32.
             parity = self._run_parity_and_log(
                 run_id=run_id,
                 tflite_path=local_tflite,
                 fp32_checkpoint_path=params.fp32_checkpoint_path,
                 params=params,
+                headless=True,
             )
             self._log_qat_passthrough_run(run_id, params)
 
-        self._logger.info(
-            "QAT passthrough complete | run_id=%s", run_id
-        )
+        self._logger.info("QAT passthrough complete | run_id=%s", run_id)
 
         return QuantizationResult(
             mlflow_run_id=run_id,
@@ -182,9 +188,7 @@ class QuantizationService:
             parity_max_abs_error=parity.max_abs_error,
         )
 
-    def _log_qat_passthrough_run(
-        self, run_id: str, params: QuantizationParams
-    ) -> None:
+    def _log_qat_passthrough_run(self, run_id: str, params: QuantizationParams) -> None:
         """Log QAT passthrough parameters to MLflow."""
         client = MlflowClient()
         items: list[tuple[str, str]] = [
@@ -214,7 +218,7 @@ class QuantizationService:
         """Return a local path to the checkpoint, downloading from S3 if needed."""
         if not path.startswith("s3://"):
             return path
-        without_scheme = path[len("s3://"):]
+        without_scheme = path[len("s3://") :]
         bucket, _, key = without_scheme.partition("/")
         local_path = os.path.join(output_dir, Path(key).name)
         self._logger.info("Downloading checkpoint: %s → %s", path, local_path)
@@ -234,22 +238,19 @@ class QuantizationService:
                 self._logger.info("Found dataset YAML: %s", candidate)
                 return candidate
         raise QuantizationError(
-            f"No YOLO data YAML found in {dataset_dir!r}. "
-            f"Searched: {candidates}"
+            f"No YOLO data YAML found in {dataset_dir!r}. " f"Searched: {candidates}"
         )
 
     def _upload_tflite(self, local_path: str, params: QuantizationParams) -> str:
         """Upload TFLite artifact to S3 and return the s3:// URI."""
         key = f"{params.output_prefix}/{Path(local_path).name}"
-        self._logger.info(
-            "Uploading TFLite to s3://%s/%s", params.output_bucket, key
-        )
+        self._logger.info("Uploading TFLite to s3://%s/%s", params.output_bucket, key)
         self._s3.upload_file(local_path, params.output_bucket, key)
         return f"s3://{params.output_bucket}/{key}"
 
     def _download_tflite(self, s3_uri: str, output_dir: str) -> str:
         """Download TFLite from an s3:// URI. Returns local path."""
-        without_scheme = s3_uri[len("s3://"):]
+        without_scheme = s3_uri[len("s3://") :]
         bucket, _, key = without_scheme.partition("/")
         local_path = os.path.join(output_dir, Path(key).name)
         self._logger.info("Downloading TFLite: %s → %s", s3_uri, local_path)
@@ -265,14 +266,36 @@ class QuantizationService:
         torch.manual_seed(seed)
         self._logger.info("PyTorch RNG seed fixed | seed=%d", seed)
 
+    def _log_tflite_artifact(self, run_id: str, tflite_path: str) -> None:
+        """Log the quantized .tflite to MLflow as a run artifact.
+
+        Non-fatal: the lakeFS/S3 upload is the authoritative artifact store,
+        so an MLflow logging failure only warns (consistent with the other
+        MLflow logging in this service).
+        """
+        client = MlflowClient()
+        try:
+            client.log_artifact(run_id, tflite_path)
+            self._logger.info(
+                "Logged TFLite artifact to MLflow | run_id=%s file=%s",
+                run_id,
+                Path(tflite_path).name,
+            )
+        except Exception as exc:
+            self._logger.warning("Failed to log TFLite artifact to MLflow: %s", exc)
+
     def _run_parity_and_log(
         self,
         run_id: str,
         tflite_path: str,
         fp32_checkpoint_path: Optional[str],
         params: QuantizationParams,
+        headless: bool,
     ) -> ParityReport:
         """Run parity test, save report, and log metrics/artifact to MLflow.
+
+        ``headless`` selects the FP32 reference forward: ``False`` for PTQ
+        (full-model TFLite) and ``True`` for QAT (backbone+neck TFLite).
 
         If fp32_checkpoint_path is None (QAT passthrough without a checkpoint),
         parity is skipped and a passing report with zero error is returned.
@@ -296,6 +319,7 @@ class QuantizationService:
             parity_frames=params.parity_frames,
             seed=params.calibration_seed,
             max_abs_error_threshold=params.parity_max_abs_error,
+            headless=headless,
         )
 
         report_path = self._parity.save_report(parity, params.output_dir)
