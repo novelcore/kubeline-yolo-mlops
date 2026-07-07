@@ -25,6 +25,10 @@ pyyaml = ">=6.0"
 numpy = ">=1.24"
 pillow = ">=10.0"
 ai-edge-litert = ">=1.0"
+# System-resource sampling for MLflow system metrics during the (long, CPU-heavy)
+# export. pynvml is optional at runtime (GPU metrics only for QAT-on-GPU runs).
+psutil = ">=5.9"
+pynvml = ">=11.5"
 
 [tool.poetry.group.dev.dependencies]
 black = "^25.1.0"
@@ -33,6 +37,7 @@ mypy = "^1.15.0"
 pytest = "^8.4.1"
 pytest-cov = "^6.2.1"
 types-pyyaml = ">=6.0"
+types-psutil = ">=5.9"
 
 [tool.poetry.scripts]
 model-quantization = "app.cli:main"
