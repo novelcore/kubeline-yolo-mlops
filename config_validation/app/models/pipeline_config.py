@@ -29,7 +29,13 @@ class ExperimentConfig(BaseModel):
 
 
 class DatasetConfig(BaseModel):
-    version: str
+    # dataset.version is OPTIONAL provenance metadata (derived from dataset-ref),
+    # recorded in MLflow — it is no longer a path segment (the dataset lives at the
+    # branch ROOT s3://repo/branch/, addressed by lakefs_branch). Defaulting empty
+    # matches the kubeline form default; a client submitting via the Argo UI with
+    # defaults must NOT fail here. (Was `version: str` + a non-empty validator,
+    # which contradicted the derived-provenance design and broke every default submit.)
+    version: str = ""
     source: str
     path_override: Optional[str] = None
     lakefs_repo: Optional[str] = None
@@ -46,13 +52,6 @@ class DatasetConfig(BaseModel):
     # are streamed from S3 at train time.
     labels_only: bool = False
     manifest_only: bool = False
-
-    @field_validator("version", mode="after")
-    @classmethod
-    def version_must_be_non_empty(cls, v: str) -> str:
-        if not v:
-            raise ValueError("dataset.version must not be empty")
-        return v
 
     @field_validator("source", mode="after")
     @classmethod
