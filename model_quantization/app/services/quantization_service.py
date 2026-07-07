@@ -311,24 +311,44 @@ class QuantizationService:
                 frames_tested=0,
             )
 
-        parity = self._parity.run(
-            tflite_path=tflite_path,
-            fp32_checkpoint_path=fp32_checkpoint_path,
-            dataset_dir=params.dataset_dir,
-            image_size=params.image_size,
-            parity_frames=params.parity_frames,
-            seed=params.calibration_seed,
-            max_abs_error_threshold=params.parity_max_abs_error,
-            headless=headless,
-        )
-
-        report_path = self._parity.save_report(parity, params.output_dir)
+        try:
+            parity = self._parity.run(
+                tflite_path=tflite_path,
+                fp32_checkpoint_path=fp32_checkpoint_path,
+                dataset_dir=params.dataset_dir,
+                image_size=params.image_size,
+                parity_frames=params.parity_frames,
+                seed=params.calibration_seed,
+                max_abs_error_threshold=params.parity_max_abs_error,
+                headless=headless,
+            )
+            report_path: Optional[str] = self._parity.save_report(
+                parity, params.output_dir
+            )
+        except Exception as exc:
+            # Parity is DIAGNOSTIC, not a gate. By this point the INT8 model is
+            # already exported, uploaded to S3 and logged to MLflow, so a parity
+            # computation error must not fail the step (which would also drop the
+            # quantization_result.json output). Record a sentinel and continue.
+            self._logger.error(
+                "Parity test errored (non-fatal; INT8 artifact already published): %s",
+                exc,
+                exc_info=True,
+            )
+            parity = ParityReport(
+                parity_passed=False,
+                max_abs_error=-1.0,  # sentinel: parity could not be computed
+                threshold=params.parity_max_abs_error,
+                frames_tested=0,
+            )
+            report_path = None
 
         client = MlflowClient()
         try:
             client.log_metric(run_id, "parity_max_abs_error", parity.max_abs_error)
             client.log_metric(run_id, "parity_passed", float(parity.parity_passed))
-            client.log_artifact(run_id, report_path)
+            if report_path is not None:
+                client.log_artifact(run_id, report_path)
         except Exception as exc:
             self._logger.warning("Failed to log parity metrics to MLflow: %s", exc)
 
