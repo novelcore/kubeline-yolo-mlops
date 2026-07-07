@@ -27,18 +27,36 @@ pipeline:
       description: "Optional free-text description stored in the MLflow run."
 
     # ── Dataset ───────────────────────────────────────────────────────────────
-    - name: dataset-version
-      default: "upload-initial"
-      description: "Dataset version tag (e.g. 'v1' or 'upload-initial')."
+    # dataset-ref is rendered into a DROPDOWN of the lakeFS datasets discovered by
+    # the ml-dataset-catalog-probe (any ref whose root holds a data.yaml). The
+    # picked ref is pinned to its immutable commit and threaded to the dataset
+    # steps as path_override. Upload a new dataset with scripts/upload-dataset.sh;
+    # it appears here after the next probe. The default below is a safe fallback
+    # for a fresh render before the catalog is populated.
+    - name: dataset-ref
+      default: "main"
+      description: "Dataset (lakeFS ref) to train on — rendered as a dropdown from the dataset catalog."
 
     - name: dataset-source
       default: "lakefs"
       enum: ["lakefs", "s3"]
       description: "Storage backend for the dataset: 'lakefs' or 's3'."
 
+    # dataset-version is retained ONLY as MLflow provenance metadata (derived from
+    # dataset-ref); it is no longer a path segment. Kept so model-registration can
+    # record which dataset a model trained on.
+    - name: dataset-version
+      default: ""
+      description: "Provenance tag recorded in MLflow (derived from dataset-ref). Not a path."
+
+    # dataset-path-override is the manual escape hatch: leave empty and the picked
+    # dataset-ref resolves to its frozen-commit lakeFS path automatically. Set a
+    # full s3:// URI here only to point at a dataset the catalog hasn't discovered
+    # yet. It MUST stay declared (empty default) — render-wft's dataset-ref
+    # resolution references this parameter.
     - name: dataset-path-override
       default: ""
-      description: "Full S3/LakeFS URI override. Empty = auto-construct from repo/branch/version."
+      description: "Optional s3:// override. Empty = use the picked dataset-ref."
 
     - name: dataset-sample-size
       default: ""
@@ -350,7 +368,7 @@ steps:
             version: "{{workflow.parameters.dataset-version}}"
             source: "{{workflow.parameters.dataset-source}}"
             lakefs_repo: "{{workflow.parameters.lakefs-repo}}"
-            lakefs_branch: "{{workflow.parameters.lakefs-branch}}"
+            lakefs_branch: "{{workflow.parameters.dataset-ref}}"
             lakefs_endpoint: "{{workflow.parameters.lakefs-endpoint}}"
             path_override: "{{workflow.parameters.dataset-path-override}}"
             sample_size: {{workflow.parameters.dataset-sample-size}}
@@ -602,7 +620,7 @@ steps:
             version: "{{workflow.parameters.dataset-version}}"
             source: "{{workflow.parameters.dataset-source}}"
             lakefs_repo: "{{workflow.parameters.lakefs-repo}}"
-            lakefs_branch: "{{workflow.parameters.lakefs-branch}}"
+            lakefs_branch: "{{workflow.parameters.dataset-ref}}"
             lakefs_endpoint: "{{workflow.parameters.lakefs-endpoint}}"
             path_override: "{{workflow.parameters.dataset-path-override}}"
             sample_size: {{workflow.parameters.dataset-sample-size}}
@@ -1044,13 +1062,17 @@ steps:
             print(f"[qat-finetune] mode={mode} (not qat) - no-op; wrote stub qat_result.json.", flush=True)
             sys.exit(0)
 
-        # Derive output bucket from checkpoint URI (same bucket as training artifacts)
-        # Format: s3://<bucket>/<prefix>/...
+        # Derive output bucket + lakeFS branch from checkpoint URI (same as training).
+        # s3://<repo>/<branch>/<path>: branch is the FIRST key segment; the output
+        # prefix must start with it or lakeFS treats it as a non-existent branch.
         checkpoint_uri = best_checkpoint_s3
         if checkpoint_uri.startswith("s3://"):
-            output_bucket = checkpoint_uri[5:].split("/")[0]
+            _ckpt_parts = checkpoint_uri[5:].split("/")
+            output_bucket = _ckpt_parts[0]
+            lakefs_branch = _ckpt_parts[1] if len(_ckpt_parts) > 1 else "main"
         else:
             output_bucket = os.environ.get("CHECKPOINT_BUCKET", "")
+            lakefs_branch = os.environ.get("LAKEFS_BRANCH", "main")
         if not output_bucket:
             print("ERROR: cannot derive output bucket from checkpoint URI and CHECKPOINT_BUCKET is unset.", flush=True)
             sys.exit(1)
@@ -1120,7 +1142,7 @@ steps:
             "--dataset-dir", "/work/dataset",
             "--output-dir", "/work/qat_output",
             "--output-bucket", output_bucket,
-            "--output-prefix", str(quant.get("output_prefix", "quantization/qat")),
+            "--output-prefix", f"{lakefs_branch}/{quant.get('output_prefix', 'quantization/qat')}",
             "--experiment-name", str(exp.get("name", "quantization")),
             "--image-size", str(quant.get("image_size", 640)),
             "--qat-epochs", str(quant.get("qat_epochs", 10)),
@@ -1141,12 +1163,12 @@ steps:
           path: /work/qat_output/qat_result.json
     resources:
       requests:
-        cpu: "1"
-        memory: "4Gi"
+        cpu: "4"
+        memory: "16Gi"
         ephemeral-storage: "20Gi"
       limits:
-        cpu: "2"
-        memory: "8Gi"
+        cpu: "8"
+        memory: "32Gi"
         ephemeral-storage: "50Gi"
 
   # ──────────────────────────────────────────────────────────────────────────
@@ -1242,11 +1264,17 @@ steps:
             print(f"ERROR: training_result missing mlflow_run_id: {tr}", flush=True)
             sys.exit(1)
 
-        # Derive output bucket from checkpoint URI.
+        # Derive output bucket + lakeFS branch from checkpoint URI.
+        # s3://<repo>/<branch>/<path>: the branch is the FIRST key segment; lakeFS
+        # reads it as the branch, so the output prefix must start with it (else lakeFS
+        # treats e.g. 'quantization' as a non-existent branch -> NoSuchBucket).
         if best_checkpoint_s3 and best_checkpoint_s3.startswith("s3://"):
-            output_bucket = best_checkpoint_s3[5:].split("/")[0]
+            _ckpt_parts = best_checkpoint_s3[5:].split("/")
+            output_bucket = _ckpt_parts[0]
+            lakefs_branch = _ckpt_parts[1] if len(_ckpt_parts) > 1 else "main"
         else:
             output_bucket = os.environ.get("CHECKPOINT_BUCKET", "")
+            lakefs_branch = os.environ.get("LAKEFS_BRANCH", "main")
         if not output_bucket:
             print("ERROR: cannot derive output bucket from checkpoint URI and CHECKPOINT_BUCKET is unset.", flush=True)
             sys.exit(1)
@@ -1327,7 +1355,7 @@ steps:
             "--dataset-dir", "/work/dataset",
             "--output-dir", "/work/quant_output",
             "--output-bucket", output_bucket,
-            "--output-prefix", str(quant.get("output_prefix", "quantization/model")),
+            "--output-prefix", f"{lakefs_branch}/{quant.get('output_prefix', 'quantization/model')}",
             "--experiment-name", str(exp.get("name", "quantization")),
             "--image-size", str(quant.get("image_size", 640)),
             "--calibration-frames", str(quant.get("calibration_frames", 512)),
@@ -1373,12 +1401,12 @@ steps:
           path: /work/quant_output/quantization_result.json
     resources:
       requests:
-        cpu: "1"
-        memory: "2Gi"
-        ephemeral-storage: "10Gi"
-      limits:
         cpu: "2"
         memory: "8Gi"
+        ephemeral-storage: "10Gi"
+      limits:
+        cpu: "4"
+        memory: "16Gi"
         ephemeral-storage: "20Gi"
 
   # ──────────────────────────────────────────────────────────────────────────
@@ -1480,3 +1508,19 @@ steps:
         print(f"[model-registration] Running: model-registration {' '.join(flags)}", flush=True)
         result = subprocess.run(["model-registration"] + flags)
         sys.exit(result.returncode)
+
+# live-compute dropdown render trigger 1783050187
+# render retry 1783051232
+# render retry-3 1783052255
+# render capture 1783052643
+# render 0.12.3 param-fix 1783056112
+# fresh render 1783056373
+# dot-notation render 1783058727
+# 0.12.5 render 1783060068
+# settled 0.12.5 render 1783060397
+# 0.12.6 ci-pool-tol render 1783063055
+# settled 0.12.6 tol render 1783063333
+# bug9 SA render 1783065666
+# bug10 rbac render 1783067880
+# rollback render (legacy static pools) 1783370378
+# re-render clean pipeline-context 1783370642
