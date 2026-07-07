@@ -303,13 +303,21 @@ def test_invalid_dataset_source_fails():
         PipelineConfig(**data)
 
 
-def test_missing_dataset_version_fails():
+def test_missing_dataset_version_is_allowed():
+    # dataset.version is now OPTIONAL provenance metadata (derived from
+    # dataset-ref), not a required path segment — omitting it (or passing empty,
+    # the kubeline form default) must NOT fail, or every default Argo-UI submit
+    # would break at config-validation.
     data = dict(VALID_CONFIG)
     data["dataset"] = {
         k: v for k, v in VALID_CONFIG["dataset"].items() if k != "version"
     }
-    with pytest.raises(ValidationError):
-        PipelineConfig(**data)
+    cfg = PipelineConfig(**data)
+    assert cfg.dataset.version == ""
+
+    data_empty = dict(VALID_CONFIG)
+    data_empty["dataset"] = {**VALID_CONFIG["dataset"], "version": ""}
+    assert PipelineConfig(**data_empty).dataset.version == ""
 
 
 # ---------------------------------------------------------------------------
