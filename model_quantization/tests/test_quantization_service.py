@@ -791,3 +791,135 @@ class TestDeterminismControlsPTQ:
             service._run_ptq(ptq_params)
 
         assert call_order.index("seed_torch") < call_order.index("export_ptq")
+
+
+# ── System-metrics sampler ─────────────────────────────────────────────────────
+
+
+class TestSystemMetricsSampler:
+    def test_logs_system_metrics_during_body(
+        self, service: QuantizationService
+    ) -> None:
+        """The sampler logs at least one ResourceMonitor snapshot to MLflow."""
+        import threading
+
+        collected = threading.Event()
+
+        def _collect() -> dict:
+            collected.set()
+            return {"system/cpu_percent": 12.5, "system/ram_percent": 30.0}
+
+        mock_monitor = MagicMock()
+        mock_monitor.collect.side_effect = _collect
+        mock_client = MagicMock()
+
+        with (
+            patch(
+                "app.services.quantization_service.ResourceMonitor",
+                return_value=mock_monitor,
+            ),
+            patch(
+                "app.services.quantization_service.MlflowClient",
+                return_value=mock_client,
+            ),
+        ):
+            with service._sample_system_metrics("run-1"):
+                # first iteration fires immediately (collect before wait)
+                assert collected.wait(timeout=2.0)
+
+        logged = {c.args[1] for c in mock_client.log_metric.call_args_list}
+        assert "system/cpu_percent" in logged
+        assert "system/ram_percent" in logged
+
+    def test_sampler_disabled_when_monitor_construction_fails(
+        self, service: QuantizationService
+    ) -> None:
+        """A ResourceMonitor init failure must not break the body (best-effort)."""
+        with patch(
+            "app.services.quantization_service.ResourceMonitor",
+            side_effect=RuntimeError("no psutil"),
+        ):
+            with service._sample_system_metrics("run-1"):
+                pass  # body still runs, no exception
+
+
+# ── mAP-delta ──────────────────────────────────────────────────────────────────
+
+
+class TestMapDelta:
+    def test_logs_fp32_int8_and_delta_metrics(
+        self, service: QuantizationService, ptq_params: QuantizationParams
+    ) -> None:
+        fp32 = {"metrics/mAP50(B)": 0.90, "metrics/mAP50(P)": 0.50}
+        int8 = {"metrics/mAP50(B)": 0.80, "metrics/mAP50(P)": 0.40}
+        mock_client = MagicMock()
+
+        with (
+            patch.object(service, "_validate_map", side_effect=[fp32, int8]),
+            patch(
+                "app.services.quantization_service.MlflowClient",
+                return_value=mock_client,
+            ),
+        ):
+            service._run_map_delta_and_log(
+                run_id="run-1",
+                fp32_checkpoint_path="/local/best.pt",
+                tflite_path="/local/best_int8.tflite",
+                data_yaml="/data/data.yaml",
+                params=ptq_params,
+            )
+
+        logged = {c.args[1]: c.args[2] for c in mock_client.log_metric.call_args_list}
+        assert logged["fp32_mAP50B"] == 0.90
+        assert logged["int8_mAP50B"] == 0.80
+        assert logged["delta_mAP50B"] == pytest.approx(0.10)
+        assert logged["delta_mAP50P"] == pytest.approx(0.10)
+        # retention = int8 / fp32 on the box reference
+        assert logged["int8_map_retention_mAP50B"] == pytest.approx(0.80 / 0.90)
+        assert logged["map_delta_reference_map50b"] == 0.90
+
+    def test_zero_reference_skips_retention(
+        self, service: QuantizationService, ptq_params: QuantizationParams
+    ) -> None:
+        """Untrained/unlabelled val (ref mAP ~0) → no divide-by-zero retention."""
+        fp32 = {"metrics/mAP50(B)": 0.0, "metrics/mAP50(P)": 0.0}
+        int8 = {"metrics/mAP50(B)": 0.0, "metrics/mAP50(P)": 0.0}
+        mock_client = MagicMock()
+
+        with (
+            patch.object(service, "_validate_map", side_effect=[fp32, int8]),
+            patch(
+                "app.services.quantization_service.MlflowClient",
+                return_value=mock_client,
+            ),
+        ):
+            service._run_map_delta_and_log(
+                run_id="run-1",
+                fp32_checkpoint_path="/local/best.pt",
+                tflite_path="/local/best_int8.tflite",
+                data_yaml="/data/data.yaml",
+                params=ptq_params,
+            )
+
+        logged = {c.args[1] for c in mock_client.log_metric.call_args_list}
+        assert "map_delta_reference_map50b" in logged
+        assert "int8_map_retention_mAP50B" not in logged
+
+    def test_map_delta_is_non_fatal(
+        self, service: QuantizationService, ptq_params: QuantizationParams
+    ) -> None:
+        """A val failure must not raise — the INT8 artifact is already published."""
+        with (
+            patch.object(
+                service, "_validate_map", side_effect=RuntimeError("val blew up")
+            ),
+            patch("app.services.quantization_service.MlflowClient"),
+        ):
+            # must not raise
+            service._run_map_delta_and_log(
+                run_id="run-1",
+                fp32_checkpoint_path="/local/best.pt",
+                tflite_path="/local/best_int8.tflite",
+                data_yaml="/data/data.yaml",
+                params=ptq_params,
+            )

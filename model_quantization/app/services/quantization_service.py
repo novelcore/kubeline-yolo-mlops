@@ -14,8 +14,10 @@ QAT passthrough:
 
 import logging
 import os
+import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 import mlflow
 import torch
@@ -24,6 +26,19 @@ from ultralytics import YOLO
 
 from app.models.quantization import ParityReport, QuantizationParams, QuantizationResult
 from app.services.parity_test import ParityTestService
+from app.services.resource_monitor import ResourceMonitor
+
+# Interval (seconds) between system-metric samples during the export.
+_SYSTEM_METRICS_INTERVAL_S = 15.0
+
+# Ultralytics results_dict keys → sanitized MLflow metric suffixes. Covers the
+# box (B) detection metrics and, for pose models, the keypoint (P) metrics.
+_MAP_METRIC_KEYS: dict[str, str] = {
+    "metrics/mAP50(B)": "mAP50B",
+    "metrics/mAP50-95(B)": "mAP50-95B",
+    "metrics/mAP50(P)": "mAP50P",
+    "metrics/mAP50-95(P)": "mAP50-95P",
+}
 
 
 class QuantizationError(Exception):
@@ -75,19 +90,28 @@ class QuantizationService:
                 local_ckpt,
             )
 
-            self._seed_torch(params.calibration_seed)  # FR-M-04
-            tflite_path = self._export_ptq(local_ckpt, data_yaml, params)
-            s3_uri = self._upload_tflite(tflite_path, params)
-            self._log_tflite_artifact(run_id, tflite_path)
-            # PTQ exports the FULL model → compare against full-model FP32.
-            parity = self._run_parity_and_log(
-                run_id=run_id,
-                tflite_path=tflite_path,
-                fp32_checkpoint_path=local_ckpt,
-                params=params,
-                headless=False,
-            )
-            self._log_ptq_run(run_id, params, s3_uri)
+            with self._sample_system_metrics(run_id):
+                self._seed_torch(params.calibration_seed)  # FR-M-04
+                tflite_path = self._export_ptq(local_ckpt, data_yaml, params)
+                s3_uri = self._upload_tflite(tflite_path, params)
+                self._log_tflite_artifact(run_id, tflite_path)
+                # PTQ exports the FULL model → compare against full-model FP32.
+                parity = self._run_parity_and_log(
+                    run_id=run_id,
+                    tflite_path=tflite_path,
+                    fp32_checkpoint_path=local_ckpt,
+                    params=params,
+                    headless=False,
+                )
+                # Task-metric quality signal: INT8 vs FP32 mAP on the val set.
+                self._run_map_delta_and_log(
+                    run_id=run_id,
+                    fp32_checkpoint_path=local_ckpt,
+                    tflite_path=tflite_path,
+                    data_yaml=data_yaml,
+                    params=params,
+                )
+                self._log_ptq_run(run_id, params, s3_uri)
 
         self._logger.info("PTQ complete | run_id=%s tflite=%s", run_id, s3_uri)
 
@@ -163,18 +187,19 @@ class QuantizationService:
                 params.tflite_s3_uri,
             )
 
-            local_tflite = self._download_tflite(
-                params.tflite_s3_uri, params.output_dir
-            )
-            self._log_tflite_artifact(run_id, local_tflite)
-            # QAT exports the backbone+neck only (CON-03) → headless FP32.
-            parity = self._run_parity_and_log(
-                run_id=run_id,
-                tflite_path=local_tflite,
-                fp32_checkpoint_path=params.fp32_checkpoint_path,
-                params=params,
-                headless=True,
-            )
+            with self._sample_system_metrics(run_id):
+                local_tflite = self._download_tflite(
+                    params.tflite_s3_uri, params.output_dir
+                )
+                self._log_tflite_artifact(run_id, local_tflite)
+                # QAT exports the backbone+neck only (CON-03) → headless FP32.
+                parity = self._run_parity_and_log(
+                    run_id=run_id,
+                    tflite_path=local_tflite,
+                    fp32_checkpoint_path=params.fp32_checkpoint_path,
+                    params=params,
+                    headless=True,
+                )
             self._log_qat_passthrough_run(run_id, params)
 
         self._logger.info("QAT passthrough complete | run_id=%s", run_id)
@@ -353,3 +378,154 @@ class QuantizationService:
             self._logger.warning("Failed to log parity metrics to MLflow: %s", exc)
 
         return parity
+
+    # ------------------------------------------------------------------
+    # System-resource sampling
+    # ------------------------------------------------------------------
+
+    @contextmanager
+    def _sample_system_metrics(self, run_id: str) -> Iterator[None]:
+        """Sample CPU/RAM (and GPU when present) into MLflow while the body runs.
+
+        Runs a daemon thread that logs a snapshot from :class:`ResourceMonitor`
+        every ``_SYSTEM_METRICS_INTERVAL_S`` seconds under a monotonically
+        increasing step. This gives the quantization run a system-metrics time
+        series (parity with the training run, whose ``resource_monitor`` logs the
+        same ``system/*`` keys). Entirely best-effort: any failure to start or
+        sample is swallowed so it never affects the export.
+        """
+        monitor: Optional[ResourceMonitor]
+        try:
+            # gpu_index=0 is inert on CPU nodes (ResourceMonitor skips GPU unless
+            # pynvml detected a device); relevant only for QAT-on-GPU passthrough.
+            monitor = ResourceMonitor(gpu_index=0)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("System-metrics sampler disabled: %s", exc)
+            monitor = None
+
+        if monitor is None:
+            yield
+            return
+
+        client = MlflowClient()
+        stop = threading.Event()
+        state = {"step": 0}
+
+        def _loop() -> None:
+            while not stop.is_set():
+                for key, value in monitor.collect().items():
+                    try:
+                        client.log_metric(run_id, key, value, step=state["step"])
+                    except Exception:  # noqa: BLE001
+                        pass
+                state["step"] += 1
+                stop.wait(_SYSTEM_METRICS_INTERVAL_S)
+
+        thread = threading.Thread(
+            target=_loop, name="quant-system-metrics", daemon=True
+        )
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join(timeout=5.0)
+
+    # ------------------------------------------------------------------
+    # mAP-delta (FP32 vs INT8 task-metric quality)
+    # ------------------------------------------------------------------
+
+    def _run_map_delta_and_log(
+        self,
+        run_id: str,
+        fp32_checkpoint_path: str,
+        tflite_path: str,
+        data_yaml: str,
+        params: QuantizationParams,
+    ) -> None:
+        """Validate FP32 and INT8 on the val set and log the mAP delta.
+
+        This is the *task-level* quality signal parity cannot give: it runs
+        ``model.val`` on the FP32 ``.pt`` and the INT8 ``.tflite`` over the same
+        val split and logs ``fp32_<k>`` / ``int8_<k>`` / ``delta_<k>`` for box
+        (B) and pose (P) mAP. Retention is logged as ``int8_map_retention_mAP50B``
+        (int8 ÷ fp32) when the FP32 reference is non-zero.
+
+        Entirely non-fatal — the INT8 artifact is already published. NOTE: this
+        needs a *labelled* val split; on a labels-only calibration download (or
+        an untrained model) the reference mAP is ~0, in which case the delta is
+        uninformative and ``map_delta_reference_map50b`` (logged) will be ~0.
+        """
+        client = MlflowClient()
+        try:
+            fp32_metrics = self._validate_map(
+                fp32_checkpoint_path, data_yaml, params, tag="fp32"
+            )
+            int8_metrics = self._validate_map(
+                tflite_path, data_yaml, params, tag="int8"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._logger.error(
+                "mAP-delta errored (non-fatal; INT8 artifact already published): %s",
+                exc,
+                exc_info=True,
+            )
+            return
+
+        try:
+            for raw_key, suffix in _MAP_METRIC_KEYS.items():
+                fp32_v = fp32_metrics.get(raw_key)
+                int8_v = int8_metrics.get(raw_key)
+                if fp32_v is None or int8_v is None:
+                    continue
+                client.log_metric(run_id, f"fp32_{suffix}", fp32_v)
+                client.log_metric(run_id, f"int8_{suffix}", int8_v)
+                client.log_metric(run_id, f"delta_{suffix}", fp32_v - int8_v)
+
+            ref = fp32_metrics.get("metrics/mAP50(B)")
+            if ref is not None:
+                # Self-documenting flag: if ~0 the mAP-delta is not meaningful
+                # (unlabelled val or an untrained model).
+                client.log_metric(run_id, "map_delta_reference_map50b", ref)
+                int8_ref = int8_metrics.get("metrics/mAP50(B)")
+                if ref > 1e-6 and int8_ref is not None:
+                    client.log_metric(
+                        run_id, "int8_map_retention_mAP50B", int8_ref / ref
+                    )
+            self._logger.info(
+                "mAP-delta | fp32_mAP50B=%.5f int8_mAP50B=%.5f fp32_mAP50P=%.5f "
+                "int8_mAP50P=%.5f",
+                fp32_metrics.get("metrics/mAP50(B)", 0.0),
+                int8_metrics.get("metrics/mAP50(B)", 0.0),
+                fp32_metrics.get("metrics/mAP50(P)", 0.0),
+                int8_metrics.get("metrics/mAP50(P)", 0.0),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("Failed to log mAP-delta metrics to MLflow: %s", exc)
+
+    def _validate_map(
+        self,
+        model_path: str,
+        data_yaml: str,
+        params: QuantizationParams,
+        tag: str,
+    ) -> dict[str, float]:
+        """Run ``model.val`` and return its ``results_dict`` (box + pose mAP).
+
+        Writes val outputs under ``output_dir`` (the pod's writable volume) and
+        disables plots for speed. AutoBackend handles the INT8 ``.tflite``
+        dequantization, so the same call works for both ``.pt`` and ``.tflite``.
+        """
+        self._logger.info("mAP val (%s) | model=%s", tag, model_path)
+        model = YOLO(model_path)
+        results = model.val(
+            data=data_yaml,
+            imgsz=params.image_size,
+            verbose=False,
+            plots=False,
+            project=params.output_dir,
+            name=f"val_{tag}",
+            exist_ok=True,
+        )
+        results_dict = getattr(results, "results_dict", None) or {}
+        return {k: float(v) for k, v in results_dict.items()}
