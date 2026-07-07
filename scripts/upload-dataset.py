@@ -13,9 +13,10 @@ so it shows up in the pipeline's `dataset-ref` dropdown.
   <branch>             lakeFS branch to sync into (this is the value shown in
                        the dropdown). Created from the default branch if new.
 
-Config (flags override env):
-  --url  / LAKEFS_URL    lakeFS ingress, e.g. https://lakefs-<project>.<baseDns>
-  --repo / LAKEFS_REPO   lakeFS repository name
+Your lakeFS URL and repo are already configured for this app
+(.kubecore/dataset-config.yaml), so you normally pass neither. The optional
+--url / --repo flags (or LAKEFS_URL / LAKEFS_REPO env vars) only exist for
+running outside your app clone.
 
 Prefer the full CLI for anything beyond the happy path:
     kubecore-dataset --help
