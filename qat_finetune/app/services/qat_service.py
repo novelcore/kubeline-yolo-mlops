@@ -22,6 +22,7 @@ import mlflow
 import torch
 import torch.nn as nn
 from mlflow.tracking import MlflowClient
+from torchao.quantization.pt2e import allow_exported_model_train_eval
 from torchao.quantization.pt2e.quantize_pt2e import convert_pt2e, prepare_qat_pt2e
 from ultralytics import YOLO
 
@@ -196,6 +197,11 @@ class QATService:
             get_symmetric_quantization_config(is_per_channel=False)
         )
         prepared = prepare_qat_pt2e(module, quantizer)
+        # torch.export graph modules reject the standard nn.Module .train()/.eval()
+        # ("Calling train() or eval() is not supported for exported models").
+        # This patches them to torchao's move_exported_model_to_{train,eval} so the
+        # fine-tune loop's prepared.train()/.eval() calls work (PT2E QAT requirement).
+        allow_exported_model_train_eval(prepared)
         self._logger.info("QAT preparation complete — fake-quantize nodes inserted")
         return prepared
 
