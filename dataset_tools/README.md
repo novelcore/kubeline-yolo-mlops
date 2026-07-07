@@ -65,7 +65,7 @@ The CLI gets that cookie for you:
 
 ```
 🔑  Opening your browser to log in…
-    https://lakefs-yolo.<baseDns>/oauth2/start?rd=http://localhost:8765/callback
+    https://lakefs-<project>.<baseDns>/oauth2/start?rd=http://localhost:8765/callback
     (click the link above if the browser didn't open)
 
 ✓ Logged in — session cached.
