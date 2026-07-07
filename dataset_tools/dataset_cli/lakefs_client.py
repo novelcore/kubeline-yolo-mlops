@@ -1,11 +1,15 @@
 """Thin lakeFS REST client used by the dataset CLI.
 
-lakeFS OSS has no per-user identity. On this platform it sits behind an
-oauth2-proxy(Zitadel) + nginx sidecar that injects the shared lakeFS admin
-Basic-auth header server-side. So the *client* authenticates to oauth2-proxy
-with a Zitadel session cookie (`_lakefs_oauth2`); lakeFS itself always sees the
-admin. This client therefore carries only the cookie — no lakeFS access keys
-ever live on the developer's machine.
+lakeFS OSS runs here in ``basic_auth`` mode (RBAC:none): a single admin user, no
+per-user identity, and no mintable per-user credentials. On this platform lakeFS
+sits behind oauth2-proxy(Zitadel) + an nginx sidecar that injects the shared
+admin Basic-auth header server-side. oauth2-proxy is the gate: it accepts only a
+valid ``_lakefs_oauth2`` session cookie (or a Zitadel JWT bearer) and rejects a
+raw admin Basic header, so the admin key is useless to a headless caller. The
+credential the CLI carries is therefore the session cookie — oauth2-proxy
+validates it and forwards to nginx, which injects admin Basic before lakeFS.
+This client carries only that cookie; no lakeFS access keys ever live on the
+developer's machine. (See login.py for how the cookie is captured same-origin.)
 
 Everything talks to the SSO-protected ingress `https://lakefs-<project>.<baseDns>`
 over the lakeFS REST API v1. See ``dataset_tools/README.md`` for the full flow.
