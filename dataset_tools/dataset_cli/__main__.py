@@ -109,19 +109,15 @@ def cmd_sync(args, *, do_auth: bool = True) -> int:
         extra_metadata={"branch": branch},
     )
     if commit_id and not args.dry_run:
-        # Print the REAL force-probe command using the app's own discovered
-        # namespace + probe name (from .kubecore/dataset-config.yaml); fall back
-        # to generic placeholders when the config isn't present.
-        start = _dataset_start(args)
-        ns = config_value("namespace", start) or "ml-<project>"
-        probe = config_value("probeCron", start) or "<app>-dataset-catalog-probe"
+        # No cluster/kubectl instructions here: the client has only the browser +
+        # the Argo UI. The catalog list refreshes on its own (~30 min), so all they
+        # need to know is the name to pick and that it'll appear shortly.
         print(
-            f"\n✓ Done. Branch '{branch}' now matches your local dataset "
+            f"\n✓ Done. '{branch}' is uploaded and versioned "
             f"(commit {commit_id[:12]}).\n"
-            f"  It appears as a `dataset-ref` option after the catalog probe runs "
-            f"(≤30 min).\n"
-            f"  Force it now:  kubectl -n {ns} create job "
-            f"--from=cronjob/{probe} probe-now"
+            f"  Next: open the Argo Workflows UI, Submit your training pipeline, and\n"
+            f"  pick '{branch}' in the dataset-ref dropdown. It appears there within\n"
+            f"  ~30 minutes of uploading (the list refreshes automatically)."
         )
     return 0
 
