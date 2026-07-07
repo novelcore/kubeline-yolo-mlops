@@ -7,7 +7,7 @@ Subcommands:
   upload    Alias for `sync` with login + validate wired in (the old one-liner).
 
 Config precedence for every value: CLI flag > environment variable > default.
-  LAKEFS_URL     external ingress, e.g. https://lakefs-yolo.<baseDns>
+  LAKEFS_URL     external ingress, e.g. https://lakefs-<project>.<baseDns> (auto-discovered from .kubecore/dataset-config.yaml)
   LAKEFS_REPO    lakeFS repository (default: derived / required)
   LAKEFS_BRANCH  target branch (default: main)
 """
@@ -19,6 +19,7 @@ import pathlib
 import sys
 
 from . import __version__
+from .appconfig import config_value
 from .lakefs_client import LakeFSClient
 from .login import login as do_login
 from .sync import sync as do_sync
@@ -29,20 +30,30 @@ def _env(name: str, default: str | None = None) -> str | None:
     return os.environ.get(name, default)
 
 
+def _dataset_start(args) -> str | None:
+    # anchor for config discovery: the dataset dir if given, else CWD
+    return getattr(args, "dataset_dir", None)
+
+
 def _resolve_url(args) -> str:
-    url = args.url or _env("LAKEFS_URL")
+    # precedence: flag > env > per-app .kubecore/dataset-config.yaml (nothing hardcoded)
+    url = args.url or _env("LAKEFS_URL") or config_value("lakefsUrl", _dataset_start(args))
     if not url:
         sys.exit(
-            "ERROR: lakeFS URL is required. Pass --url or set LAKEFS_URL "
-            "(e.g. https://lakefs-<project>.<baseDns>)."
+            "ERROR: could not determine the lakeFS URL. Run inside your app clone "
+            "(which carries .kubecore/dataset-config.yaml), or pass --url / set "
+            "LAKEFS_URL (e.g. https://lakefs-<project>.<baseDns>)."
         )
     return url.rstrip("/")
 
 
 def _resolve_repo(args) -> str:
-    repo = args.repo or _env("LAKEFS_REPO")
+    repo = args.repo or _env("LAKEFS_REPO") or config_value("repo", _dataset_start(args))
     if not repo:
-        sys.exit("ERROR: lakeFS repo is required. Pass --repo or set LAKEFS_REPO.")
+        sys.exit(
+            "ERROR: could not determine the lakeFS repo. Run inside your app clone, "
+            "or pass --repo / set LAKEFS_REPO."
+        )
     return repo
 
 
@@ -98,13 +109,19 @@ def cmd_sync(args, *, do_auth: bool = True) -> int:
         extra_metadata={"branch": branch},
     )
     if commit_id and not args.dry_run:
+        # Print the REAL force-probe command using the app's own discovered
+        # namespace + probe name (from .kubecore/dataset-config.yaml); fall back
+        # to generic placeholders when the config isn't present.
+        start = _dataset_start(args)
+        ns = config_value("namespace", start) or "ml-<project>"
+        probe = config_value("probeCron", start) or "<app>-dataset-catalog-probe"
         print(
             f"\n✓ Done. Branch '{branch}' now matches your local dataset "
             f"(commit {commit_id[:12]}).\n"
             f"  It appears as a `dataset-ref` option after the catalog probe runs "
             f"(≤30 min).\n"
-            f"  Force it now:  kubectl -n ml-<project> create job "
-            f"--from=cronjob/<app>-dataset-catalog-probe probe-now"
+            f"  Force it now:  kubectl -n {ns} create job "
+            f"--from=cronjob/{probe} probe-now"
         )
     return 0
 

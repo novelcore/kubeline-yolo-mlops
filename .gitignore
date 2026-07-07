@@ -38,3 +38,22 @@ step_zero_spike.py
 # Local dev stack (AC-06 verification — not for commit)
 dev/
 pipeline_config.ac06.yaml
+
+# ── Datasets (local staging — never commit raw data) ──────────────────────────
+# Drop your YOLO-pose dataset here and upload it with `kubecore-dataset` / the
+# upload-dataset script. It goes to lakeFS, not git.
+datasets/
+dataset/
+data/
+*.dataset/
+# raw media + label + weight files anywhere (belt-and-braces)
+**/images/**/*.jpg
+**/images/**/*.jpeg
+**/images/**/*.png
+**/images/**/*.bmp
+**/images/**/*.webp
+**/labels/**/*.txt
+*.pt
+*.onnx
+*.engine
+

@@ -1,0 +1,11 @@
+# Per-app dataset config — READ BY the kubecore-dataset CLI so nothing is hardcoded.
+#
+# The platform RE-RENDERS this file per app with real values (render-wft writes
+# it into each app repo). The placeholders below are what a freshly-scaffolded
+# template looks like before the platform fills them in.
+#
+# The CLI resolves lakeFS URL/repo as: CLI flag > env var > THIS file.
+lakefsUrl: "https://lakefs-PROJECT.BASEDNS"   # EXTERNAL ingress, filled per app
+repo:      "PROJECT"                          # the project's lakeFS repository
+namespace: "ml-PROJECT"                       # the ML namespace
+probeCron: "APP-dataset-catalog-probe"        # the catalog-probe CronWorkflow
