@@ -199,8 +199,10 @@ class ParityTestService:
         """
         from ultralytics.nn.autobackend import AutoBackend
 
+        # First positional arg (Ultralytics renamed the kwarg ``weights`` → ``model``
+        # in v8.4.x; passing positionally is robust to either name).
         backend = AutoBackend(
-            weights=weights_path, device=torch.device("cpu"), fp16=False
+            weights_path, device=torch.device("cpu"), fp16=False
         )
         backend.eval() if hasattr(backend, "eval") else None
 
