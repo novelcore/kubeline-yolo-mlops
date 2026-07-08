@@ -92,10 +92,17 @@ class ParityTestService:
         logger.info("Loaded %d frames for parity test", len(frames))
 
         if headless:
+            # QAT: the INT8 tflite is HEADLESS (backbone+neck, CON-03). Reattach
+            # the FP32 detection head to its feature maps — exactly as the edge
+            # target runs it — so BOTH sides are DECODED detections in pixel
+            # space. That's a task-level comparison (like PTQ), not an
+            # uninterpretable raw-feature MSE.
             fp32_outputs = self._run_fp32_inference(
-                fp32_checkpoint_path, frames, headless=True
+                fp32_checkpoint_path, frames, headless=False
             )
-            tflite_outputs = self._run_tflite_inference(tflite_path, frames, image_size)
+            tflite_outputs = self._run_head_reattach_inference(
+                tflite_path, fp32_checkpoint_path, frames
+            )
         else:
             # PTQ: run BOTH the .pt and the full-model .tflite through
             # AutoBackend for identical preprocessing, int8 dequant and
@@ -356,6 +363,65 @@ class ParityTestService:
                     x = (x.astype(np.float32) - zero_point) * scale
                 out_parts.append(x.astype(np.float32).flatten())
             outputs.append(np.concatenate(out_parts))
+
+        return outputs
+
+    def _run_head_reattach_inference(
+        self,
+        tflite_path: str,
+        fp32_checkpoint_path: str,
+        frames: list[np.ndarray],
+    ) -> list[np.ndarray]:
+        """Run the headless INT8 tflite, then reattach the FP32 detection head.
+
+        The QAT tflite emits raw backbone+neck feature maps (no head, CON-03).
+        This runs them through the model's own FP32 head + decode — the same path
+        the edge device uses in host software — yielding decoded ``(1, no, 8400)``
+        detections in pixel space, directly comparable to the FP32 full-model
+        reference. This replaces the uninterpretable raw-feature parity.
+        """
+        from ai_edge_litert.interpreter import Interpreter
+
+        yolo = YOLO(fp32_checkpoint_path)
+        module = yolo.model.eval()
+        head = module.model[-1]
+        head.training = False  # decode mode
+
+        interpreter = Interpreter(model_path=tflite_path)
+        interpreter.allocate_tensors()
+        in_detail = interpreter.get_input_details()[0]
+        out_details = interpreter.get_output_details()
+        input_is_int = in_detail["dtype"] in (np.int8, np.int16, np.uint8)
+
+        outputs = []
+        with torch.no_grad():
+            for frame in frames:
+                # frame: NCHW float32 [0,1] -> NHWC for the tflite.
+                nhwc = np.transpose(frame[0], (1, 2, 0))[np.newaxis].astype(
+                    np.float32
+                )
+                if input_is_int:
+                    scale, zero_point = in_detail["quantization"]
+                    nhwc = (nhwc / scale + zero_point).astype(in_detail["dtype"])
+                interpreter.set_tensor(in_detail["index"], nhwc)
+                interpreter.invoke()
+
+                feats = []
+                for d in out_details:
+                    x = interpreter.get_tensor(d["index"])
+                    if d["dtype"] in (np.int8, np.int16, np.uint8):
+                        scale, zero_point = d["quantization"]
+                        x = (x.astype(np.float32) - zero_point) * scale
+                    t = torch.from_numpy(np.ascontiguousarray(x)).float()
+                    if t.dim() == 4:  # NHWC -> NCHW for the torch head
+                        t = t.permute(0, 3, 1, 2).contiguous()
+                    feats.append(t)
+
+                feats = [f for f in feats if f.dim() == 4]
+                # head expects [P3, P4, P5] — largest spatial map first.
+                feats = sorted(feats, key=lambda f: -(f.shape[-1] * f.shape[-2]))
+                decoded = self._extract_prediction(head(list(feats)))
+                outputs.append(decoded.cpu().numpy().astype(np.float32).flatten())
 
         return outputs
 

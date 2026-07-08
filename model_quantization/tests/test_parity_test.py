@@ -552,7 +552,9 @@ class TestRunOrchestration:
         with (
             patch.object(service, "_load_frames", return_value=frames),
             patch.object(service, "_run_fp32_inference", return_value=fp32_out),
-            patch.object(service, "_run_tflite_inference", return_value=tfl_out),
+            patch.object(
+                service, "_run_head_reattach_inference", return_value=tfl_out
+            ),
         ):
             return service.run(
                 tflite_path=TFLITE_PATH,
@@ -604,7 +606,7 @@ class TestRunOrchestration:
         with (
             patch.object(service, "_load_frames", return_value=frames) as mock_load,
             patch.object(service, "_run_fp32_inference", return_value=fp32),
-            patch.object(service, "_run_tflite_inference", return_value=tfl),
+            patch.object(service, "_run_head_reattach_inference", return_value=tfl),
         ):
             service.run(
                 tflite_path=TFLITE_PATH,
@@ -626,7 +628,7 @@ class TestRunOrchestration:
             patch.object(
                 service, "_run_fp32_inference", return_value=fp32
             ) as mock_fp32,
-            patch.object(service, "_run_tflite_inference", return_value=tfl),
+            patch.object(service, "_run_head_reattach_inference", return_value=tfl),
         ):
             service.run(
                 tflite_path=TFLITE_PATH,
@@ -638,4 +640,4 @@ class TestRunOrchestration:
                 max_abs_error_threshold=THRESHOLD,
                 headless=True,
             )
-        mock_fp32.assert_called_once_with(CHECKPOINT_PATH, frames, headless=True)
+        mock_fp32.assert_called_once_with(CHECKPOINT_PATH, frames, headless=False)

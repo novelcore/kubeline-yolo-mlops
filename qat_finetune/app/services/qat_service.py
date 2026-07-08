@@ -15,8 +15,10 @@ Pipeline:
 import logging
 import os
 import random
+import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Iterator, Optional
 
 import mlflow
 import torch
@@ -28,6 +30,10 @@ from torchao.quantization.pt2e.quantize_pt2e import convert_pt2e, prepare_qat_pt
 from ultralytics import YOLO
 
 from app.models.quantization import QATParams, QATResult
+from app.services.resource_monitor import ResourceMonitor
+
+# Interval (seconds) between system-metric samples during the QAT run.
+_SYSTEM_METRICS_INTERVAL_S = 15.0
 
 if TYPE_CHECKING:
     from torch.utils.data import DataLoader
@@ -83,16 +89,23 @@ class QATService:
                 device,
             )
 
-            fp32_module = self._load_headless_module(local_ckpt, device)
-            sample = (torch.zeros(1, 3, params.image_size, params.image_size, device=device),)
+            with self._sample_system_metrics(run_id):
+                fp32_module = self._load_headless_module(local_ckpt, device)
+                sample = (
+                    torch.zeros(
+                        1, 3, params.image_size, params.image_size, device=device
+                    ),
+                )
 
-            exported = self._capture_graph(fp32_module, sample)
-            prepared = self._prepare_qat(exported)
-            self._seed_rng(params.calibration_seed, device)  # FR-M-04
-            self._finetune(prepared, fp32_module, params, device)
-            quantized = self._convert(prepared)
-            tflite_path = self._export_tflite(quantized, sample, params.output_dir)
-            s3_uri = self._upload_tflite(tflite_path, params)
+                exported = self._capture_graph(fp32_module, sample)
+                prepared = self._prepare_qat(exported)
+                self._seed_rng(params.calibration_seed, device)  # FR-M-04
+                self._finetune(prepared, fp32_module, params, device)
+                quantized = self._convert(prepared)
+                tflite_path = self._export_tflite(
+                    quantized, sample, params.output_dir
+                )
+                s3_uri = self._upload_tflite(tflite_path, params)
             self._log_run(run_id, params, s3_uri)
 
         self._logger.info(
@@ -108,6 +121,56 @@ class QATService:
             parity_passed=True,
             parity_max_abs_error=0.0,
         )
+
+    # ------------------------------------------------------------------
+    # System-resource sampling
+    # ------------------------------------------------------------------
+
+    @contextmanager
+    def _sample_system_metrics(self, run_id: str) -> Iterator[None]:
+        """Sample CPU/RAM (and GPU when present) into MLflow while the body runs.
+
+        A daemon thread logs a ResourceMonitor snapshot every
+        ``_SYSTEM_METRICS_INTERVAL_S`` seconds under an increasing step, giving
+        the qat-finetune run a system-metrics time series (parity with the
+        training and model-quantization runs). QAT usually runs on GPU, so this
+        captures GPU utilization/VRAM during the fine-tune. Best-effort: any
+        failure is swallowed so it never affects the QAT run.
+        """
+        monitor: Optional[ResourceMonitor]
+        try:
+            monitor = ResourceMonitor(gpu_index=0)  # inert on CPU nodes
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("System-metrics sampler disabled: %s", exc)
+            monitor = None
+
+        if monitor is None:
+            yield
+            return
+
+        client = MlflowClient()
+        stop = threading.Event()
+        state = {"step": 0}
+
+        def _loop() -> None:
+            while not stop.is_set():
+                for key, value in monitor.collect().items():
+                    try:
+                        client.log_metric(run_id, key, value, step=state["step"])
+                    except Exception:  # noqa: BLE001
+                        pass
+                state["step"] += 1
+                stop.wait(_SYSTEM_METRICS_INTERVAL_S)
+
+        thread = threading.Thread(
+            target=_loop, name="qat-system-metrics", daemon=True
+        )
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join(timeout=5.0)
 
     # ------------------------------------------------------------------
     # Step 1 — Checkpoint resolution
