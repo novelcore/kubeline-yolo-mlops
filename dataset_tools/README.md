@@ -20,6 +20,26 @@ pip install ./dataset_tools           # from the app repo root
 
 Python 3.9+. Only needs `requests` and `pyyaml`.
 
+### If `kubecore-dataset` is "not found" / "not recognized"
+
+`pip install` sometimes puts the `kubecore-dataset` command in a directory that
+isn't on your `PATH` (pip even prints a warning like *"The script kubecore-dataset
+is installed in '…/.local/bin' which is not on PATH"*). Two fixes:
+
+- **Easiest — run it as a module** (works regardless of PATH, same commands):
+
+  ```bash
+  python -m dataset_cli login
+  python -m dataset_cli validate ./my_dataset
+  python -m dataset_cli sync ./my_dataset --branch my-dataset
+  ```
+
+- **Or put the scripts dir on PATH** — Linux/macOS: `export PATH="$HOME/.local/bin:$PATH"`
+  (add it to `~/.bashrc`/`~/.zshrc`); Windows: add the `Scripts` dir pip named in its
+  warning to your PATH.
+
+Everywhere below you can swap `kubecore-dataset <cmd>` for `python -m dataset_cli <cmd>`.
+
 ---
 
 ## The one command you'll use
