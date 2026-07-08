@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import mlflow
 import torch
 import torch.nn as nn
+import torch.utils._pytree as pytree
 from mlflow.tracking import MlflowClient
 from torchao.quantization.pt2e import allow_exported_model_train_eval
 from torchao.quantization.pt2e.quantize_pt2e import convert_pt2e, prepare_qat_pt2e
@@ -202,7 +203,21 @@ class QATService:
         # This patches them to torchao's move_exported_model_to_{train,eval} so the
         # fine-tune loop's prepared.train()/.eval() calls work (PT2E QAT requirement).
         allow_exported_model_train_eval(prepared)
-        self._logger.info("QAT preparation complete — fake-quantize nodes inserted")
+        # torch.export leaves the graph's weights with requires_grad=False, so the
+        # distillation loss has no grad_fn and loss.backward() dies ("element 0 does
+        # not require grad"). Put the model in train mode and re-enable grad on all
+        # params so QAT can actually learn. (torchao 0.17 has no export_for_training
+        # at torch.export in torch 2.11; this is the working alternative.)
+        prepared.train()
+        n_grad = 0
+        for p in prepared.parameters():
+            p.requires_grad_(True)
+            n_grad += 1
+        self._logger.info(
+            "QAT preparation complete — fake-quantize nodes inserted "
+            "(%d params grad-enabled)",
+            n_grad,
+        )
         return prepared
 
     # ------------------------------------------------------------------
@@ -239,6 +254,11 @@ class QATService:
         criterion = nn.MSELoss()
 
         fp32_module.eval()
+        # eval() flips the Detect head OUT of headless mode (it would emit decoded
+        # (1,no,8400) preds), which no longer matches the raw backbone+neck features
+        # of the exported student graph. Re-assert headless so teacher & student
+        # emit the SAME tensors for the distillation MSE (CON-03).
+        fp32_module.model[-1].training = True  # type: ignore[index]
 
         self._logger.info(
             "QAT fine-tune started | epochs=%d lr=%g device=%s",
@@ -260,20 +280,26 @@ class QATService:
                 optimizer.zero_grad()
                 student_out = prepared(images)
 
-                # Flatten tuple outputs (YOLO backbone may return multi-scale features)
-                if isinstance(teacher_out, (tuple, list)):
-                    teacher_out = teacher_out[0]
-                if isinstance(student_out, (tuple, list)):
-                    student_out = student_out[0]
-
-                loss = criterion(
-                    student_out.float(),
-                    teacher_out.float().detach(),  # type: ignore[union-attr]
+                # The exported graph returns a pytree (dict), not a bare tensor or
+                # tuple/list — flatten BOTH to tensor leaves and sum the per-leaf MSE
+                # over aligned leaves (headless emits multi-scale feature tensors).
+                s_leaves = [
+                    t for t in pytree.tree_leaves(student_out) if torch.is_tensor(t)
+                ]
+                t_leaves = [
+                    t for t in pytree.tree_leaves(teacher_out) if torch.is_tensor(t)
+                ]
+                loss = sum(
+                    (
+                        criterion(s.float(), t.float().detach())
+                        for s, t in zip(s_leaves, t_leaves)
+                    ),
+                    start=torch.zeros((), device=device),
                 )
                 loss.backward()
                 optimizer.step()
 
-                epoch_loss += loss.item()
+                epoch_loss += float(loss)
                 steps += 1
 
             avg_loss = epoch_loss / max(steps, 1)
@@ -329,7 +355,10 @@ class QATService:
 
         return DataLoader(  # type: ignore[return-value]
             _CalibDataset(image_paths, transform),
-            batch_size=8,
+            # MUST be 1: the YOLO pose head specializes the batch dim to 1 during
+            # torch.export (anchor/reshape logic), so the graph is batch-1-only —
+            # feeding batch>1 fails the baked "x.size()[0] == 1" guard.
+            batch_size=1,
             shuffle=False,
             num_workers=0,
         )
