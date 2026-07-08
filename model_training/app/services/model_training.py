@@ -1267,7 +1267,47 @@ class TrainingService:
                 last_key,
             )
 
+        # S3-gateway writes only STAGE objects on the lakeFS branch — commit so
+        # the checkpoints are a versioned artifact (one commit captures the best/
+        # last/epoch files staged during this run), not dangling changes.
+        branch = params.checkpoint_prefix.split("/", 1)[0] or "main"
+        self._lakefs_commit(
+            params.checkpoint_bucket,
+            branch,
+            f"model-training: checkpoints {params.experiment_name}",
+        )
+
         return best_uri
+
+    def _lakefs_commit(self, repo: str, branch: str, message: str) -> None:
+        """Commit staged lakeFS changes on ``branch`` (S3-gateway only stages).
+
+        Best-effort: a failure (including 'nothing to commit') never fails the
+        step — the objects are already uploaded. Uses the lakeFS REST API on the
+        same endpoint as the S3 gateway with the injected lakeFS credentials.
+        """
+        import base64
+        import urllib.request
+
+        endpoint = os.environ.get("LAKEFS_ENDPOINT", "").rstrip("/")
+        access = os.environ.get("LAKEFS_ACCESS_KEY", "")
+        secret = os.environ.get("LAKEFS_SECRET_KEY", "")
+        if not (endpoint and access and secret):
+            self._logger.warning("lakeFS commit skipped — endpoint/creds unset.")
+            return
+        url = f"{endpoint}/api/v1/repositories/{repo}/branches/{branch}/commits"
+        auth = base64.b64encode(f"{access}:{secret}".encode()).decode()
+        req = urllib.request.Request(
+            url, data=json.dumps({"message": message}).encode(), method="POST"
+        )
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Authorization", f"Basic {auth}")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                cid = str(json.loads(resp.read().decode()).get("id", "?"))
+            self._logger.info("lakeFS commit %s @ %s/%s", cid[:12], repo, branch)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("lakeFS commit failed (non-fatal): %s", exc)
 
     def _upload_to_s3(self, local_path: Path, bucket: str, key: str) -> None:
         """Upload a single file to S3."""
