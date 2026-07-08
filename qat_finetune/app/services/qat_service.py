@@ -478,7 +478,45 @@ class QATService:
             "Uploading TFLite to s3://%s/%s", params.output_bucket, key
         )
         self._s3.upload_file(local_path, params.output_bucket, key)
+        # S3-gateway writes only STAGE objects on the lakeFS branch — commit so
+        # the QAT INT8 tflite becomes a versioned artifact, not dangling changes.
+        branch = params.output_prefix.split("/", 1)[0] or "main"
+        self._lakefs_commit(
+            params.output_bucket, branch,
+            f"qat-finetune: INT8 tflite {Path(local_path).name}",
+        )
         return f"s3://{params.output_bucket}/{key}"
+
+    def _lakefs_commit(self, repo: str, branch: str, message: str) -> None:
+        """Commit staged lakeFS changes on ``branch`` (S3-gateway only stages).
+
+        Best-effort: a failure (including 'nothing to commit') never fails the
+        step — the object is already uploaded. Uses the lakeFS REST API on the
+        same endpoint as the S3 gateway with the injected lakeFS credentials.
+        """
+        import base64
+        import json
+        import urllib.request
+
+        endpoint = os.environ.get("LAKEFS_ENDPOINT", "").rstrip("/")
+        access = os.environ.get("LAKEFS_ACCESS_KEY", "")
+        secret = os.environ.get("LAKEFS_SECRET_KEY", "")
+        if not (endpoint and access and secret):
+            self._logger.warning("lakeFS commit skipped — endpoint/creds unset.")
+            return
+        url = f"{endpoint}/api/v1/repositories/{repo}/branches/{branch}/commits"
+        auth = base64.b64encode(f"{access}:{secret}".encode()).decode()
+        req = urllib.request.Request(
+            url, data=json.dumps({"message": message}).encode(), method="POST"
+        )
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Authorization", f"Basic {auth}")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                cid = str(json.loads(resp.read().decode()).get("id", "?"))
+            self._logger.info("lakeFS commit %s @ %s/%s", cid[:12], repo, branch)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("lakeFS commit failed (non-fatal): %s", exc)
 
     # ------------------------------------------------------------------
     # Step 9 — MLflow logging (FR-M-05)
