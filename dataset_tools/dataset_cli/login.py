@@ -155,7 +155,7 @@ def _port_free(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) != 0
 
 
-def loopback_login(base_url: str, timeout: int = 180) -> Optional[str]:
+def loopback_login(base_url: str, timeout: int = 10) -> Optional[str]:
     """Open the browser, capture the _lakefs_oauth2 cookie via the return page.
 
     Opens ``<lakefs>/oauth2/start?rd=<lakefs>/kubecore-cli/return?port=<port>`` and
