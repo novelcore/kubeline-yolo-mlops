@@ -371,6 +371,15 @@ class QuantizationService:
                 exc,
                 exc_info=True,
             )
+            # Persist the error to MLflow — the pod's scale-from-0 node is torn
+            # down after the run, taking its logs with it, so a bare -1.0 sentinel
+            # left us blind. A tag survives and pins WHICH error caused the -1.0.
+            try:
+                MlflowClient().set_tag(
+                    run_id, "parity_error", f"{type(exc).__name__}: {exc}"[:490]
+                )
+            except Exception:  # noqa: BLE001
+                pass
             parity = ParityReport(
                 parity_passed=False,
                 max_abs_error=-1.0,  # sentinel: parity could not be computed
