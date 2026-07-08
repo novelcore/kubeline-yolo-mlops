@@ -214,11 +214,21 @@ def guided_paste_login(base_url: str) -> Optional[str]:
     print(f"    {base_url}/\n")
     webbrowser.open(f"{base_url}/")
     print("After you're logged in, copy the `_lakefs_oauth2` cookie value")
-    print("(DevTools → Application/Storage → Cookies) and paste it below.\n")
+    print("(DevTools → Application/Storage → Cookies) and paste it below,")
+    print("then press Enter.\n")
+    # Read via sys.stdin, NOT input(): on macOS, Python's input() uses libedit,
+    # which breaks on pastes longer than the terminal width — the line wraps and
+    # Enter stops submitting (a session cookie/JWT is hundreds of chars). Reading
+    # the raw line has no line-editor, so long pastes + Enter work everywhere.
+    sys.stdout.write("_lakefs_oauth2 = ")
+    sys.stdout.flush()
     try:
-        cookie = input("_lakefs_oauth2 = ").strip()
+        line = sys.stdin.readline()
     except (EOFError, KeyboardInterrupt):
         return None
+    if not line:  # EOF (Ctrl-D)
+        return None
+    cookie = line.strip()
     return cookie or None
 
 
