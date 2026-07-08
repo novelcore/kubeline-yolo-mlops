@@ -38,7 +38,7 @@ These are transient platform problems that a fresh attempt can clear. The pipeli
 
 These mean *your* inputs, resources, or the run logic are wrong — retrying would just fail the same way, so the pipeline fails fast and tells you why:
 
-- **OOMKilled (out of memory)** — the step was killed for exceeding its memory limit. Retrying at the **same** limit just OOMs again, so it is **not** retried. **Fix:** raise that step's memory in the form (`{step}-mem`, e.g. `model-training-mem`) and re-submit.
+- **OOMKilled (out of memory)** — the step needed more RAM than its node has. Each step runs **whole-node** on the compute class you pick, so retrying on the **same class** just OOMs again → it is **not** retried. **Fix:** pick a **bigger compute class** for that step (the `{step}-class` dropdown — e.g. move `model-training-class` from `cpu-standard` to a larger CPU/GPU class), **or** ask your platform admin to make a bigger node group available. Then re-submit. (There is no per-step memory knob — memory comes from the node the class runs on.)
 - **Validation rejected** your config or dataset (see §3)
 - **The training/quant script exited non-zero** from its own logic (bad params, corrupt data, an assertion)
 - **Auth failed** (e.g. MLflow/lakeFS credentials) — a code/config problem, not a transient one
@@ -109,16 +109,31 @@ Runs next. It reads your dataset from lakeFS and validates the structure **befor
 **Two caveats on GPU steps:**
 
 - **No GPUs available (cloud stockout):** the training/quant pod can sit **Pending** waiting for a node — this is *not* a step failure and *not* retried (the step hasn't run yet). The pod schedules automatically once GPU capacity returns, or the workflow eventually times out (§2). Cloud-capacity condition, not a pipeline bug.
-- **Out of memory (OOMKilled):** treated as a failure, **not** retried (see §1). If a GPU step OOMs, raise its `{step}-mem` in the form and re-submit — a retry at the same limit would just OOM again.
+- **Out of memory (OOMKilled):** treated as a failure, **not** retried (see §1). Pick a **bigger compute class** for that step (`{step}-class`) or ask the admin to add a larger node group — a retry on the same class would just OOM again.
 
 ---
 
-## 5. What to do when a run fails
+## 5. Platform troubleshooting (compute, capacity, quota)
 
-1. **Open the failed step in the Argo UI** and read its logs — the failure reason is printed (validation message, traceback, auth error, timeout).
+These are **platform/capacity** conditions — not bugs in your run. They show up as a step that's OOMKilled, stuck **Pending**, or failing to get a node.
+
+| Symptom | What it means | What to do |
+|---|---|---|
+| **Step OOMKilled (exit 137)** | The step needed more RAM than its compute class's node has. Steps run whole-node, so it's the node size, not a per-step limit. | Pick a **bigger compute class** for that step (`{step}-class`), e.g. move `model-training-class` off `cpu-standard` to a larger CPU/GPU class. If no class is big enough, **ask your platform admin to make a bigger node group available**. |
+| **Step stuck `Pending` (won't schedule)** | No node of the chosen class is available. Either the node pool is scaling up (wait), it's a GPU stockout, or the **project vCPU/GPU quota is exhausted** by other concurrent runs. | First just wait — pools scale from zero and this usually clears in a few minutes. If it persists, check whether many pipelines are running at once (the project has a **finite vCPU quota**); serialize your run, or **ask the admin to raise the quota / add capacity**. |
+| **GPU step Pending for a long time** | GPU (e.g. T4) capacity isn't available in the region right now (a cloud stockout) — the step hasn't run, so it isn't "failed" and isn't retried. | Leave it (it schedules when capacity returns) or re-submit later. Not a pipeline bug. |
+| **Autoscaler "backoff after failed scale-up"** | A prior scale-up hit quota/stockout and the autoscaler is in a cool-down. | Self-heals: the platform's autoscaler-healer clears stale backoff automatically once capacity frees. If it lingers, the admin can check the node-pool quota. |
+
+> **Rule of thumb for the team:** OOM or "can't get a node" is a **sizing/capacity** issue — pick a **bigger compute class**, or ask the admin to **make a bigger node group / more quota available**. It is never fixed by re-running on the same class.
+
+---
+
+## 6. What to do when a run fails
+
+1. **Open the failed step in the Argo UI** and read its logs — the failure reason is printed (validation message, traceback, auth error, timeout, OOMKilled).
 2. **If it's a validation message** (§3) → fix your config/dataset and re-submit. Run `kubecore-dataset validate` locally first.
-3. **If it retried and still failed** → it's not transient; the logs show the real cause (bad params, auth, data).
-4. **If a GPU step is stuck Pending** → it's waiting for GPU capacity; leave it, or re-submit later.
+3. **If it's OOMKilled or stuck Pending** → it's a compute/capacity issue (§5): pick a bigger `{step}-class`, or ask the admin for more capacity.
+4. **If it retried and still failed** → it's not transient; the logs show the real cause (bad params, auth, data).
 5. **Re-running is always safe** — submit a fresh run with corrected inputs. Nothing partial is left in a bad state (no half-registered model).
 
 ---
