@@ -192,11 +192,22 @@ class QuantizationService:
                     params.tflite_s3_uri, params.output_dir
                 )
                 self._log_tflite_artifact(run_id, local_tflite)
+                # Download the FP32 checkpoint locally for the headless parity
+                # reference — otherwise the raw s3:// URI is treated as a local
+                # path ("No such file s3:/…") and parity errors. Mirrors PTQ,
+                # which resolves the checkpoint before parity.
+                local_ckpt = (
+                    self._resolve_checkpoint(
+                        params.fp32_checkpoint_path, params.output_dir
+                    )
+                    if params.fp32_checkpoint_path
+                    else None
+                )
                 # QAT exports the backbone+neck only (CON-03) → headless FP32.
                 parity = self._run_parity_and_log(
                     run_id=run_id,
                     tflite_path=local_tflite,
-                    fp32_checkpoint_path=params.fp32_checkpoint_path,
+                    fp32_checkpoint_path=local_ckpt,
                     params=params,
                     headless=True,
                 )

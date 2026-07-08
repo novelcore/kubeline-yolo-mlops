@@ -306,6 +306,13 @@ class QATService:
             self._logger.info(
                 "QAT epoch %d/%d | avg_loss=%.4f", epoch + 1, params.qat_epochs, avg_loss
             )
+            # Log the distillation loss so the qat-finetune MLflow run has a metric
+            # (it was previously params-only — no way to see how QAT converged).
+            # Runs inside run()'s active mlflow run; best-effort so it never breaks QAT.
+            try:
+                mlflow.log_metric("qat_finetune_loss", avg_loss, step=epoch)
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning("Failed to log qat_finetune_loss: %s", exc)
 
         prepared.eval()
         self._logger.info("QAT fine-tuning complete")
