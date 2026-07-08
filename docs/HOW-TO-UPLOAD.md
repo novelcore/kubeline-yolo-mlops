@@ -82,7 +82,7 @@ kubecore-dataset validate datasets/my_dataset
 2. Choose your pipeline template (e.g. `*-training-pipeline`).
 3. On the form:
    - **`dataset-ref`** — pick the dataset you just uploaded. *(It appears within
-     ~30 minutes of uploading. If it's not there yet, wait a few minutes and
+     ~5 minutes of uploading. If it's not there yet, wait a few minutes and
      reopen the form — the list refreshes automatically.)*
    - **`model-training-class`** — pick a GPU option (e.g. `gpu-t4`).
    - Everything else has good defaults.
@@ -108,7 +108,7 @@ and a new version is saved — so re-running is always safe.
 | Browser didn't open | Click the link the tool printed on screen. |
 | "Log in again" | Re-run `kubecore-dataset login`. |
 | "Dataset path not found or empty" while running | Your `data.yaml` / `images/` / `labels/` aren't at the top of your dataset folder. Run `kubecore-dataset validate` to see what's missing. |
-| My dataset isn't in the `dataset-ref` list yet | The list refreshes every ~30 min after an upload — reopen the submit form shortly. |
+| My dataset isn't in the `dataset-ref` list yet | The list refreshes every ~5 min after an upload — reopen the submit form shortly. |
 | Loopback login didn't complete | Add `--paste` to `login` and follow the one-time prompt. |
 
 Full command reference: `kubecore-dataset --help`.
