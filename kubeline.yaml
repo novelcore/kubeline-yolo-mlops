@@ -1327,21 +1327,46 @@ steps:
 
                 paginator = s3.get_paginator("list_objects_v2")
                 image_exts = {".jpg", ".jpeg", ".png", ".bmp"}
+                # Labels go beside the images so YOLO's model.val (the FP32-vs-INT8
+                # mAP-delta) has ground truth. YOLO derives the label path by
+                # swapping /images/ -> /labels/ and the extension -> .txt. Without
+                # this, val has 0 labels and every mAP comes back 0.
+                labels_dir = "/work/dataset/labels/val"
+                os.makedirs(labels_dir, exist_ok=True)
                 downloaded = 0
+                labels_dl = 0
                 for page in paginator.paginate(Bucket=ds_bucket, Prefix=f"{ds_prefix}/images/"):
                     for obj in page.get("Contents", []):
                         key = obj["Key"]
                         ext = os.path.splitext(key)[1].lower()
                         if ext not in image_exts:
                             continue
+                        stem = os.path.splitext(os.path.basename(key))[0]
                         local_path = os.path.join(images_dir, os.path.basename(key))
                         s3.download_file(ds_bucket, key, local_path)
                         downloaded += 1
+                        # Best-effort matching label; frames without one are valid
+                        # backgrounds — skip silently.
+                        label_key = os.path.splitext(
+                            key.replace("/images/", "/labels/", 1)
+                        )[0] + ".txt"
+                        try:
+                            s3.download_file(
+                                ds_bucket, label_key,
+                                os.path.join(labels_dir, stem + ".txt"),
+                            )
+                            labels_dl += 1
+                        except Exception:
+                            pass
                         if downloaded >= max_download:
                             break
                     if downloaded >= max_download:
                         break
-                print(f"[model-quantization] Downloaded {downloaded} calibration/parity frames.", flush=True)
+                print(
+                    f"[model-quantization] Downloaded {downloaded} frames "
+                    f"+ {labels_dl} labels.",
+                    flush=True,
+                )
             else:
                 print("[model-quantization] WARNING: manifest_summary missing bucket/prefix — calibration frames not downloaded.", flush=True)
         except Exception as e:
