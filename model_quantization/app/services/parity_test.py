@@ -392,18 +392,25 @@ class ParityTestService:
         in_detail = interpreter.get_input_details()[0]
         out_details = interpreter.get_output_details()
         input_is_int = in_detail["dtype"] in (np.int8, np.int16, np.uint8)
+        # litert (torch->tflite) preserves torch NCHW layout; Ultralytics tflites
+        # are NHWC. Detect from the declared input shape (channels dim == 3).
+        in_shape = list(in_detail["shape"])
+        input_is_nchw = len(in_shape) == 4 and in_shape[1] == 3
 
         outputs = []
         with torch.no_grad():
             for frame in frames:
-                # frame: NCHW float32 [0,1] -> NHWC for the tflite.
-                nhwc = np.transpose(frame[0], (1, 2, 0))[np.newaxis].astype(
-                    np.float32
-                )
+                # frame is NCHW (1,3,H,W). NCHW tflite: pass as-is; NHWC: transpose.
+                if input_is_nchw:
+                    inp = frame.astype(np.float32)
+                else:
+                    inp = np.transpose(frame[0], (1, 2, 0))[np.newaxis].astype(
+                        np.float32
+                    )
                 if input_is_int:
                     scale, zero_point = in_detail["quantization"]
-                    nhwc = (nhwc / scale + zero_point).astype(in_detail["dtype"])
-                interpreter.set_tensor(in_detail["index"], nhwc)
+                    inp = (inp / scale + zero_point).astype(in_detail["dtype"])
+                interpreter.set_tensor(in_detail["index"], inp)
                 interpreter.invoke()
 
                 feats = []
@@ -413,7 +420,9 @@ class ParityTestService:
                         scale, zero_point = d["quantization"]
                         x = (x.astype(np.float32) - zero_point) * scale
                     t = torch.from_numpy(np.ascontiguousarray(x)).float()
-                    if t.dim() == 4:  # NHWC -> NCHW for the torch head
+                    # NCHW-input tflites emit NCHW feature maps (the torch head's
+                    # native layout); only NHWC tflites need the channel-last swap.
+                    if t.dim() == 4 and not input_is_nchw:
                         t = t.permute(0, 3, 1, 2).contiguous()
                     feats.append(t)
 
