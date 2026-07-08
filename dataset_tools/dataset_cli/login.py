@@ -172,7 +172,12 @@ def loopback_login(base_url: str, timeout: int = 10) -> Optional[str]:
 
     # The return page is served ON the lakeFS domain (same-origin, so it can read
     # the session), and it POSTs the cookie back to our localhost catcher.
-    return_url = f"{base_url}{RETURN_PATH}?port={port}"
+    # rd MUST be RELATIVE (path-only): oauth2-proxy refuses ABSOLUTE cross-host rd=
+    # unless the host is in --whitelist-domain, so an absolute https://<lakefs>/... rd
+    # silently falls through to the lakeFS UI after login. A relative same-host path is
+    # always honored (no whitelist needed) and still resolves against the lakeFS origin,
+    # so the /kubecore-cli/return page runs same-origin and can read the session cookie.
+    return_url = f"{RETURN_PATH}?port={port}"
     start_url = (
         f"{base_url}/oauth2/start?rd={urllib.parse.quote(return_url, safe='')}"
     )
