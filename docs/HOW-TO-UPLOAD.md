@@ -104,6 +104,7 @@ and a new version is saved — so re-running is always safe.
 
 | Problem | Fix |
 |---|---|
+| `kubecore-dataset: command not found` / `not recognized` | pip installed the command somewhere not on your `PATH`. Run it as a module instead: `python -m dataset_cli login` (same for `validate` / `sync`). Or add pip's scripts dir (it printed the path in a warning, e.g. `~/.local/bin`) to your `PATH`. |
 | Browser didn't open | Click the link the tool printed on screen. |
 | "Log in again" | Re-run `kubecore-dataset login`. |
 | "Dataset path not found or empty" while running | Your `data.yaml` / `images/` / `labels/` aren't at the top of your dataset folder. Run `kubecore-dataset validate` to see what's missing. |
