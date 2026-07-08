@@ -30,7 +30,6 @@ from torchao.quantization.pt2e.quantize_pt2e import convert_pt2e, prepare_qat_pt
 from ultralytics import YOLO
 
 from app.models.quantization import QATParams, QATResult
-from app.services.resource_monitor import ResourceMonitor
 
 # Interval (seconds) between system-metric samples during the QAT run.
 _SYSTEM_METRICS_INTERVAL_S = 15.0
@@ -137,8 +136,14 @@ class QATService:
         captures GPU utilization/VRAM during the fine-tune. Best-effort: any
         failure is swallowed so it never affects the QAT run.
         """
-        monitor: Optional[ResourceMonitor]
+        monitor: Any
         try:
+            # Imported lazily + defensively: system metrics are best-effort and
+            # must NEVER crash the QAT run. A missing psutil/pynvml or any import
+            # error just disables the sampler (import at module load previously
+            # took the whole step down with it on exit 1).
+            from app.services.resource_monitor import ResourceMonitor
+
             monitor = ResourceMonitor(gpu_index=0)  # inert on CPU nodes
         except Exception as exc:  # noqa: BLE001
             self._logger.warning("System-metrics sampler disabled: %s", exc)
