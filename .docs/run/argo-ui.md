@@ -39,8 +39,8 @@ Find the template named after your pipeline (e.g., `kubeline-yolo-mlops-<project
 | Parameter | Override to |
 | --- | --- |
 | `epochs` | `50` |
-| `model-config` | `yolov8s-pose.pt` |
-| `dataset-version` | `v2` |
+| `model-variant` | `yolov8s-pose.pt` |
+| `dataset-ref` | `my-dataset` |
 | `batch-size` | `32` |
 | `dataset-sample-size` | `500` |
 
@@ -49,14 +49,14 @@ Leave everything else at its default. You only need to change the parameters rel
 4. Click **Submit**.
 
 !!! tip "Most runs only need a few overrides"
-    The defaults are tuned for a reasonable baseline. For a first run, you might only change `dataset-version` and `epochs`. See the [full parameter reference](../configure/pipeline-config.md) for what each parameter does.
+    The defaults are tuned for a reasonable baseline. For a first run, you might only change `dataset-ref` and `epochs`. See the [full parameter reference](../configure/pipeline-config.md) for what each parameter does.
 
 ## Step 5: Watch the DAG
 
-After submitting, you are taken to the **Workflow detail page**. This shows the pipeline as a directed acyclic graph (DAG):
+After submitting, you are taken to the **Workflow detail page**. This shows the pipeline as a directed acyclic graph (DAG). QAT Finetune only runs when `quantization-mode=qat`:
 
 ```
-[Config Validation] → [Dataset Loading] → [Model Training] → [Model Registration]
+[Config Validation] → [Dataset Loading] → [Model Training] → [QAT Finetune] → [Model Quantization] → [Model Registration]
 ```
 
 Each node changes colour as it progresses:
@@ -82,7 +82,7 @@ Click a running or completed step to open its detail panel. Switch to the **Logs
 
 ## Step 7: Confirm Completion
 
-When all four nodes are green, your pipeline run is complete. The trained model is now registered in MLflow.
+When all nodes are green, your pipeline run is complete. The trained model is now registered in MLflow.
 
 Continue to check your results:
 

@@ -69,7 +69,8 @@ version = client.get_model_version("spacecraft-pose-yolo", "3")
 
 # Key lineage tags
 print(version.tags["training_run_id"])      # MLflow run ID
-print(version.tags["dataset_version"])       # e.g., "v1"
+print(version.tags["dataset_ref"])           # lakeFS branch — the meaningful data lineage, e.g., "main"
+print(version.tags["dataset_version"])       # optional provenance-only metadata (may be empty)
 print(version.tags["dataset_sample_size"])   # e.g., "5000"
 print(version.tags["model_variant"])         # e.g., "yolov8n-pose.pt"
 print(version.tags["best_mAP50"])            # e.g., "0.82"

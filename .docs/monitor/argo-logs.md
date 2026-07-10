@@ -11,10 +11,10 @@ How to navigate logs for a running or completed pipeline in Argo Workflows.
 
 ## Reading the DAG View
 
-The DAG view shows the four pipeline steps as connected nodes:
+The DAG view shows the six pipeline steps as connected nodes (QAT Finetune only runs when `quantization-mode=qat`):
 
 ```
-[Config Validation] → [Dataset Loading] → [Model Training] → [Model Registration]
+[Config Validation] → [Dataset Loading] → [Model Training] → [QAT Finetune] → [Model Quantization] → [Model Registration]
 ```
 
 **Node colours:**

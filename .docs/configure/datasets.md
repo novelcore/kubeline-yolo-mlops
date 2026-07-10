@@ -8,10 +8,10 @@ The pipeline expects datasets in **YOLO Pose format**. This page explains what t
 
 Each image in your dataset needs a corresponding label file with keypoint annotations.
 
-**Directory structure:**
+**Directory structure** (this lives directly at the root of a lakeFS branch — there is no `dataset/` subfolder):
 
 ```
-dataset/
+<branch root>/
 ├── data.yaml
 ├── images/
 │   ├── train/
@@ -77,9 +77,11 @@ When submitting a workflow, set these parameters:
 | Parameter | Value |
 | --- | --- |
 | `dataset-source` | `lakefs` |
-| `dataset-version` | `v1` (or your version tag) |
+| `dataset-ref` | `main` (or the lakeFS branch name your data lives on) |
 
-The lakeFS repository and branch are pre-filled by the platform. The pipeline constructs the S3 path automatically from the version you provide.
+The dataset scheme is **ref-native**: a dataset lives at the root of a lakeFS branch, i.e. `s3://<repo>/<ref>/`, with `data.yaml`, `images/{train,val}/`, and `labels/{train,val}/` directly under it. `dataset-ref` (the branch name) selects which dataset to read — it is the value shown in the dropdown when you submit. The lakeFS repository is pre-filled by the platform, and data is accessed through the lakeFS **S3 gateway** (`s3://…`).
+
+`dataset-version` is **optional provenance-only metadata** — it is recorded for lineage but is *not* part of the storage path.
 
 See [Uploading Data to LakeFS](upload-to-lakefs.md) for a step-by-step guide to getting your dataset into a LakeFS branch.
 
@@ -90,9 +92,9 @@ Point directly to an S3 path using the `dataset-path-override` parameter:
 | Parameter | Value |
 | --- | --- |
 | `dataset-source` | `s3` |
-| `dataset-path-override` | `s3://your-bucket/datasets/spacecraft-pose-v1/` |
+| `dataset-path-override` | `s3://<repo>/<branch>/` |
 
-When `dataset-path-override` is set, the `dataset-version` parameter is ignored.
+When `dataset-path-override` is set, the `dataset-ref` parameter is ignored.
 
 ## Subsampling for Development
 

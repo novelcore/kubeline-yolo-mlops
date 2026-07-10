@@ -13,9 +13,10 @@ Complete parameter reference for the Argo WorkflowTemplate. All parameters are s
 
 | Parameter | Default | Constraints |
 | --- | --- | --- |
-| `dataset-version` | `"upload-initial"` | Used to construct S3 path when `dataset-path-override` is empty. |
+| `dataset-ref` | `"main"` | lakeFS branch name. Drives the S3 path `s3://<repo>/<ref>/` when `dataset-path-override` is empty. |
+| `dataset-version` | `""` | Provenance-only metadata for lineage. **Not** part of the storage path. |
 | `dataset-source` | `"lakefs"` | `"s3"` or `"lakefs"` |
-| `dataset-path-override` | `""` | Full `s3://` URI. Overrides auto-constructed path. |
+| `dataset-path-override` | `""` | Full `s3://<repo>/<branch>/` URI. Overrides auto-constructed path. |
 | `dataset-sample-size` | `""` | Integer as string. Empty = full dataset. |
 | `dataset-seed` | `"42"` | Random seed for reproducible sampling. |
 
@@ -23,7 +24,7 @@ Complete parameter reference for the Argo WorkflowTemplate. All parameters are s
 
 | Parameter | Default | Constraints |
 | --- | --- | --- |
-| `model-config` | `"yolov8n-pose.pt"` | Must be a valid YOLO pose variant (e.g., `yolov8{n,s,m,l,x}-pose.pt`) |
+| `model-variant` | `"yolov8n-pose.pt"` | Must be a valid YOLO pose variant (e.g., `yolov8{n,s,m,l,x}-pose.pt`) |
 | `pretrained-weights` | `""` | S3 path to a `.pt` file. Empty = use default pretrained weights. |
 
 ## Training
@@ -39,14 +40,14 @@ Complete parameter reference for the Argo WorkflowTemplate. All parameters are s
 | `optimizer` | `"SGD"` | `SGD`, `Adam`, `AdamW` |
 | `momentum` | `"0.937"` | `[0, 1)` |
 | `weight-decay` | `"0.0005"` | `>= 0` |
-| `warmup-epochs` | `"3.0"` | `>= 0` |
+| `warmup-epochs` | `"3.0"` | `>= 0`; must be `< epochs` |
 | `warmup-momentum` | `"0.8"` | `[0, 1)` |
 | `dropout` | `"0.0"` | `[0, 1)` |
 | `label-smoothing` | `"0.0"` | `[0, 1)` |
 | `nbs` | `"64"` | `> 0` |
 | `freeze` | `""` | Number of backbone layers to freeze. Empty = none. |
 | `amp` | `"true"` | `"true"` or `"false"` |
-| `close-mosaic` | `"10"` | `>= 0`; 0 = never close |
+| `close-mosaic` | `"10"` | `>= 0`; 0 = never close; must be `< epochs` |
 | `training-seed` | `"0"` | Integer |
 | `deterministic` | `"true"` | `"true"` or `"false"` |
 
@@ -92,6 +93,31 @@ Complete parameter reference for the Argo WorkflowTemplate. All parameters are s
 | `aug-copy-paste` | `"0.0"` | `0.0–1.0` | Segment copy-paste |
 | `aug-erasing` | `"0.4"` | `0.0–0.9` | Random patch erasure |
 | `aug-bgr` | `"0.0"` | `0.0–1.0` | Channel order flip |
+
+## Quantization
+
+| Parameter | Default | Constraints |
+| --- | --- | --- |
+| `quantization-mode` | `"none"` | One of `none`, `ptq`, `qat`. `qat-finetune` runs only when `qat`. |
+| `quantization-calibration-frames` | `"512"` | Integer; **must be 100–10000** |
+| `quantization-parity-frames` | `"100"` | Integer; **must be ≥ 1** |
+| `quantization-image-size` | `"640"` | Multiple of 32 |
+| `quantization-calibration-seed` | `"42"` | Integer |
+| `quantization-parity-max-abs-error` | `"0.05"` | Float; max allowed FP32-vs-INT8 absolute error |
+| `quantization-output-prefix` | `"quantization"` | Prefix for quantized output artifacts |
+| `qat-epochs` | `"10"` | `> 0`; QAT-only (used when `quantization-mode=qat`) |
+| `qat-lr` | `"0.0001"` | `> 0`; QAT-only (used when `quantization-mode=qat`) |
+
+## Cross-Field Rules
+
+The config validation step enforces these relationships between parameters:
+
+| Rule | Reason |
+| --- | --- |
+| `close-mosaic` `<` `epochs` | Mosaic must close during, not after, training. |
+| `warmup-epochs` `<` `epochs` | Warmup must complete within the training schedule. |
+| `quantization-calibration-frames` in `[100, 10000]` | Too few frames give unstable calibration; too many waste time. |
+| `quantization-parity-frames` `>= 1` | At least one frame is needed for the FP32-vs-INT8 parity check. |
 
 ## Model Registration
 

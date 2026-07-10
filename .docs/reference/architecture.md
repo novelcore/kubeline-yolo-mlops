@@ -17,8 +17,10 @@ graph TB
             S1["Step 1: Config Validation\n(CPU · seconds)"]
             S2["Step 2: Dataset Loading\n(CPU · minutes)"]
             S3["Step 3: Model Training\n(GPU · hours–days)"]
-            S4["Step 4: Model Registration\n(CPU · seconds)"]
-            S1 --> S2 --> S3 --> S4
+            SQF["Step 4: QAT Finetune\n(GPU · only when qat)"]
+            SQ["Step 5: Model Quantization\n(CPU · minutes)"]
+            S4["Step 6: Model Registration\n(CPU · seconds)"]
+            S1 --> S2 --> S3 --> SQF --> SQ --> S4
         end
 
         ArgoAPI --> S1
@@ -57,10 +59,14 @@ flowchart LR
         S1["Config\nValidation"]
         S2["Dataset\nLoading"]
         S3["Model\nTraining"]
+        SQF["QAT\nFinetune\n(qat only)"]
+        SQ["Model\nQuantization"]
         S4["Model\nRegistration"]
         S1 -->|validated config| S2
         S2 -->|dataset path| S3
-        S3 -->|training summary| S4
+        S3 -->|best.pt| SQF
+        SQF -->|INT8 model| SQ
+        SQ -->|training summary| S4
     end
 
     subgraph MLflow["MLflow"]
@@ -73,8 +79,15 @@ flowchart LR
     S3 -->|periodic checkpoints| CK
     CK -->|resume| S3
     S3 -->|metrics + artifacts| Track
+    SQ -->|INT8 .tflite + parity metrics| Track
     S4 -->|register best.pt| Reg
 ```
+
+!!! note "The INT8 model is an MLflow artifact, not a registry entry"
+    The quantized INT8 `.tflite` (`best_int8.tflite` for PTQ, `model_int8.tflite` for QAT)
+    is logged as an **artifact on the model-quantization run** in MLflow Tracking. It is
+    **not** placed in the Model Registry — the registry holds the FP32 `best.pt`
+    (and optionally `last.pt`).
 
 ## Step Architecture
 

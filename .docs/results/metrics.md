@@ -46,6 +46,18 @@ The **system metrics** charts tell you how efficiently the GPU was used:
 - `system/gpu_vram_used_gb` should be comfortably below `system/gpu_vram_total_gb`
   - If they are close, reduce `batch-size` or `image-size` to avoid out-of-memory crashes on future runs
 
+## Quantization Results
+
+If you ran with `quantization-mode` set to `ptq` or `qat`, the INT8-vs-FP32 comparison is logged on the **separate model-quantization run** (not the training run). Open that run's **Metrics** tab to see:
+
+| Metric | What It Tells You |
+| --- | --- |
+| `fp32_mAP50` / `int8_mAP50` | mAP50 of the FP32 model vs the quantized INT8 model |
+| `delta_mAP50` | How much accuracy the INT8 model lost relative to FP32 — the key number for deciding whether the quantized model is good enough |
+| `parity_max_abs_error` | Largest absolute difference between FP32 and INT8 outputs on the parity frames |
+
+A small `delta_mAP50` and a low `parity_max_abs_error` mean the quantized model closely tracks the FP32 model. The INT8 `.tflite` itself is an artifact on this same quantization run.
+
 ## Comparing Runs
 
 To find which hyperparameter change made the biggest difference:
