@@ -9,12 +9,15 @@ Follow these five steps in order to provision the full ML pipeline stack on KAOS
 
 ## Step 1: Create a KubeOrg
 
-A `KubeOrg` defines your organisation's AWS account, GitHub integration, and network foundations.
+!!! warning "Verify GCP field names"
+    The exact GCP field names in the KAOS CRDs (e.g. `spec.gcpConfig.*`) depend on your KAOS operator version — confirm them against your operator's CRD schema before applying.
+
+A `KubeOrg` defines your organisation's GCP project, GitHub integration, and network foundations.
 Everything else in KAOS is scoped to an organisation.
 
 **What it creates:**
 
-- AWS and GitHub provider credentials in the control plane
+- GCP and GitHub provider credentials in the control plane
 - Shared networking defaults (VPC configuration) for clusters in this organisation
 - Labels and environment data that downstream resources inherit
 
@@ -22,8 +25,8 @@ Everything else in KAOS is scoped to an organisation.
 
 | Field | Description |
 | --- | --- |
-| `spec.awsConfig.account` | Your AWS account ID |
-| `spec.awsConfig.region` | Primary AWS region (e.g., `eu-central-1`) |
+| `spec.gcpConfig.project` | Your GCP project ID |
+| `spec.gcpConfig.region` | Primary GCP region (e.g., `europe-central2`) |
 | `spec.githubConfig.org` | Your GitHub organisation name |
 | `spec.network` | VPC CIDR and subnet configuration |
 
@@ -41,12 +44,12 @@ kubectl get kubeorg <your-org-name> -o jsonpath='{.status.phase}'
 
 ## Step 2: Create a KubePool
 
-A `KubePool` provisions an EKS cluster and installs the operators required for ML workloads.
+A `KubePool` provisions a GKE cluster and installs the operators required for ML workloads.
 
 **What it creates:**
 
-- An EKS cluster with a system node group
-- Karpenter for dynamic GPU and CPU node provisioning
+- A GKE cluster with a system node pool
+- GKE node pools + the cluster autoscaler for dynamic GPU and CPU node provisioning
 - The NVIDIA GPU operator (for CUDA-enabled training)
 - CloudNativePG (for MLflow's PostgreSQL backend)
 - Optional: observability stack (VictoriaMetrics + Grafana)
@@ -57,9 +60,9 @@ A `KubePool` provisions an EKS cluster and installs the operators required for M
 | --- | --- |
 | `spec.cluster.version` | Kubernetes version (e.g., `1.31`) |
 | `spec.operators.nvidiaGpu.enabled` | `true` — required for GPU training steps |
-| `spec.operators.karpenter.enabled` | `true` — required for dynamic node scaling |
-| `spec.operators.karpenter.nodeRoleName` | IAM role name for Karpenter-managed nodes |
-| `spec.operators.karpenter.controllerRoleArn` | IRSA role for Karpenter controller |
+| `spec.operators.autoscaler.enabled` | `true` — required for dynamic node scaling |
+| `spec.operators.autoscaler.nodeServiceAccount` | GCP IAM service account for autoscaler-managed nodes |
+| `spec.operators.autoscaler.controllerServiceAccount` | Workload Identity service account for the autoscaler controller |
 | `spec.operators.postgres.enabled` | `true` — required for MLflow backend |
 | `spec.features.observability` | `true` — enables cost dashboards (recommended) |
 
@@ -77,7 +80,7 @@ kubectl get kubepool <your-pool-name> -o jsonpath='{.status.phase}'
 
 ## Step 3: Create a KubeProject
 
-A `KubeProject` provisions the project-level ML infrastructure: MLflow, LakeFS, and an S3 bucket.
+A `KubeProject` provisions the project-level ML infrastructure: MLflow, LakeFS, and a GCS bucket (object storage).
 
 **What it creates:**
 
@@ -85,7 +88,7 @@ A `KubeProject` provisions the project-level ML infrastructure: MLflow, LakeFS, 
 - A PostgreSQL database for MLflow
 - An MLflow tracking server and model registry
 - A LakeFS instance for dataset versioning (optional but recommended)
-- An S3 bucket for datasets, checkpoints, and MLflow artifacts
+- A GCS bucket (object storage) for datasets, checkpoints, and MLflow artifacts
 
 **Key fields to set:**
 
@@ -170,20 +173,20 @@ A `KubeApp` is your specific pipeline instance — it connects the template to y
 | Field | Description |
 | --- | --- |
 | `spec.kubeAppTemplateRef` | `kubeline-yolo-mlops` |
-| `spec.mlPipeline.gpu.instanceFamilies` | GPU instance families (e.g., `["p3", "p4"]` or `["*"]` for any) |
+| `spec.mlPipeline.gpu.instanceFamilies` | GPU machine families (e.g., `["n1", "a2"]` (n1 hosts T4; a2 hosts A100) or `["*"]` for any) |
 | `spec.mlPipeline.gpu.instanceSizes` | GPU instance sizes (e.g., `["xlarge", "2xlarge"]` or `["*"]`) |
 | `spec.mlPipeline.gpu.maxResources` | Hard cap on GPU usage (e.g., `nvidia.com/gpu: "4"`) |
 | `spec.mlPipeline.cpu.instanceFamilies` | CPU instance families for non-training steps |
 | `spec.mlPipeline.cpu.maxResources` | Hard cap on CPU usage |
-| `spec.mlPipeline.gpu.diskSizeGi` | Root EBS volume for GPU nodes (e.g., `200`) |
+| `spec.mlPipeline.gpu.diskSizeGi` | Root persistent disk for GPU nodes (e.g., `200`) |
 
 !!! tip "Use wildcards for flexibility"
-    Setting `instanceFamilies: ["*"]` and `instanceSizes: ["*"]` lets Karpenter pick the best available instance. This is the fastest way to get started.
+    Setting `instanceFamilies: ["*"]` and `instanceSizes: ["*"]` lets the cluster autoscaler pick the best available machine type. This is the fastest way to get started.
 
 **What gets created after KubeApp is ready:**
 
-- Per-app GPU and CPU NodePools in Karpenter
-- An ECR repository for pipeline Docker images
+- Per-app GPU and CPU node pools managed by the cluster autoscaler
+- An Artifact Registry repository for pipeline Docker images
 - A rendered Argo Workflows `WorkflowTemplate` in your GitOps repository
 - A Grafana cost dashboard (if observability is enabled)
 

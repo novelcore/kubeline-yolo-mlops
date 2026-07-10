@@ -4,8 +4,8 @@ This track walks you through deploying the Kubeline YOLO MLOps pipeline template
 
 By the end of this track, you will have:
 
-- A Kubernetes cluster (EKS) with GPU support via Karpenter
-- MLflow and LakeFS deployed and connected to S3
+- A Kubernetes cluster (GKE) with GPU support via GKE node pools + the cluster autoscaler
+- MLflow and LakeFS deployed and connected to a GCS bucket (object storage)
 - An Argo Workflows WorkflowTemplate ready to submit
 - Access URLs for Argo and MLflow
 
@@ -15,8 +15,8 @@ The KAOS platform provisions ML infrastructure in five layers, each building on 
 
 ```mermaid
 graph TD
-    A["KubeOrg\nAWS + GitHub foundations"] --> B["KubePool\nEKS cluster + GPU operators"]
-    B --> C["KubeProject\nMLflow · LakeFS · S3 bucket"]
+    A["KubeOrg\nGCP + GitHub foundations"] --> B["KubePool\nGKE cluster + GPU operators"]
+    B --> C["KubeProject\nMLflow · LakeFS · GCS bucket"]
     C --> D["KubeAppTemplate\nPipeline template definition"]
     D --> E["KubeApp\nYour running pipeline instance"]
 
@@ -35,7 +35,7 @@ graph TD
 | Step | Estimated Time |
 | --- | --- |
 | KubeOrg | 5 minutes |
-| KubePool (EKS cluster) | 20–30 minutes |
+| KubePool (GKE cluster) | 20–30 minutes |
 | KubeProject | 10 minutes |
 | KubeAppTemplate | 5 minutes |
 | KubeApp | 10 minutes |
