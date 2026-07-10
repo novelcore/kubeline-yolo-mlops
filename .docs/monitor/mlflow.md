@@ -6,7 +6,7 @@ MLflow is where your experiment results are stored. Think of it as version contr
 
 **Experiments** — A named group of related training runs. All runs for an experiment appear together in the MLflow UI.
 
-**Runs** — A single execution of the training step. Each run has:
+**Runs** — The pipeline creates **one MLflow run per step**, not one run per pipeline. The training, qat-finetune, quantization, and registration steps each log their own separate run within the same experiment, linked back to the training run by a `source_run_id` tag. Each run has:
 
 - **Parameters** — Inputs (learning rate, batch size, epochs, optimizer, etc.)
 - **Metrics** — Output measurements (loss, mAP50, precision, recall), optionally logged per epoch
@@ -83,7 +83,7 @@ Click it to see all runs in that experiment.
 
 ## The Runs Table
 
-Each row in the runs table is one pipeline execution. Key columns:
+Each row in the runs table is one step run (training, qat-finetune, quantization, or registration). Runs from the same pipeline share a `source_run_id` tag pointing at the training run. Key columns:
 
 | Column | What It Shows |
 | --- | --- |
@@ -136,6 +136,20 @@ Shows all metrics logged during training as line charts over epochs.
 
 All system metrics are logged per epoch with `step=current_epoch`, so they render as line charts.
 
+**Quantization-step metrics** (logged on the separate quantization run, not the training run):
+
+| Metric | What It Means |
+| --- | --- |
+| `parity_max_abs_error` | Largest absolute difference between FP32 and INT8 model outputs |
+| `fp32_mAP50` / `int8_mAP50` | mAP50 of the FP32 and INT8 models |
+| `delta_mAP50` | The INT8-vs-FP32 mAP50 drop (accuracy lost to quantization) |
+
+**QAT-finetune metric** (logged on the qat-finetune run when `quantization-mode=qat`):
+
+| Metric | What It Means |
+| --- | --- |
+| `qat_finetune_loss` | Loss during quantization-aware fine-tuning |
+
 ### Visualizing Metric Charts
 
 1. Select one or more metrics from the list on the left
@@ -174,6 +188,9 @@ Shows files uploaded during the run:
 | `PR_curve.png` | Precision-recall curve |
 
 Click any image to preview it inline. Click a `.pt` file to download it.
+
+!!! info "INT8 model lives on the quantization run"
+    When quantization runs, the INT8 `.tflite` is logged as an artifact on the **model-quantization run** — `best_int8.tflite` for PTQ, `model_int8.tflite` for QAT. It is **not** placed in the Model Registry; the registry holds the FP32 `best.pt` (and optionally `last.pt`).
 
 ## Comparing Runs
 

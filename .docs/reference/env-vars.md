@@ -57,6 +57,40 @@ Environment variables configure the platform plumbing for each step — server U
 | `LAKEFS_ACCESS_KEY` | No | — | LakeFS credential |
 | `LAKEFS_SECRET_KEY` | No | — | LakeFS credential |
 
+## qat_finetune
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `APP_NAME` | No | `io-qat-finetune` | Application name in logs |
+| `LOG_LEVEL` | No | `INFO` | Log verbosity |
+| `MLFLOW_TRACKING_URI` | Yes | — | Remote MLflow server URL |
+| `MLFLOW_TRACKING_USERNAME` | No | — | MLflow basic auth username |
+| `MLFLOW_TRACKING_PASSWORD` | No | — | MLflow basic auth password |
+| `AWS_DEFAULT_REGION` | No | `eu-central-1` | AWS region |
+| `AWS_ACCESS_KEY_ID` | No | — | S3 credential (or IAM role) |
+| `AWS_SECRET_ACCESS_KEY` | No | — | S3 credential (or IAM role) |
+| `S3_ENDPOINT_URL` | No | — | Custom S3 endpoint |
+| `LAKEFS_ENDPOINT` | No | — | LakeFS endpoint for dataset access |
+| `LAKEFS_ACCESS_KEY` | No | — | LakeFS credential |
+| `LAKEFS_SECRET_KEY` | No | — | LakeFS credential |
+
+## model_quantization
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `APP_NAME` | No | `io-model-quantization` | Application name in logs |
+| `LOG_LEVEL` | No | `INFO` | Log verbosity |
+| `MLFLOW_TRACKING_URI` | Yes | — | Remote MLflow server URL |
+| `MLFLOW_TRACKING_USERNAME` | No | — | MLflow basic auth username |
+| `MLFLOW_TRACKING_PASSWORD` | No | — | MLflow basic auth password |
+| `AWS_DEFAULT_REGION` | No | `eu-central-1` | AWS region |
+| `AWS_ACCESS_KEY_ID` | No | — | S3 credential (or IAM role) |
+| `AWS_SECRET_ACCESS_KEY` | No | — | S3 credential (or IAM role) |
+| `S3_ENDPOINT_URL` | No | — | Custom S3 endpoint |
+| `LAKEFS_ENDPOINT` | No | — | LakeFS endpoint for dataset access |
+| `LAKEFS_ACCESS_KEY` | No | — | LakeFS credential |
+| `LAKEFS_SECRET_KEY` | No | — | LakeFS credential |
+
 ## model_registration
 
 | Variable | Required | Default | Description |
@@ -68,7 +102,7 @@ Environment variables configure the platform plumbing for each step — server U
 | `MLFLOW_TRACKING_URI` | Yes | — | Remote MLflow server URL |
 | `MLFLOW_TRACKING_USERNAME` | No | — | MLflow basic auth username |
 | `MLFLOW_TRACKING_PASSWORD` | No | — | MLflow basic auth password |
-| `MLFLOW_EXPERIMENT_NAME` | No | `infinite-orbits` | Experiment name (overrides the `experiment-name` parameter if set) |
+| `MLFLOW_EXPERIMENT_NAME` | No | `example-project` | Experiment name (overrides the `experiment-name` parameter if set) |
 | `REGISTERED_MODEL_NAME` | No | `spacecraft-pose-yolo` | Default model name when `registered-model-name` is empty |
 | `AWS_ACCESS_KEY_ID` | No | — | S3 credential (for checkpoint access) |
 | `AWS_SECRET_ACCESS_KEY` | No | — | S3 credential |

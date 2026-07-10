@@ -103,6 +103,48 @@ Numerical instability during training.
 
 ---
 
+## Model Quantization & QAT failures
+
+### `calibration_frames Input should be greater than or equal to 100`
+
+The `model-quantization` step (and `qat-finetune`, for QAT) rejects a
+`quantization-calibration-frames` value below 100 — INT8 calibration needs at
+least ~100 representative frames to learn activation ranges reliably.
+
+**Fix:** Set `quantization-calibration-frames` to a value in **100–10000**. The
+dataset must actually contain at least that many frames — on a 100-image dataset
+`calibration-frames` can be at most `100`. Use a larger dataset if you need more.
+
+### `qat-finetune` sits in `Pending` or fails to start
+
+`qat-finetune` runs on a GPU node (`gpu-t4`); like training it waits for GPU
+capacity and is not "failed" while `Pending`.
+
+**Fix:** Confirm GPU capacity is available (see *Model Training → GPU pod stays in
+Pending*). Note `qat-finetune` only runs when `quantization-mode=qat`; for `ptq`
+or `none` it is skipped.
+
+### Parity check reports a large error / `parity_passed=false`
+
+`parity_max_abs_error` is an **absolute** difference between the FP32 and INT8
+outputs, so it scales with the model's output magnitude — a well-trained model
+can show a large number and still be fine. The parity check is **non-fatal**: the
+INT8 artifact is still produced and the run continues.
+
+**Fix:** Read parity alongside the quantization-run mAP metrics
+(`fp32_mAP50` vs `int8_mAP50`), not in isolation.
+
+### INT8 mAP is much lower than the FP32 model
+
+Naive per-tensor INT8 quantization is coarse and can sharply reduce the accuracy
+of a YOLO pose model — the FP32 model may be strong while the INT8 mAP drops.
+
+**Fix:** This is a known limitation of per-tensor quantization. Prefer **QAT**
+(`quantization-mode=qat`), which trains the model to tolerate the rounding, or
+move to per-channel quantization for deployable INT8 accuracy.
+
+---
+
 ## Model Registration failures
 
 ### `Model registration failed after 3 retries`

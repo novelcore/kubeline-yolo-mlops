@@ -1,15 +1,19 @@
 # Pipeline Steps
 
-Detailed reference for each of the four pipeline steps.
+Detailed reference for each of the six pipeline steps.
 
-## Resource Requirements
+## Compute Allocation
 
-| Step | CPU | Memory | GPU | Storage | Typical Duration |
-|---|---|---|---|---|---|
-| Config Validation | 1 core | 512 MB | None | Minimal | ~5 seconds |
-| Dataset Loading | 4 cores | 8 GB | None | Up to 20 GB | 1–30 minutes |
-| Model Training | 32 cores | 128 GB | 2x A100-40GB | 10 TB | 2–48 hours |
-| Model Registration | 1 core | 1 GB | None | Minimal | ~10 seconds |
+There is no per-step memory or core knob — memory follows the node size. Each step declares a compute class via `{step}-class` (e.g. `cpu-standard`, `gpu-t4`), which picks the node pool. Setting `{step}-gpu > 0` routes the step to a GPU node. Nodes scale from zero: they are provisioned when a step starts and released when it finishes.
+
+| Step | Compute Class | GPU | Typical Duration |
+|---|---|---|---|
+| Config Validation | `cpu-standard` | No | ~5 seconds |
+| Dataset Loading | `cpu-standard` | No | 1–30 minutes |
+| Model Training | `gpu-t4` | Yes | 2–48 hours |
+| QAT Finetune | `gpu-t4` | Yes | minutes–hours (only when `quantization-mode=qat`) |
+| Model Quantization | `cpu-standard` | No | minutes |
+| Model Registration | `cpu-standard` | No | ~10 seconds |
 
 ---
 
@@ -99,14 +103,14 @@ Detailed reference for each of the four pipeline steps.
 **What it does:**
 
 1. Creates or retrieves the MLflow experiment
-2. Initializes YOLO model from `model-config` (or `pretrained-weights` if set)
+2. Initializes YOLO model from `model-variant` (or `pretrained-weights` if set)
 3. Registers custom callbacks for:
    - Per-epoch validation metrics (mAP50, precision, recall)
    - System resource monitoring (GPU VRAM, GPU utilization, RAM)
    - Periodic S3 checkpoint saves every `checkpointing-interval-epochs` epochs
 4. Calls `model.train()` — Ultralytics handles all MLflow logging automatically
 5. Tags the completed run with `KUBECORE_*` metadata
-6. Passes `best.pt` S3 path to Step 4
+6. Passes `best.pt` S3 path to the next step
 
 **Fails if:**
 
@@ -117,7 +121,70 @@ Detailed reference for each of the four pipeline steps.
 
 ---
 
-## Step 4: Model Registration
+## Step 4: QAT Finetune
+
+**Purpose:** Runs quantization-aware fine-tuning to produce an INT8 model that recovers accuracy lost to naive quantization. **This step only runs when `quantization-mode=qat`** — for `none` or `ptq` it is skipped.
+
+**Compute:** **GPU** · **Typical duration:** minutes to hours
+
+**Inputs:**
+
+- `best.pt` FP32 checkpoint from Step 3
+- Dataset from Step 2
+- Validated config from Step 1 (`qat-epochs`, `qat-lr`, `quantization-*`)
+
+**Outputs:**
+
+- A headless INT8 model (`model_int8.tflite`) whose detection head runs in host software
+- A separate MLflow run logging `qat_finetune_loss`, linked to the training run via a `source_run_id` tag
+
+**What it does:**
+
+1. Loads the FP32 `best.pt` and prepares it for quantization-aware training (built with torchao + litert — Ultralytics does **not** support QAT natively)
+2. Fine-tunes for `qat-epochs` at `qat-lr`, logging `qat_finetune_loss`
+3. Exports a headless INT8 `.tflite` model
+4. Hands the INT8 model to Step 5 for parity checking
+
+**Fails if:**
+
+- GPU not available
+- QAT export fails
+
+---
+
+## Step 5: Model Quantization
+
+**Purpose:** Produces the INT8 model and verifies it against the FP32 model. For `ptq` it does the post-training INT8 export via Ultralytics; for `qat` it passes through the model from Step 4. In both cases it runs an FP32-vs-INT8 parity check.
+
+**Compute:** CPU · **Typical duration:** minutes
+
+**Inputs:**
+
+- FP32 `best.pt` from Step 3 (and, for QAT, the INT8 model from Step 4)
+- Dataset from Step 2 (for calibration and parity frames)
+- Validated config from Step 1 (`quantization-mode`, `quantization-calibration-frames`, `quantization-parity-frames`, etc.)
+
+**Outputs:**
+
+- INT8 `.tflite` artifact logged on the quantization MLflow run — `best_int8.tflite` for PTQ, `model_int8.tflite` for QAT
+- Parity metrics: `parity_max_abs_error`, and `fp32_` / `int8_` / `delta_` mAP
+- A separate MLflow run linked to the training run via a `source_run_id` tag
+
+**What it does:**
+
+1. For `ptq`: calibrates on `quantization-calibration-frames` frames and exports an INT8 `.tflite` via Ultralytics. For `qat`: takes the INT8 model from Step 4.
+2. Runs FP32 vs INT8 inference on `quantization-parity-frames` frames and computes `parity_max_abs_error` and the FP32/INT8 mAP delta
+3. Logs the INT8 `.tflite` as an artifact on this run (it is **not** placed in the model registry)
+
+**Fails if:**
+
+- `quantization-calibration-frames` is outside `[100, 10000]` or `quantization-parity-frames` `< 1`
+- Parity exceeds `quantization-parity-max-abs-error`
+- Export or calibration fails
+
+---
+
+## Step 6: Model Registration
 
 **Purpose:** Registers the trained model checkpoints in the MLflow Model Registry with full lineage tags.
 
@@ -154,14 +221,12 @@ Detailed reference for each of the four pipeline steps.
 
 ---
 
-## Future: Evaluation Step
+## Quantization Modes at a Glance
 
-!!! note "Coming Soon"
-    A fifth pipeline step — **Evaluation** — is planned as a stretch goal. It will:
+The `quantization-mode` parameter controls which of the two quantization steps run:
 
-    - Run batch inference on a held-out test set (lightbox + sunlamp images)
-    - Reconstruct 3D pose from predicted keypoints using PnP solving
-    - Compute domain-specific metrics: translation error (meters), rotation error (degrees)
-    - Log evaluation metrics and visualization overlays to MLflow
-
-    This step will use a GPU node and is expected to take 10–60 minutes.
+| Mode | QAT Finetune (Step 4) | Model Quantization (Step 5) |
+|---|---|---|
+| `none` | Skipped | Skipped — only the FP32 model is produced |
+| `ptq` | Skipped | Post-training INT8 export via Ultralytics + parity |
+| `qat` | Runs (GPU) — QAT fine-tune, headless INT8 export | Pass-through of the QAT INT8 model + parity |

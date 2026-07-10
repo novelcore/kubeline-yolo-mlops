@@ -2,7 +2,7 @@
 
 An end-to-end machine learning pipeline for YOLO pose estimation, built to run on the [KAOS platform](https://novelcore.github.io/kubecore-operator/).
 
-The pipeline loads your dataset from S3 or LakeFS, trains a YOLO pose model on a GPU node, and registers the result in MLflow — all fully automated through Argo Workflows. You configure each experiment by setting parameters when you submit a workflow run.
+The pipeline loads your dataset from S3 or LakeFS, trains a YOLO pose model on a GPU node, optionally produces a quantized INT8 model, and registers the result in MLflow — all fully automated through Argo Workflows. You configure each experiment by setting parameters when you submit a workflow run.
 
 ## Pipeline Overview
 
@@ -10,11 +10,15 @@ The pipeline loads your dataset from S3 or LakeFS, trains a YOLO pose model on a
 graph LR
     A["⚙️ Config\nValidation"] --> B["📦 Dataset\nLoading"]
     B --> C["🧠 Model\nTraining"]
-    C --> D["📋 Model\nRegistration"]
+    C --> QF["🎯 QAT\nFinetune"]
+    QF --> Q["📉 Model\nQuantization"]
+    Q --> D["📋 Model\nRegistration"]
 
     style A fill:#4a148c,stroke:#7b1fa2,color:#fff
     style B fill:#4a148c,stroke:#7b1fa2,color:#fff
     style C fill:#6a1b9a,stroke:#9c27b0,color:#fff,stroke-width:2px
+    style QF fill:#4a148c,stroke:#7b1fa2,color:#fff
+    style Q fill:#4a148c,stroke:#7b1fa2,color:#fff
     style D fill:#4a148c,stroke:#7b1fa2,color:#fff
 ```
 
@@ -23,6 +27,8 @@ graph LR
 | Config Validation | CPU | Seconds |
 | Dataset Loading | CPU | Minutes |
 | Model Training | GPU | Hours to days |
+| QAT Finetune (only when `quantization-mode=qat`) | GPU | Minutes to hours |
+| Model Quantization | CPU | Minutes |
 | Model Registration | CPU | Seconds |
 
 ## Which track are you on?

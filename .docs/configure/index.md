@@ -28,6 +28,7 @@ Loss Gains     ← Pose-specific loss weights
 Early Stopping ← When to stop if the model converges
 Checkpointing  ← How often to save progress and how to resume
 Augmentation   ← Image augmentation settings
+Quantization   ← INT8 quantization mode (none/ptq/qat) and its settings
 Registration   ← How to save and promote the trained model
 ```
 
@@ -35,9 +36,9 @@ Registration   ← How to save and promote the trained model
 
 For a typical experiment, you might override just four or five values:
 
-- `dataset-version` — which version of your data to train on
+- `dataset-ref` — which lakeFS branch (dataset) to train on
 - `epochs` — how long to train
-- `model-config` — which YOLO variant to use
+- `model-variant` — which YOLO variant to use
 - `batch-size` — how many images per gradient update
 
 Everything else stays at its default. As you get more advanced, you can tune learning rates, augmentation, loss gains, and more.

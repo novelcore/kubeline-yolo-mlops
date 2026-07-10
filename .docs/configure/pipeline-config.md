@@ -24,9 +24,10 @@ Controls where to load training data from and how much of it to use.
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `dataset-version` | `"upload-initial"` | Dataset version tag. Used to construct the storage path automatically. |
-| `dataset-source` | `"lakefs"` | Storage backend. Use `"lakefs"` when your dataset is versioned in LakeFS; use `"s3"` for a direct S3 path. |
-| `dataset-path-override` | `""` | Override the auto-constructed path with a full `s3://` URI. When set, the version and source parameters are ignored. |
+| `dataset-ref` | `"main"` | lakeFS branch name that holds the dataset. This is the dataset selector (the dropdown value) and drives the storage path `s3://<repo>/<ref>/`. |
+| `dataset-version` | `""` | Optional provenance-only metadata recorded for lineage. **Not** part of the storage path. |
+| `dataset-source` | `"lakefs"` | Storage backend. Use `"lakefs"` when your dataset lives on a LakeFS branch; use `"s3"` for a direct S3 path. |
+| `dataset-path-override` | `""` | Override the auto-constructed path with a full `s3://<repo>/<branch>/` URI. When set, the ref and source parameters are ignored. |
 | `dataset-sample-size` | `""` | Use a random subset of the dataset. Set to an integer (e.g., `200`) for faster iteration during development. Leave empty for the full dataset. |
 | `dataset-seed` | `"42"` | Controls which samples are selected when `dataset-sample-size` is set. Use the same seed to get the same subset across runs. |
 
@@ -39,10 +40,10 @@ Override these parameters when submitting:
 
 | Parameter | Value |
 | --- | --- |
-| `dataset-version` | `v2` |
+| `dataset-ref` | `my-dataset` |
 | `dataset-sample-size` | `200` |
 
-Everything else stays at default. This trains on 200 random images from the `v2` dataset.
+Everything else stays at default. This trains on 200 random images from the `my-dataset` branch.
 
 ---
 
@@ -52,7 +53,7 @@ Selects the YOLO architecture to train.
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `model-config` | `"yolov8n-pose.pt"` | YOLO pose model variant. See options below. |
+| `model-variant` | `"yolov8n-pose.pt"` | YOLO pose model variant. See options below. |
 | `pretrained-weights` | `""` | S3 path to a custom `.pt` file to use as starting weights instead of the default ImageNet-pretrained weights. Useful for fine-tuning a previously trained model. |
 
 **Available variants** (ordered by size / accuracy):
@@ -101,7 +102,7 @@ All hyperparameters passed to the YOLO training process.
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `warmup-epochs` | `"3.0"` | Number of epochs to linearly ramp up the learning rate from near-zero. Prevents unstable early training. |
+| `warmup-epochs` | `"3.0"` | Number of epochs to linearly ramp up the learning rate from near-zero. Prevents unstable early training. Must be **less than** `epochs`. |
 | `warmup-momentum` | `"0.8"` | Initial momentum during warmup, ramped up to `momentum` by the end of warmup. |
 
 ### Pose-Estimation Loss Gains
@@ -128,7 +129,7 @@ These are specific to pose estimation and control how much weight each loss comp
 | `nbs` | `"64"` | Nominal batch size for learning rate scaling. If your `batch-size` differs from `nbs`, Ultralytics adjusts the effective LR automatically. |
 | `freeze` | `""` | Freeze the first N backbone layers. Useful when fine-tuning from `pretrained-weights` — freeze early layers to preserve learned features. |
 | `amp` | `"true"` | Automatic Mixed Precision (FP16). Halves GPU memory usage with minimal accuracy impact. Keep `true` unless debugging numerical issues. |
-| `close-mosaic` | `"10"` | Disables mosaic augmentation for the last N epochs. Helps the model converge on clean images before validation. |
+| `close-mosaic` | `"10"` | Disables mosaic augmentation for the last N epochs. Helps the model converge on clean images before validation. Must be **less than** `epochs`. |
 | `training-seed` | `"0"` | Global random seed for reproducibility. |
 | `deterministic` | `"true"` | Enables cuDNN deterministic mode. Guarantees identical results across runs with the same seed. |
 
@@ -192,6 +193,33 @@ Data augmentation applied to training images. The defaults are tuned for spacecr
 | `aug-copy-paste` | `"0.0"` | `0.0–1.0` | Segment copy-paste probability. |
 | `aug-erasing` | `"0.4"` | `0.0–0.9` | Random rectangular patch erasing probability. |
 | `aug-bgr` | `"0.0"` | `0.0–1.0` | Channel order flip probability. |
+
+---
+
+## Quantization
+
+Controls whether the trained FP32 model is also exported to a quantized INT8 model, and how. The `quantization-mode` switch decides which path (if any) runs:
+
+- **`none`** — no quantization; only the FP32 model is produced.
+- **`ptq`** — post-training INT8 export via Ultralytics. The `qat-finetune` step is skipped; the `model-quantization` step exports and runs FP32-vs-INT8 parity.
+- **`qat`** — quantization-aware fine-tuning. The GPU `qat-finetune` step runs (Ultralytics does **not** support QAT natively; this path is built with torchao + litert), exports a headless INT8 model whose detection head runs in host software, then `model-quantization` checks parity.
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `quantization-mode` | `"none"` | One of `none`, `ptq`, `qat`. The switch. `qat-finetune` only runs when set to `qat`. |
+| `quantization-calibration-frames` | `"512"` | Number of frames used to calibrate INT8 quantization. **Must be 100–10000.** |
+| `quantization-parity-frames` | `"100"` | Number of frames used for the FP32-vs-INT8 parity check. **Must be ≥ 1.** |
+| `quantization-image-size` | `"640"` | Input image resolution used during quantization/calibration. |
+| `quantization-calibration-seed` | `"42"` | Random seed for selecting calibration frames. |
+| `quantization-parity-max-abs-error` | `"0.05"` | Maximum allowed absolute error between FP32 and INT8 outputs before the parity check fails. |
+| `quantization-output-prefix` | `"quantization"` | Prefix for the quantized output artifacts. |
+
+**QAT-only parameters** (used only when `quantization-mode=qat`):
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `qat-epochs` | `"10"` | Number of quantization-aware fine-tuning epochs. |
+| `qat-lr` | `"0.0001"` | Learning rate for the QAT fine-tuning pass. |
 
 ---
 
