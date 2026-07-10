@@ -7,17 +7,17 @@ Confirm you have all of the following before starting.
 - A KAOS platform licence is active for your organisation.
 - You have admin access to the KAOS control-plane cluster.
 
-## AWS Account
+## GCP Project
 
-You need an AWS account with IAM permissions for:
+You need a GCP project with GCP IAM permissions for:
 
 | Service | Why |
 | --- | --- |
-| EKS | Create and manage Kubernetes clusters |
-| EC2 | Provision GPU and CPU nodes via Karpenter |
-| ECR | Store Docker images for pipeline steps |
-| S3 | Store datasets, checkpoints, and MLflow artifacts |
-| IAM | Create service accounts and node roles |
+| GKE | Create and manage Kubernetes clusters |
+| Compute Engine | Provision GPU and CPU nodes via GKE node pools + the cluster autoscaler |
+| Artifact Registry | Store Docker images for pipeline steps |
+| GCS | Store datasets, checkpoints, and MLflow artifacts |
+| GCP IAM | Create service accounts (Workload Identity) and node service accounts |
 
 ## GitHub
 
@@ -31,14 +31,15 @@ Install and configure the following on your local machine:
 | Tool | Purpose | Install |
 | --- | --- | --- |
 | `kubectl` | Interact with Kubernetes clusters | [docs.kubernetes.io](https://kubernetes.io/docs/tasks/tools/) |
-| `aws` | AWS CLI for verifying resources | [aws.amazon.com/cli](https://aws.amazon.com/cli/) |
+| `gcloud` | GCP CLI for verifying resources | [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install) |
 | `gh` | GitHub CLI for repository verification | [cli.github.com](https://cli.github.com/) |
 
 Verify each tool is configured:
 
 ```bash
 kubectl version --client
-aws sts get-caller-identity
+gcloud auth list
+gcloud config get-value project
 gh auth status
 ```
 

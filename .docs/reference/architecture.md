@@ -12,7 +12,7 @@ graph TB
 
     Params -->|submit via Argo UI / GitHub PR| ArgoAPI["Argo Workflows"]
 
-    subgraph K8s["Kubernetes Cluster (KAOS / EKS)"]
+    subgraph K8s["Kubernetes Cluster (KAOS / GKE)"]
         subgraph Argo["Argo Workflows Controller"]
             S1["Step 1: Config Validation\n(CPU · seconds)"]
             S2["Step 2: Dataset Loading\n(CPU · minutes)"]
@@ -43,8 +43,8 @@ graph TB
 | **MLflow Tracking** | Records all parameters, metrics, and artifacts per run |
 | **MLflow Model Registry** | Versions trained model checkpoints with stage labels |
 | **S3 / LakeFS** | Stores datasets, checkpoints, and MLflow binary artifacts |
-| **Karpenter** | Dynamically provisions GPU nodes when training starts, releases them after |
-| **ECR** | Stores Docker images for each pipeline step |
+| **GKE node pools + the cluster autoscaler** | Dynamically provisions GPU nodes when training starts, releases them after |
+| **Artifact Registry** | Stores Docker images for each pipeline step |
 
 ## Data Flow
 
@@ -111,7 +111,7 @@ Each step is a fully self-contained Python package with its own Docker image.
 
 ## Compute Allocation
 
-GPU and CPU nodes are provisioned dynamically by Karpenter:
+GPU and CPU nodes are provisioned dynamically by GKE node pools + the cluster autoscaler:
 
 | Step | Node Pool | Why |
 | --- | --- | --- |
