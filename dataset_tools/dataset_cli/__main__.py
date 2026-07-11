@@ -72,7 +72,10 @@ def cmd_validate(args) -> int:
 def cmd_sync(args, *, do_auth: bool = True) -> int:
     url = _resolve_url(args)
     repo = _resolve_repo(args)
-    branch = args.branch or _env("LAKEFS_BRANCH", "main")
+    # branch precedence: positional arg > --branch flag > env > default. The
+    # positional form (`upload <dir> <branch>`) matches the docs and the
+    # scripts/upload-dataset.py wrapper; the --branch flag still works.
+    branch = getattr(args, "branch_pos", None) or args.branch or _env("LAKEFS_BRANCH", "main")
     root = pathlib.Path(args.dataset_dir)
 
     # ref-native guard
@@ -157,11 +160,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     spc = sub.add_parser("sync", help="incrementally sync a dataset to lakeFS")
     spc.add_argument("dataset_dir", help="path to the local dataset directory")
+    spc.add_argument("branch_pos", nargs="?", metavar="branch",
+                     help="target branch — the name shown in the dropdown "
+                          "(same as --branch; positional for the one-liner)")
     add_common(spc)
     spc.set_defaults(func=cmd_sync)
 
     up = sub.add_parser("upload", help="login + validate + sync (the one-liner)")
     up.add_argument("dataset_dir", help="path to the local dataset directory")
+    up.add_argument("branch_pos", nargs="?", metavar="branch",
+                    help="target branch — the name shown in the dropdown "
+                         "(same as --branch; positional for the one-liner)")
     add_common(up)
     up.set_defaults(func=cmd_sync)
 
