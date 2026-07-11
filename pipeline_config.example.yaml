@@ -87,7 +87,8 @@ early_stopping:
 # Object imagery notes:
 #   - fliplr disabled: objects have no left-right symmetry in canonical pose
 #   - flipud disabled: orbital geometry has a defined "up"
-#   - degrees: 0.0 — pose labels are rotation-sensitive; random rotation breaks keypoint geometry
+#   - degrees: 180 — safe for pose: Ultralytics rotates the keypoints with the image, so
+#     in-plane rotation multiplies effective training data (large pose-accuracy gain on small sets)
 #   - perspective: use with extreme caution; > 0.001 causes severe keypoint displacement
 augmentation:
   # Colour-space jitter
@@ -96,7 +97,7 @@ augmentation:
   hsv_v: 0.4
 
   # Geometric
-  degrees: 0.0
+  degrees: 180.0                 # Full in-plane rotation — object appears at any orientation
   translate: 0.1
   scale: 0.5
   shear: 0.0
@@ -107,7 +108,7 @@ augmentation:
   fliplr: 0.0                    # Disabled for object (no left-right symmetry)
 
   # Composition
-  mosaic: 1.0
+  mosaic: 0.0                    # OFF — mosaic shrinks/edge-crops a single-object frame, hurting keypoint precision
   mixup: 0.0
   copy_paste: 0.0                # Segment copy-paste probability
 
