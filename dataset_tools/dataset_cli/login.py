@@ -47,7 +47,27 @@ import urllib.parse
 import webbrowser
 from typing import Optional
 
+from dataclasses import dataclass
+
+from . import device_flow
+from .appconfig import config_value
 from .lakefs_client import COOKIE_NAME, LakeFSClient
+
+
+@dataclass(frozen=True)
+class Credential:
+    """What the CLI carries to lakeFS.
+
+    ``token`` is a per-user Zitadel bearer from device flow — the normal path.
+    ``cookie`` is the legacy oauth2-proxy session, kept only so a cached
+    pre-upgrade session and the manual paste escape hatch keep working.
+    """
+    token: Optional[str] = None
+    cookie: Optional[str] = None
+
+    @property
+    def kind(self) -> str:
+        return "bearer" if self.token else "cookie"
 
 SESSION_PATH = pathlib.Path(
     os.environ.get("KUBECORE_ML_HOME", pathlib.Path.home() / ".config" / "kubecore-ml")
@@ -72,14 +92,24 @@ RETURN_PATH = "/kubecore-cli/return"
 # ----------------------------------------------------------------------
 # session cache
 # ----------------------------------------------------------------------
-def save_session(base_url: str, cookie: str) -> None:
+def save_session(base_url: str, cookie: Optional[str] = None,
+                 token: Optional[str] = None) -> None:
     SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SESSION_PATH.write_text(json.dumps({"base_url": base_url.rstrip("/"), "cookie": cookie}))
+    payload = {"base_url": base_url.rstrip("/")}
+    if token:
+        payload["token"] = token
+    if cookie:
+        payload["cookie"] = cookie
+    SESSION_PATH.write_text(json.dumps(payload))
     os.chmod(SESSION_PATH, 0o600)
 
 
-def load_session(base_url: Optional[str] = None) -> Optional[str]:
-    """Return a cached, still-valid cookie for base_url, else None."""
+def load_session(base_url: Optional[str] = None) -> Optional[Credential]:
+    """Return a cached, still-valid credential for base_url, else None.
+
+    Reads both the current {"token": ...} shape and the legacy {"cookie": ...}
+    one, so an existing session file keeps working after an upgrade.
+    """
     if not SESSION_PATH.exists():
         return None
     try:
@@ -88,12 +118,14 @@ def load_session(base_url: Optional[str] = None) -> Optional[str]:
         return None
     if base_url and data.get("base_url") != base_url.rstrip("/"):
         return None
-    cookie = data.get("cookie")
-    if not cookie:
+
+    token, cookie = data.get("token"), data.get("cookie")
+    if not token and not cookie:
         return None
-    # verify it still authenticates
-    client = LakeFSClient(data["base_url"], cookie)
-    return cookie if client.check_auth() else None
+    cred = Credential(token=token, cookie=cookie)
+    # verify it still authenticates (tokens expire; cookies are 4h)
+    client = LakeFSClient(data["base_url"], cookie=cookie, token=token)
+    return cred if client.check_auth() else None
 
 
 # ----------------------------------------------------------------------
@@ -265,49 +297,84 @@ def guided_paste_login(base_url: str) -> Optional[str]:
 # ----------------------------------------------------------------------
 # entry
 # ----------------------------------------------------------------------
-def login(base_url: str, force: bool = False, prefer_paste: bool = False) -> str:
-    """Return a valid cookie for base_url; log in via browser if needed.
+def oidc_settings(start: Optional[str] = None) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Resolve (issuer, client_id, audience_project_id) for device-flow login.
 
-    Tries the session cache, then the token return page, then guided-paste.
-    Persists the cookie on success. Exits the process if all paths fail.
+    Precedence: environment > .kubecore/dataset-config.yaml. The operator
+    publishes these per project (KubeProject.status.mlStack.datasetCLIOIDC,
+    kubecore-operator #1347) and the render step writes them into the app repo,
+    so nothing is hardcoded and every project gets its own app.
+    """
+    issuer = os.environ.get("KUBECORE_ML_OIDC_ISSUER") or config_value("oidcIssuer", start)
+    client_id = os.environ.get("KUBECORE_ML_OIDC_CLIENT_ID") or config_value("oidcClientId", start)
+    audience = (os.environ.get("KUBECORE_ML_OIDC_PROJECT_ID")
+                or config_value("oidcProjectId", start))
+    return issuer, client_id, audience
+
+
+def device_flow_login(base_url: str) -> Optional[Credential]:
+    """Log in via Zitadel device flow. Returns None if it is not configured."""
+    issuer, client_id, audience = oidc_settings()
+    if not issuer or not client_id:
+        return None
+    try:
+        tokens = device_flow.login(issuer, client_id, audience_project_id=audience)
+    except device_flow.DeviceFlowError as exc:
+        print(f"\nBrowser sign-in failed: {exc}")
+        return None
+    token = tokens.get("access_token")
+    return Credential(token=token) if token else None
+
+
+def login(base_url: str, force: bool = False, prefer_paste: bool = False) -> Credential:
+    """Return a valid credential for base_url; log in via browser if needed.
+
+    Order: session cache -> Zitadel device flow -> guided paste (opt-in).
+
+    Device flow is the normal path. Nothing passes from the browser to the CLI
+    — both talk to Zitadel independently — which is what every earlier design
+    got wrong and why users ended up pasting a cookie by hand. The paste
+    fallback survives only for projects whose OIDC app is not provisioned yet.
     """
     base_url = base_url.rstrip("/")
 
     if not force:
         cached = load_session(base_url)
         if cached:
-            print("✓ Using cached lakeFS session.")
+            print(f"✓ Using cached lakeFS session ({cached.kind}).")
             return cached
 
-    cookie = None
+    cred: Optional[Credential] = None
     if not prefer_paste:
-        cookie = loopback_login(base_url)
-        if not cookie:
-            print("\nBrowser sign-in didn't hand back a session.")
-            print("  • If you never finished logging in, just run `login` again.")
-            print("  • If the browser said “Could not reach the CLI”, the return")
-            print("    page couldn't pass the session back — use the paste fallback.")
-            sys.stdout.write("\nFall back to copying the cookie by hand? [y/N] ")
+        cred = device_flow_login(base_url)
+        if cred is None:
+            issuer, client_id, _ = oidc_settings()
+            if not issuer or not client_id:
+                print("\nDevice-flow sign-in is not configured for this app "
+                      "(no oidcIssuer/oidcClientId in .kubecore/dataset-config.yaml).")
+            print("Falling back to the manual cookie paste.")
+            sys.stdout.write("Continue with a manual paste? [y/N] ")
             sys.stdout.flush()
             try:
                 answer = sys.stdin.readline().strip().lower()
             except (EOFError, KeyboardInterrupt):
                 answer = ""
             if answer not in ("y", "yes"):
-                sys.exit("Aborted — no session captured.")
-    if not cookie:
-        cookie = guided_paste_login(base_url)
+                sys.exit("Aborted — not signed in.")
 
-    if not cookie:
-        sys.exit("ERROR: no lakeFS session was captured. Aborting.")
+    if cred is None:
+        cookie = guided_paste_login(base_url)
+        if not cookie:
+            sys.exit("ERROR: no lakeFS credential was captured. Aborting.")
+        cred = Credential(cookie=cookie)
 
     # verify before caching
-    client = LakeFSClient(base_url, cookie)
+    client = LakeFSClient(base_url, cookie=cred.cookie, token=cred.token)
     if not client.check_auth():
         sys.exit(
-            "ERROR: the captured session did not authenticate to lakeFS "
-            "(cookie invalid or expired). Try again."
+            f"ERROR: the captured {cred.kind} did not authenticate to lakeFS "
+            "(invalid or expired). Try again."
         )
-    save_session(base_url, cookie)
+    save_session(base_url, cookie=cred.cookie, token=cred.token)
     print("✓ Logged in — session cached.")
-    return cookie
+    return cred

@@ -35,15 +35,29 @@ class LakeFSError(RuntimeError):
 class LakeFSClient:
     """Cookie-authenticated lakeFS REST client over the SSO ingress."""
 
-    def __init__(self, base_url: str, cookie: str, concurrency: int = 16,
-                 timeout: int = 300):
+    def __init__(self, base_url: str, cookie: Optional[str] = None,
+                 concurrency: int = 16, timeout: int = 300,
+                 token: Optional[str] = None):
+        """Authenticate with a Zitadel bearer ``token`` (preferred) or a session
+        ``cookie`` (legacy paste path).
+
+        Bearer is preferred: it is a per-user, short-lived, audience-scoped
+        Zitadel token obtained via device flow, where the cookie is a 4h session
+        that had to be copied out of a browser by hand. oauth2-proxy accepts
+        both — ``--skip-jwt-bearer-tokens=true`` verifies a bearer against
+        Zitadel's JWKS and forwards to the nginx sidecar exactly as it does for
+        a cookie session.
+        """
+        if not token and not cookie:
+            raise LakeFSError("LakeFSClient needs either a bearer token or a session cookie")
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self.session = self._make_session(cookie, concurrency)
+        self.session = self._make_session(cookie, concurrency, token)
 
     # -- session ---------------------------------------------------------
     @staticmethod
-    def _make_session(cookie: str, concurrency: int) -> requests.Session:
+    def _make_session(cookie: Optional[str], concurrency: int,
+                      token: Optional[str] = None) -> requests.Session:
         s = requests.Session()
         retry = Retry(
             total=5,
@@ -60,7 +74,10 @@ class LakeFSClient:
         s.mount("https://", adapter)
         s.mount("http://", adapter)
         s.headers.update({"User-Agent": USER_AGENT})
-        s.cookies.set(COOKIE_NAME, cookie)
+        if token:
+            s.headers["Authorization"] = f"Bearer {token}"
+        elif cookie:
+            s.cookies.set(COOKIE_NAME, cookie)
         return s
 
     def _url(self, path: str) -> str:
@@ -68,9 +85,9 @@ class LakeFSClient:
 
     # -- auth / existence ------------------------------------------------
     def check_auth(self) -> bool:
-        """Return True iff the cookie is a valid SSO session.
+        """Return True iff the carried credential authenticates.
 
-        oauth2-proxy answers a bad/expired cookie with a 302 to the login
+        oauth2-proxy answers a bad/expired credential with a 302 to the login
         page, so we disable redirects and require a 200.
         """
         r = self.session.get(
