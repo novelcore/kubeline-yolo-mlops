@@ -23,10 +23,12 @@ lakeFS domain itself:
      catcher reads the cookie value off that POST. Fully automated — no paste.
      Requires the ``/kubecore-cli/*`` locations on the nginx sidecar (operator
      composition); if they aren't deployed yet, the page's fetch 302s and the
-     POST never arrives, so we time out and fall back.
+     POST never arrives, so we time out and offer the fallback.
 
-  2. GUIDED PASTE (last-resort fallback): open the browser to the lakeFS UI and
-     prompt the user to paste the cookie once. Works with zero platform change.
+  2. GUIDED PASTE (last-resort fallback, only if the user opts in): open the
+     browser to the lakeFS UI and prompt for the cookie once. Works with zero
+     platform change. This is NOT entered automatically — reaching it means the
+     automated path genuinely failed, and silently demanding a paste hides that.
 
 The captured cookie is cached (0600) at ~/.config/kubecore-ml/lakefs-session.json
 so ``validate``/``sync`` reuse it until it expires.
@@ -55,6 +57,11 @@ SESSION_PATH = pathlib.Path(
 # return page reflects whatever ?port= we pass, so any free port works — but a
 # stable default keeps the flow predictable. Overridable for clashes.
 LOOPBACK_PORT = int(os.environ.get("KUBECORE_ML_LOOPBACK_PORT", "8765"))
+
+# How long to wait for the browser sign-in to hand back a session. This has to
+# cover a real human: Zitadel page load + password + 2FA. Overridable for scripts
+# that want to fail fast.
+LOOPBACK_TIMEOUT = int(os.environ.get("KUBECORE_ML_LOGIN_TIMEOUT", "180"))
 
 # Path (on the lakeFS domain) of the same-origin return page served by the nginx
 # auth-injector sidecar. Kept in sync with the operator composition
@@ -155,12 +162,17 @@ def _port_free(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) != 0
 
 
-def loopback_login(base_url: str, timeout: int = 10) -> Optional[str]:
+def loopback_login(base_url: str, timeout: int = LOOPBACK_TIMEOUT) -> Optional[str]:
     """Open the browser, capture the _lakefs_oauth2 cookie via the return page.
 
     Opens ``<lakefs>/oauth2/start?rd=<lakefs>/kubecore-cli/return?port=<port>`` and
     runs a localhost catcher that receives the session JSON POSTed by that page.
     Returns the cookie value, or None if capture failed (caller falls back).
+
+    The timeout budgets a HUMAN sign-in: the clock starts when the browser opens,
+    and the user still has to read the Zitadel page, type a password and clear 2FA.
+    A short deadline here doesn't "fail fast", it just abandons a capture that was
+    about to succeed and drops a paste prompt into the terminal mid-login.
     """
     base_url = base_url.rstrip("/")
     port = LOOPBACK_PORT
@@ -193,12 +205,30 @@ def loopback_login(base_url: str, timeout: int = 10) -> Optional[str]:
     print("    (click the link above if the browser didn't open)\n")
     webbrowser.open(start_url)
 
+    # Only animate on a real terminal; piped/CI output gets no escape codes.
+    tty = sys.stdout.isatty()
+
+    def _clear():
+        if tty:
+            sys.stdout.write("\r\033[K")
+            sys.stdout.flush()
+
     try:
         deadline = time.time() + timeout
         while time.time() < deadline:
             if catcher.captured.get("cookie"):
+                _clear()  # drop the countdown before the caller prints
                 return catcher.captured["cookie"]
+            # A silent multi-minute wait is indistinguishable from a hang — show
+            # the remaining budget so the user knows we're still listening.
+            if tty:
+                remaining = int(deadline - time.time())
+                sys.stdout.write(
+                    f"\r\033[K⏳  Waiting for you to finish signing in… {remaining}s"
+                )
+                sys.stdout.flush()
             time.sleep(0.5)
+        _clear()
         return None
     finally:
         server.shutdown()
@@ -253,9 +283,18 @@ def login(base_url: str, force: bool = False, prefer_paste: bool = False) -> str
     if not prefer_paste:
         cookie = loopback_login(base_url)
         if not cookie:
-            print("Browser sign-in didn't complete "
-                  "(the login return page may not be deployed yet) — "
-                  "falling back to guided paste.")
+            print("\nBrowser sign-in didn't hand back a session.")
+            print("  • If you never finished logging in, just run `login` again.")
+            print("  • If the browser said “Could not reach the CLI”, the return")
+            print("    page couldn't pass the session back — use the paste fallback.")
+            sys.stdout.write("\nFall back to copying the cookie by hand? [y/N] ")
+            sys.stdout.flush()
+            try:
+                answer = sys.stdin.readline().strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            if answer not in ("y", "yes"):
+                sys.exit("Aborted — no session captured.")
     if not cookie:
         cookie = guided_paste_login(base_url)
 

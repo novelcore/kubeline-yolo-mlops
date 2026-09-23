@@ -34,6 +34,21 @@ def _drive_login(monkeypatch, timeout=8):
     return th, result, opened
 
 
+def test_default_timeout_budgets_a_human_signin():
+    """Regression: the default wait must cover a real Zitadel sign-in.
+
+    The default was once 10s — the clock starts when the browser opens, so it
+    expired while the user was still typing their password. The CLI then
+    abandoned a capture that was about to succeed and demanded a manual cookie
+    paste, which made the automated path look broken to every user.
+    """
+    assert login.LOOPBACK_TIMEOUT >= 120
+    # loopback_login must actually DEFAULT to it, not just define it.
+    import inspect
+    assert (inspect.signature(login.loopback_login)
+            .parameters["timeout"].default == login.LOOPBACK_TIMEOUT)
+
+
 def test_return_page_target_is_same_origin(monkeypatch):
     """The browser must be pointed at oauth2/start with rd= a SAME-ORIGIN return
     page on the lakeFS domain (not http://localhost), carrying ?port=<bound>."""
@@ -43,9 +58,13 @@ def test_return_page_target_is_same_origin(monkeypatch):
         assert parsed.path == "/oauth2/start"
         rd = up.parse_qs(parsed.query)["rd"][0]
         rd_parsed = up.urlparse(rd)
-        # return page is served on the lakeFS domain, at /kubecore-cli/return
-        assert rd_parsed.scheme == "https"
-        assert rd_parsed.netloc == "lakefs.invalid"
+        # The rd MUST be RELATIVE (path-only). oauth2-proxy refuses an ABSOLUTE
+        # cross-host rd= unless the host is in --whitelist-domain, and silently
+        # falls through to the lakeFS UI after login. A relative same-host path is
+        # always honored and still resolves against the lakeFS origin, so the
+        # return page runs same-origin and can read the session cookie.
+        assert rd_parsed.scheme == ""
+        assert rd_parsed.netloc == ""
         assert rd_parsed.path == login.RETURN_PATH
         port = up.parse_qs(rd_parsed.query)["port"][0]
         assert port.isdigit()
