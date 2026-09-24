@@ -42,7 +42,7 @@ class LakeFSClient:
         ``cookie`` (legacy paste path).
 
         Bearer is preferred: it is a per-user, short-lived, audience-scoped
-        Zitadel token obtained via device flow, where the cookie is a 4h session
+        Zitadel token obtained via the browser login, where the cookie is a 4h session
         that had to be copied out of a browser by hand. oauth2-proxy accepts
         both — ``--skip-jwt-bearer-tokens=true`` verifies a bearer against
         Zitadel's JWKS and forwards to the nginx sidecar exactly as it does for

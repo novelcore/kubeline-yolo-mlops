@@ -1,7 +1,7 @@
 """kubecore-dataset CLI entrypoint.
 
 Subcommands:
-  login     Log in to lakeFS via the browser (Zitadel device flow, paste fallback).
+  login     Log in to lakeFS via the browser (Zitadel PKCE login, paste fallback).
   validate  Check a local dataset against the Ultralytics-pose contract.
   sync      Validate, then incrementally sync (adds+deletes) to a lakeFS branch.
   upload    Alias for `sync` with login + validate wired in (the old one-liner).
@@ -138,7 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--branch", help="target branch (or env LAKEFS_BRANCH, default main)")
         sp.add_argument("--concurrency", type=int, default=16)
         sp.add_argument("--paste", action="store_true",
-                        help="skip device flow; use guided cookie paste")
+                        help="skip the browser login; use guided cookie paste")
         sp.add_argument("--prefix", default="",
                         help="(discouraged) upload under a nested prefix")
         sp.add_argument("--allow-prefix", action="store_true",

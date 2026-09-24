@@ -1,143 +1,106 @@
-"""Token-return-page login tests.
-
-The old loopback design (capture the _lakefs_oauth2 cookie off a localhost GET)
-could never work: the cookie is Secure+HttpOnly and scoped to the lakeFS domain,
-so the browser never sends it to http://localhost. The new flow captures the
-cookie via a same-origin return page (served on the lakeFS domain) that POSTs the
-session JSON to the localhost catcher. These tests exercise that POST path plus
-the CORS preflight the browser sends for a cross-origin application/json POST.
-"""
+"""login.py tests: where the OIDC settings come from, the session cache, and the
+order the CLI tries things in (cache -> browser login -> opt-in paste)."""
 from __future__ import annotations
 
-import http.client
 import json
-import threading
-import time
-import urllib.parse as up
 
-from dataset_cli import login
+import pytest
 
-
-def _drive_login(monkeypatch, timeout=8):
-    """Start loopback_login in a thread; return (thread, result, opened_url)."""
-    opened: dict = {}
-    monkeypatch.setattr(login.webbrowser, "open",
-                        lambda url: opened.setdefault("url", url))
-    result: dict = {}
-
-    def run():
-        result["cookie"] = login.loopback_login("https://lakefs.invalid", timeout=timeout)
-
-    th = threading.Thread(target=run)
-    th.start()
-    time.sleep(1.0)  # let the server bind + browser "open"
-    return th, result, opened
+from dataset_cli import appconfig, login
 
 
-def test_default_timeout_budgets_a_human_signin():
-    """Regression: the default wait must cover a real Zitadel sign-in.
-
-    The default was once 10s — the clock starts when the browser opens, so it
-    expired while the user was still typing their password. The CLI then
-    abandoned a capture that was about to succeed and demanded a manual cookie
-    paste, which made the automated path look broken to every user.
-    """
-    assert login.LOOPBACK_TIMEOUT >= 120
-    # loopback_login must actually DEFAULT to it, not just define it.
-    import inspect
-    assert (inspect.signature(login.loopback_login)
-            .parameters["timeout"].default == login.LOOPBACK_TIMEOUT)
+@pytest.fixture(autouse=True)
+def _isolated(tmp_path, monkeypatch):
+    monkeypatch.setattr(login, "SESSION_PATH", tmp_path / "session.json")
+    for var in ("KUBECORE_ML_OIDC_ISSUER", "KUBECORE_ML_OIDC_CLIENT_ID",
+                "KUBECORE_ML_OIDC_PROJECT_ID", "KUBECORE_DATASET_CONFIG"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.chdir(tmp_path)
+    appconfig.load_config.cache_clear()
+    yield
+    appconfig.load_config.cache_clear()
 
 
-def test_return_page_target_is_same_origin(monkeypatch):
-    """The browser must be pointed at oauth2/start with rd= a SAME-ORIGIN return
-    page on the lakeFS domain (not http://localhost), carrying ?port=<bound>."""
-    th, result, opened = _drive_login(monkeypatch)
-    try:
-        parsed = up.urlparse(opened["url"])
-        assert parsed.path == "/oauth2/start"
-        rd = up.parse_qs(parsed.query)["rd"][0]
-        rd_parsed = up.urlparse(rd)
-        # The rd MUST be RELATIVE (path-only). oauth2-proxy refuses an ABSOLUTE
-        # cross-host rd= unless the host is in --whitelist-domain, and silently
-        # falls through to the lakeFS UI after login. A relative same-host path is
-        # always honored and still resolves against the lakeFS origin, so the
-        # return page runs same-origin and can read the session cookie.
-        assert rd_parsed.scheme == ""
-        assert rd_parsed.netloc == ""
-        assert rd_parsed.path == login.RETURN_PATH
-        port = up.parse_qs(rd_parsed.query)["port"][0]
-        assert port.isdigit()
-    finally:
-        th.join(timeout=10)
+def _write_config(tmp_path, **values):
+    (tmp_path / ".kubecore").mkdir(exist_ok=True)
+    (tmp_path / ".kubecore" / "dataset-config.yaml").write_text(
+        "".join(f"{k}: '{v}'\n" for k, v in values.items()))
+    appconfig.load_config.cache_clear()
 
 
-def test_post_captures_cookie(monkeypatch):
-    """The return page POSTs {"cookie": ...}; the catcher must capture it and the
-    login call must return that cookie."""
-    th, result, opened = _drive_login(monkeypatch)
-
-    rd = up.parse_qs(up.urlparse(opened["url"]).query)["rd"][0]
-    port = int(up.parse_qs(up.urlparse(rd).query)["port"][0])
-
-    # simulate the return page's cross-origin POST of the session JSON
-    body = json.dumps({"cookie_name": "_lakefs_oauth2",
-                       "cookie": "POSTED_SESSION_COOKIE",
-                       "base_url": "https://lakefs.invalid"}).encode()
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    conn.request("POST", "/callback", body=body,
-                 headers={"Content-Type": "application/json",
-                          "Origin": "https://lakefs.invalid"})
-    resp = conn.getresponse()
-    resp.read()
-    th.join(timeout=10)
-
-    assert resp.status == 200
-    assert result["cookie"] == "POSTED_SESSION_COOKIE"
+def test_oidc_settings_read_from_app_repo_config(tmp_path):
+    """The render step writes these into the app repo; that is the only way the
+    CLI learns which Zitadel app to use."""
+    _write_config(tmp_path, oidcIssuer="https://z.example", oidcClientId="cid",
+                  oidcProjectId="proj")
+    assert login.oidc_settings() == ("https://z.example", "cid", "proj")
 
 
-def test_cors_preflight_answered(monkeypatch):
-    """A cross-origin application/json POST triggers a CORS preflight OPTIONS; the
-    catcher must answer it with Access-Control-Allow-* so the fetch can proceed."""
-    th, result, opened = _drive_login(monkeypatch)
-
-    rd = up.parse_qs(up.urlparse(opened["url"]).query)["rd"][0]
-    port = int(up.parse_qs(up.urlparse(rd).query)["port"][0])
-
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    conn.request("OPTIONS", "/callback",
-                 headers={"Origin": "https://lakefs.invalid",
-                          "Access-Control-Request-Method": "POST"})
-    resp = conn.getresponse()
-    resp.read()
-    assert resp.status in (200, 204)
-    assert resp.getheader("Access-Control-Allow-Origin") == "*"
-    assert "POST" in (resp.getheader("Access-Control-Allow-Methods") or "")
-
-    # complete the flow so the server thread exits cleanly
-    conn2 = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    conn2.request("POST", "/callback",
-                  body=json.dumps({"cookie": "C"}).encode(),
-                  headers={"Content-Type": "application/json"})
-    conn2.getresponse().read()
-    th.join(timeout=10)
-    assert result["cookie"] == "C"
+def test_env_overrides_config(tmp_path, monkeypatch):
+    _write_config(tmp_path, oidcIssuer="https://z.example", oidcClientId="cid")
+    monkeypatch.setenv("KUBECORE_ML_OIDC_CLIENT_ID", "from-env")
+    assert login.oidc_settings()[1] == "from-env"
 
 
-def test_empty_post_does_not_capture(monkeypatch):
-    """A POST with no cookie must be rejected (400) and not populate the session,
-    so the flow keeps waiting rather than caching an empty cookie."""
-    th, result, opened = _drive_login(monkeypatch, timeout=3)
+def test_browser_login_not_attempted_without_config(monkeypatch):
+    """No OIDC settings (project not provisioned yet) must not start a login it
+    cannot finish; the caller then offers the paste fallback."""
+    called = []
+    monkeypatch.setattr(login.oidc_login, "login", lambda *a, **k: called.append(1))
+    assert login.browser_login() is None
+    assert called == []
 
-    rd = up.parse_qs(up.urlparse(opened["url"]).query)["rd"][0]
-    port = int(up.parse_qs(up.urlparse(rd).query)["port"][0])
 
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    conn.request("POST", "/callback", body=b"{}",
-                 headers={"Content-Type": "application/json"})
-    resp = conn.getresponse()
-    resp.read()
-    assert resp.status == 400
-    th.join(timeout=10)
-    # nothing captured → loopback_login returns None (timeout), caller falls back
-    assert result["cookie"] is None
+def test_browser_login_returns_bearer(tmp_path, monkeypatch):
+    _write_config(tmp_path, oidcIssuer="https://z.example", oidcClientId="cid",
+                  oidcProjectId="proj")
+    seen = {}
+
+    def fake_login(issuer, client_id, audience_project_id=None):
+        seen.update(issuer=issuer, client_id=client_id, aud=audience_project_id)
+        return {"access_token": "tok"}
+
+    monkeypatch.setattr(login.oidc_login, "login", fake_login)
+    cred = login.browser_login()
+    assert cred == login.Credential(token="tok")
+    assert seen == {"issuer": "https://z.example", "client_id": "cid", "aud": "proj"}
+
+
+def test_browser_login_failure_is_reported_not_raised(tmp_path, monkeypatch, capsys):
+    _write_config(tmp_path, oidcIssuer="https://z.example", oidcClientId="cid")
+
+    def boom(*a, **k):
+        raise login.oidc_login.LoginError("sign-in failed: access_denied - ")
+
+    monkeypatch.setattr(login.oidc_login, "login", boom)
+    assert login.browser_login() is None
+    assert "access_denied" in capsys.readouterr().out
+
+
+def test_login_uses_browser_token_and_caches_it(tmp_path, monkeypatch):
+    _write_config(tmp_path, oidcIssuer="https://z.example", oidcClientId="cid")
+    monkeypatch.setattr(login.oidc_login, "login", lambda *a, **k: {"access_token": "tok"})
+    monkeypatch.setattr(login.LakeFSClient, "check_auth", lambda self: True)
+    # The paste path must never be reached when the browser login works.
+    monkeypatch.setattr(login, "guided_paste_login",
+                        lambda *a: pytest.fail("pasted despite a working browser login"))
+
+    cred = login.login("https://lakefs.example")
+    assert cred.token == "tok"
+    cached = json.loads(login.SESSION_PATH.read_text())
+    assert cached == {"base_url": "https://lakefs.example", "token": "tok"}
+
+
+def test_legacy_cookie_cache_still_loads(monkeypatch):
+    """A session cached by an older CLI ({"cookie": ...}) survives the upgrade."""
+    login.SESSION_PATH.write_text(json.dumps(
+        {"base_url": "https://lakefs.example", "cookie": "c00kie"}))
+    monkeypatch.setattr(login.LakeFSClient, "check_auth", lambda self: True)
+    assert login.load_session("https://lakefs.example") == login.Credential(cookie="c00kie")
+
+
+def test_expired_cache_is_ignored(monkeypatch):
+    login.SESSION_PATH.write_text(json.dumps(
+        {"base_url": "https://lakefs.example", "token": "old"}))
+    monkeypatch.setattr(login.LakeFSClient, "check_auth", lambda self: False)
+    assert login.load_session("https://lakefs.example") is None
