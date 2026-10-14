@@ -23,9 +23,10 @@ RUN poetry config virtualenvs.create false \
 # pip-installs these AT RUNTIME — which fails in an offline pod. Bake them in at
 # build time. Versions per the v8.4.19 check_requirements window + onnx2tf 1.28's
 # tested stack (tensorflow 2.19 <-> tf-keras 2.19 <-> onnx2tf <1.29, protobuf 5).
-# NOTE: onnx_graphsurgeon is published on NVIDIA's index (Ultralytics passes the
-# same --extra-index-url), NOT on PyPI.
-RUN pip install --no-cache-dir --extra-index-url https://pypi.ngc.nvidia.com \
+# Everything resolves from PyPI alone: onnx-graphsurgeon is published there
+# (0.6.x). The former --extra-index-url https://pypi.ngc.nvidia.com no longer
+# resolves in public DNS, so pip spent ~13 min retrying it on every cold build.
+RUN pip install --no-cache-dir \
     "tensorflow==2.19.0" \
     "tf-keras<=2.19.0" \
     "onnx2tf>=1.26.3,<1.29.0" \
